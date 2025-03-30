@@ -3,7 +3,25 @@ from tkinter import ttk, filedialog, scrolledtext
 import json
 import threading
 import os
+import time
+from tqdm import tqdm  # tqdm 라이브러리 추가
 from batch_translator import translate_with_gemini, create_chunks, save_result
+
+class TqdmToLogText:
+    """tqdm 출력을 GUI 로그로 리디렉션하는 클래스"""
+    def __init__(self, text_widget):
+        self.text_widget = text_widget
+
+    def write(self, s):
+        if s.strip():  # 빈 문자열 무시
+            self.text_widget.configure(state="normal")
+            self.text_widget.insert(tk.END, s)
+            self.text_widget.see(tk.END)
+            self.text_widget.configure(state="disabled")
+            
+    def flush(self):
+        pass
+
 
 class BatchTranslatorGUI:
     def __init__(self, root):
@@ -116,6 +134,9 @@ class BatchTranslatorGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state="disabled")
         self.log_text.pack(fill="both", expand=True)
         
+         # tqdm의 출력을 로그 텍스트로 리디렉션
+        self.tqdm_out = TqdmToLogText(self.log_text)
+
         # 프로그레스바
         progress_frame = ttk.Frame(parent)
         progress_frame.pack(fill="x", padx=10, pady=5)
@@ -201,6 +222,9 @@ class BatchTranslatorGUI:
 
     def run_translation(self):
         try:
+            # 번역 시작 시간 기록
+            total_start_time = time.time()
+
             config = {
                 "api_key": self.api_key.get(),
                 "model_name": self.model_name.get(),
@@ -218,30 +242,61 @@ class BatchTranslatorGUI:
             if os.path.exists(output_path):
                 os.remove(output_path)
             
-            for i, chunk in enumerate(chunks):
-                if self.stop_flag:
-                    self.log("번역이 사용자에 의해 중지되었습니다.")
-                    break
+            # tqdm을 사용하여 번역 진행 상황 표시
+            with tqdm(total=total_chunks, desc="번역 진행 중", file=self.tqdm_out, 
+                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+
+                for i, chunk in enumerate(chunks):
+                    if self.stop_flag:
+                        self.log("번역이 사용자에 의해 중지되었습니다.")
+                        break
+                    
+                    # 청크 번역 시작 시간 기록
+                    chunk_start_time = time.time()
+
+                    self.log(f"청크 {i+1}/{total_chunks} 번역 중...")
+                    translated = translate_with_gemini(chunk, config)
+                    
+                    # 청크 번역 종료 시간 기록 및 경과 시간 계산
+                    chunk_end_time = time.time()
+                    chunk_elapsed_time = chunk_end_time - chunk_start_time
+                    
+                    # 경과 시간을 분:초 형식으로 변환
+                    minutes, seconds = divmod(chunk_elapsed_time, 60)
+                    formatted_time = f"{int(minutes)}:{int(seconds):02d}"
+
+                    if translated:
+                        save_result(translated, output_path)
+                        self.log(f"청크 {i+1} 번역 완료")
+                    else:
+                        self.log(f"청크 {i+1} 번역 실패")
+                    
+                    # 진행 상황 업데이트
+                    self.update_progress(i+1, total_chunks)
+                    pbar.update(1)
                 
-                self.log(f"청크 {i+1}/{total_chunks} 번역 중...")
-                translated = translate_with_gemini(chunk, config)
+                # 전체 번역 완료 시간 계산
+                total_end_time = time.time()
+                total_elapsed_time = total_end_time - total_start_time
                 
-                if translated:
-                    save_result(translated, output_path)
-                    self.log(f"청크 {i+1} 번역 완료")
+                # 총 작업 시간 형식화
+                total_minutes, total_seconds = divmod(total_elapsed_time, 60)
+                total_hours, total_minutes = divmod(total_minutes, 60)
+                
+                if total_hours > 0:
+                    total_formatted_time = f"{int(total_hours)}:{int(total_minutes):02d}:{int(total_seconds):02d}"
                 else:
-                    self.log(f"청크 {i+1} 번역 실패")
+                    total_formatted_time = f"{int(total_minutes)}:{int(total_seconds):02d}"
                 
-                self.update_progress(i+1, total_chunks)
-            
-            self.log("번역 프로세스가 완료되었습니다.")
-            self.start_button.config(state="normal")
-            self.stop_button.config(state="disabled")
-            
+                self.log(f"번역 프로세스가 완료되었습니다. 총 작업 시간: {{{total_formatted_time}}}")
+        
         except Exception as e:
             self.log(f"치명적 오류 발생: {str(e)}")
+        
+        finally:
             self.start_button.config(state="normal")
             self.stop_button.config(state="disabled")
+                
 
     def log(self, message):
         self.log_text.configure(state="normal")
