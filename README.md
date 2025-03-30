@@ -33,7 +33,7 @@ This project provides a tool for translating large text files in batches using t
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/Gotti0/batch_translator_with_gemini
+    git clone https://github.com/Gotti0/batch_translator_with_gemini_ko
     cd batch_translator_gui
     ```
 2.  **Install dependencies:**
