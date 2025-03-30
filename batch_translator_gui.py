@@ -289,7 +289,8 @@ class BatchTranslatorGUI:
                     total_formatted_time = f"{int(total_minutes)}:{int(total_seconds):02d}"
                 
                 self.log(f"번역 프로세스가 완료되었습니다. 총 작업 시간: {{{total_formatted_time}}}")
-        
+                self.log(f"output 폴더에 {{{output_path}}} 이 생성되었습니다.")
+                      
         except Exception as e:
             self.log(f"치명적 오류 발생: {str(e)}")
         
