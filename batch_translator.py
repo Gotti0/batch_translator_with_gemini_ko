@@ -92,7 +92,7 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
             error_message = str(api_error)
             # 여전히 PROHIBITED_CONTENT 오류 발생 시 청크 분할
             if any(error_text in error_message for error_text in 
-                ["PROHIBITED_CONTENT", "Invalid"]):
+                ["PROHIBITED_CONTENT", "Invalid", "OTHER"]):
                 print("\nPROHIBITED_CONTENT 오류 감지됨. 청크 분할 후 스트림 번역을 시도합니다.")
                 
                 # 재귀적 청크 분할 번역 함수 정의
@@ -127,7 +127,7 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
                         error_message = str(chunk_error)
                         # 여전히 PROHIBITED_CONTENT 오류 발생 시 청크 분할
                         if any(error_text in error_message for error_text in 
-                               ["PROHIBITED_CONTENT", "Invalid"]):
+                               ["PROHIBITED_CONTENT", "Invalid", "OTHER"]):
                             # (기존 청크 분할 코드)
                             print(f"\n깊이 {depth}에서 여전히 PROHIBITED_CONTENT 감지. 청크 분할 중...")
                             # (기존 분할 코드)
