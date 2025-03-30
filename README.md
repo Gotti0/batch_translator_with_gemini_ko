@@ -33,7 +33,7 @@ This project provides a tool for translating large text files in batches using t
 
 1.  **Clone the repository:**
     ```bash
-    git clone (https://github.com/Gotti0/batch_translator_with_gemini)
+    git clone https://github.com/Gotti0/batch_translator_with_gemini
     cd batch_translator_gui
     ```
 2.  **Install dependencies:**
@@ -43,11 +43,7 @@ This project provides a tool for translating large text files in batches using t
     source venv/bin/activate  # On Windows use `venv\Scripts\activate`
     pip install -r requirements.txt
     ```
-    *(Create a `requirements.txt` file with the following content):*
-    ```txt
-    google-generativeai
-    tqdm
-    ```
+
 
 ## Usage (사용법)
 
