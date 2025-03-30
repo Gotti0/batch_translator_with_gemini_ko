@@ -3,7 +3,7 @@ This is a novel translation project utilizing batch logic and the Gemini API.
 
 Okay, here is a `README.md` file for your `batch_translator_with_gemini` project, incorporating information from the provided Python scripts and architecture description.
 
-```markdown
+
 # Batch Translator with Gemini API (Gemini API를 활용한 배치 번역기)
 
 This project provides a tool for translating large text files in batches using the Google Gemini API. It offers both a graphical user interface (GUI) built with Tkinter and a command-line interface (CLI) for flexibility. The tool automatically chunks large text files to fit within API limits and handles potential API errors gracefully.
