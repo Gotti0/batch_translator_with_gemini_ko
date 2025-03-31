@@ -162,6 +162,7 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
                             wait_time = min(10 * (2 ** retry_count) + random.uniform(0, 1), 300)
                             print(f"API 사용량 제한에 도달했습니다. {wait_time:.1f}초 대기 후 재시도합니다. (시도 {retry_count+1}/{max_retries})")
                             time.sleep(wait_time)
+                            retry_count += 1
                             
                             # 같은 깊이에서 다시 시도
                             return translate_split_chunk(chunk_text, depth, max_depth)
