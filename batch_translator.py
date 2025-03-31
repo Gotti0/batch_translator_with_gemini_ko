@@ -96,7 +96,7 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
                 print("\nPROHIBITED_CONTENT 오류 감지됨. 청크 분할 후 스트림 번역을 시도합니다.")
                 
                 # 재귀적 청크 분할 번역 함수 정의
-                def translate_split_chunk(chunk_text, depth=0, max_depth=10):
+                def translate_split_chunk(chunk_text, depth=0, max_depth=10, retry_count=0):
                     # 재귀 깊이 제한 (너무 작은 청크로 무한 분할 방지)
                     if depth >= max_depth:
                         return f"[너무 깊은 재귀: 번역 불가 텍스트]"
@@ -144,10 +144,10 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
                             
                             # 각 부분 재귀적으로 번역
                             print(f"\n청크 앞부분 번역 시작 (크기: {len(first_half)})")
-                            first_result = translate_split_chunk(first_half, depth + 1, max_depth)
+                            first_result = translate_split_chunk(first_half, depth + 1, max_depth, 0)
                             
                             print(f"\n청크 뒷부분 번역 시작 (크기: {len(second_half)})")
-                            second_result = translate_split_chunk(second_half, depth + 1, max_depth)
+                            second_result = translate_split_chunk(second_half, depth + 1, max_depth, 0)
                             
                             # 결과 결합 (순서 유지)
                             return first_result + second_result
@@ -162,10 +162,9 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
                             wait_time = min(10 * (2 ** retry_count) + random.uniform(0, 1), 300)
                             print(f"API 사용량 제한에 도달했습니다. {wait_time:.1f}초 대기 후 재시도합니다. (시도 {retry_count+1}/{max_retries})")
                             time.sleep(wait_time)
-                            retry_count += 1
-                            
+            
                             # 같은 깊이에서 다시 시도
-                            return translate_split_chunk(chunk_text, depth, max_depth)
+                            return translate_split_chunk(chunk_text, depth, max_depth, retry_count + 1)
                         else:
                             print(f"\n번역 오류: {error_message}")
                             return f"[번역 오류: {error_message[:50]}...]"
