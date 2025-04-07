@@ -4,6 +4,7 @@ import json
 import threading
 import os
 import time
+from pathlib import Path
 from tqdm import tqdm  # tqdm 라이브러리 추가
 from batch_translator import translate_with_gemini, create_chunks, save_result
 
@@ -238,9 +239,8 @@ class BatchTranslatorGUI:
             total_chunks = len(chunks)
             self.log(f"총 {total_chunks}개의 청크가 생성되었습니다.")
             
-            output_path = os.path.join("output", os.path.basename(self.input_file.get()))
-            if os.path.exists(output_path):
-                os.remove(output_path)
+            input_file_path = Path(self.input_file.get())
+            output_path = input_file_path.with_name(f"{input_file_path.stem}_result{input_file_path.suffix}")
             
             # tqdm을 사용하여 번역 진행 상황 표시
             with tqdm(total=total_chunks, desc="번역 진행 중", file=self.tqdm_out, 
@@ -289,7 +289,7 @@ class BatchTranslatorGUI:
                     total_formatted_time = f"{int(total_minutes)}:{int(total_seconds):02d}"
                 
                 self.log(f"번역 프로세스가 완료되었습니다. 총 작업 시간: {{{total_formatted_time}}}")
-                self.log(f"output 폴더에 {{{output_path}}} 이 생성되었습니다.")
+                self.log(f"{input_file_path} 에 {output_path} 이/가 생성되었습니다.")
                       
         except Exception as e:
             self.log(f"치명적 오류 발생: {str(e)}")
