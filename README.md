@@ -119,15 +119,5 @@ batch-translator/
 *   **Configuration Errors:** Validates the JSON format of the configuration file.
 
 ## License (라이선스)
+ MIT License
 
-(Optional: Add your preferred license, e.g., MIT License)
-
-This project is licensed under the MIT License. See the LICENSE file for details.
-```
-
-**To make this complete:**
-
-1.  **Save:** Save the content above as `README.md` in the root directory of your `batch-translator` project.
-2.  **`requirements.txt`:** Create the `requirements.txt` file as shown in the Installation section.
-3.  **`config.json`:** Ensure you have a `config.json` file (or create one based on the example) and **replace `"YOUR_GEMINI_API_KEY"` with your actual key**. **Never commit your API key to a public repository!** Consider using environment variables or other secure methods for production use.
-4.  **(Optional) License:** If you choose a license like MIT, create a `LICENSE` file containing the license text.
