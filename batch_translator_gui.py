@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from tqdm import tqdm  # tqdm 라이브러리 추가
 from batch_translator import translate_with_gemini, create_chunks, save_result
+import re
 
 class TqdmToLogText:
     """tqdm 출력을 GUI 로그로 리디렉션하는 클래스"""
@@ -275,6 +276,9 @@ class BatchTranslatorGUI:
                     self.update_progress(i+1, total_chunks)
                     pbar.update(1)
                 
+                self.log("번역된 결과 후처리 중...")
+                self.post_process_result(output_path)
+
                 # 전체 번역 완료 시간 계산
                 total_end_time = time.time()
                 total_elapsed_time = total_end_time - total_start_time
@@ -297,8 +301,7 @@ class BatchTranslatorGUI:
         finally:
             self.start_button.config(state="normal")
             self.stop_button.config(state="disabled")
-                
-
+                    
     def log(self, message):
         self.log_text.configure(state="normal")
         self.log_text.insert(tk.END, f"{message}\n")
@@ -310,6 +313,65 @@ class BatchTranslatorGUI:
         self.progress_bar["value"] = progress
         self.progress_label.config(text=f"{progress}%")
         self.root.update_idletasks()
+
+    def remove_html_tags(self, text):
+            """HTML 태그를 정규 표현식을 사용하여 제거합니다."""
+            try:
+                # 모든 HTML 태그 제거
+                cleaned_text = re.sub(r'<[\s\S]*?>', '', text)
+                return cleaned_text
+            except Exception as e:
+                self.log(f"HTML 태그 제거 중 오류 발생: {str(e)}")
+                return text  # 오류 발생 시 원본 텍스트 반환
+
+    def remove_translation_header(self, text):
+        """번역 결과 헤더를 정규표현식으로 제거합니다."""
+        try:
+            # "# 번역 결과 (한국어):" 문구와 그 뒤의 빈 줄 제거
+            cleaned_text = re.sub(r'# 번역 결과 \(한국어\):\s*\n+', '', text)
+            return cleaned_text
+        except Exception as e:
+            self.log(f"번역 헤더 제거 중 오류 발생: {str(e)}")
+            return text  # 오류 발생 시 원본 텍스트 반환
+
+    def remove_markdown_code_block_markers(self, text):
+        """마크다운 코드 블록 마커(```korean 등)를 정규표현식으로 제거합니다."""
+        try:
+            # "```
+            cleaned_text = re.sub(r'```korean\s*\n', '', text)
+            # 코드 블록 닫는 부분(```
+            cleaned_text = re.sub(r'\n\s*```', '', cleaned_text)
+            return cleaned_text
+        except Exception as e:
+            self.log(f"마크다운 코드 블록 마커 제거 중 오류 발생: {str(e)}")
+            return text  # 오류 발생 시 원본 텍스트 반환
+
+    def post_process_result(self, output_path):
+        """번역 결과 파일에서 불필요한 요소를 제거합니다."""
+        try:
+            if os.path.exists(output_path):
+                self.log("결과 파일에서 불필요한 요소 제거 중...")
+                
+                # 파일 내용 읽기
+                with open(output_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # HTML 태그 제거
+                cleaned_content = self.remove_html_tags(content)
+                
+                # 번역 결과 헤더 제거
+                cleaned_content = self.remove_translation_header(cleaned_content)
+
+                 # 마크다운 코드 블록 마커 제거
+                cleaned_content = self.remove_markdown_code_block_markers(cleaned_content)
+
+                # 정리된 내용 저장
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(cleaned_content)
+                
+                self.log("불필요한 요소 제거 완료!")
+        except Exception as e:
+            self.log(f"후처리 중 오류 발생: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
