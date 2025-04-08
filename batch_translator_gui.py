@@ -8,6 +8,7 @@ from pathlib import Path
 from tqdm import tqdm  # tqdm 라이브러리 추가
 from batch_translator import translate_with_gemini, create_chunks, save_result
 import re
+import csv
 
 class TqdmToLogText:
     """tqdm 출력을 GUI 로그로 리디렉션하는 클래스"""
@@ -72,6 +73,16 @@ class BatchTranslatorGUI:
         
         ttk.Button(control_frame, text="설정 저장", command=self.save_config).pack(side="right", padx=5)
         ttk.Button(control_frame, text="설정 불러오기", command=self.load_config).pack(side="right", padx=5)
+
+        # 고유명사 변수 초기화
+        self.pronouns_csv_path = None  # 고유명사 CSV 파일 경로 저장
+        self.max_pronoun_entries = tk.IntVar(value=20)  # 최대 고유명사 항목 수 (기본값 20)
+        self.pronoun_sample_ratio = tk.DoubleVar(value=0.5)
+        
+        # 탭 컨트롤러에 고유명사 관리 탭 추가
+        pronouns_tab = ttk.Frame(tab_control)
+        self.setup_pronouns_tab(pronouns_tab)
+        tab_control.add(pronouns_tab, text="고유명사 관리")
 
     def setup_settings_tab(self, parent):
         # API 설정 프레임
@@ -150,6 +161,72 @@ class BatchTranslatorGUI:
         self.progress_label = ttk.Label(progress_frame, text="0%")
         self.progress_label.pack(side="left", padx=5)
 
+    def setup_pronouns_tab(self, parent):
+        """고유명사 관리 탭 구성"""
+        # 컨트롤 프레임: 고유명사 추출/수정 버튼
+        control_frame = ttk.Frame(parent)
+        control_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Button(control_frame, text="고유명사 추출", command=self.extract_pronouns).pack(side="left", padx=5)
+        ttk.Button(control_frame, text="고유명사 수정", command=self.edit_pronouns).pack(side="left", padx=5)
+        
+        # 슬라이더 프레임 수정: 두 개의 슬라이더를 포함하도록 변경
+        slider_frame = ttk.LabelFrame(parent, text="고유명사 설정")
+        slider_frame.pack(fill="x", padx=10, pady=5)
+
+        # 슬라이더 프레임: 최대 항목 수 설정
+        slider_frame = ttk.LabelFrame(parent, text="최대 고유명사 항목 수")
+        slider_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(slider_frame, text="최대 항목 수:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        
+        # 슬라이더 구성 (5부터 100까지)
+        max_entries_scale = ttk.Scale(slider_frame, from_=5, to=100, variable=self.max_pronoun_entries, 
+                                orient="horizontal", command=lambda v: max_entries_label.config(text=f"{int(float(v))}"))
+        max_entries_scale.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+        # 표본 비율 슬라이더 (새로 추가)
+        ttk.Label(slider_frame, text="표본 비율(%):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        sample_ratio_scale = ttk.Scale(slider_frame, from_=10, to=100, variable=self.pronoun_sample_ratio, 
+                                orient="horizontal", command=lambda v: sample_ratio_label.config(text=f"{int(float(v))}%"))
+        sample_ratio_scale.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+        sample_ratio_label = ttk.Label(slider_frame, text=f"{int(self.pronoun_sample_ratio.get()*100)}%")
+        sample_ratio_label.grid(row=1, column=2, sticky="w", padx=5)
+
+        # 표본 비율에 대한 설명 추가
+        ttk.Label(slider_frame, text="(분석할 청크의 비율, 높을수록 정확하지만 시간이 오래 걸림)").grid(
+            row=1, column=3, sticky="w", padx=5, pady=5)
+        
+        # 현재 값 표시 라벨
+        max_entries_label = ttk.Label(slider_frame, text=f"{self.max_pronoun_entries.get()}")
+        max_entries_label.grid(row=0, column=2, sticky="w", padx=5)
+        
+        # 고유명사 표시 프레임
+        pronouns_frame = ttk.LabelFrame(parent, text="추출된 고유명사")
+        pronouns_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # 트리뷰 구성 (고유명사 목록 표시)
+        columns = ("foreign", "korean", "count")
+        self.pronouns_tree = ttk.Treeview(pronouns_frame, columns=columns, show="headings")
+        
+        # 열 제목 설정
+        self.pronouns_tree.heading("foreign", text="외국어")
+        self.pronouns_tree.heading("korean", text="한국어")
+        self.pronouns_tree.heading("count", text="등장횟수")
+        
+        # 열 너비 설정
+        self.pronouns_tree.column("foreign", width=150)
+        self.pronouns_tree.column("korean", width=150)
+        self.pronouns_tree.column("count", width=80)
+        
+        # 스크롤바 추가
+        scrollbar = ttk.Scrollbar(pronouns_frame, orient="vertical", command=self.pronouns_tree.yview)
+        self.pronouns_tree.configure(yscrollcommand=scrollbar.set)
+        
+        # 배치
+        self.pronouns_tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     def browse_file(self):
         file_path = filedialog.askopenfilename(
             title="파일 선택",
@@ -169,7 +246,8 @@ class BatchTranslatorGUI:
                     self.model_name.set(config.get("model_name", ""))
                     self.temperature.set(config.get("temperature", 1.8))
                     self.top_p.set(config.get("top_p", 0.9))
-                    
+                    self.max_pronoun_entries.set(config.get("max_pronoun_entries", 20))  
+                    self.pronoun_sample_ratio.set(config.get("pronoun_sample_ratio", 0.5))
                     self.prompt_text.delete("1.0", tk.END)
                     self.prompt_text.insert("1.0", config.get("prompts", ""))
                     
@@ -184,9 +262,11 @@ class BatchTranslatorGUI:
                 "model_name": self.model_name.get(),
                 "temperature": self.temperature.get(),
                 "top_p": self.top_p.get(),
-                "prompts": self.prompt_text.get("1.0", tk.END)
+                "prompts": self.prompt_text.get("1.0", tk.END),
+                "max_pronoun_entries": self.max_pronoun_entries.get(),
+                "pronoun_sample_ratio": self.pronoun_sample_ratio.get()
             }
-            
+
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4)
             
@@ -235,6 +315,19 @@ class BatchTranslatorGUI:
                 "prompts": self.prompt_text.get("1.0", tk.END)
             }
             
+            # 여기에 고유명사 사전 경로 추가
+            input_file_path = Path(self.input_file.get())
+            pronouns_csv_path = input_file_path.with_stem(f"{input_file_path.stem}_seed").with_suffix('.csv')
+            
+            if os.path.exists(pronouns_csv_path):
+                self.log(f"고유명사 사전 파일을 사용합니다: {pronouns_csv_path}")
+                config["pronouns_csv"] = str(pronouns_csv_path)
+            elif hasattr(self, 'pronouns_csv_path') and self.pronouns_csv_path and os.path.exists(self.pronouns_csv_path):
+                self.log(f"사용할 고유명사 사전: {self.pronouns_csv_path}")
+                config["pronouns_csv"] = self.pronouns_csv_path
+            else:
+                self.log("고유명사 사전 파일을 찾을 수 없습니다. 일반 번역을 진행합니다.")
+
             self.log("청크 생성 중...")
             chunks = create_chunks(self.input_file.get(), self.chunk_size.get())
             total_chunks = len(chunks)
@@ -328,7 +421,7 @@ class BatchTranslatorGUI:
         """번역 결과 헤더를 정규표현식으로 제거합니다."""
         try:
             # "# 번역 결과 (한국어):" 문구와 그 뒤의 빈 줄 제거
-            cleaned_text = re.sub(r'# 번역 결과 \(한국어\):\s*\n+', '', text)
+            cleaned_text = re.sub(r'# 번역 결과\s*\n+', '', text)
             return cleaned_text
         except Exception as e:
             self.log(f"번역 헤더 제거 중 오류 발생: {str(e)}")
@@ -372,6 +465,151 @@ class BatchTranslatorGUI:
                 self.log("불필요한 요소 제거 완료!")
         except Exception as e:
             self.log(f"후처리 중 오류 발생: {str(e)}")
+
+    def extract_pronouns(self):
+        """고유명사 추출 작업 시작"""
+        if not self.input_file.get():
+            self.log("오류: 입력 파일이 필요합니다.")
+            return
+        
+        # 현재 구성 저장
+        self.save_config()
+        
+        # 구성에 최대 고유명사 항목 수 추가
+        config = {
+            "api_key": self.api_key.get(),
+            "model_name": self.model_name.get(),
+            "temperature": self.temperature.get(),
+            "top_p": self.top_p.get(),
+            "prompts": self.prompt_text.get("1.0", tk.END),
+            "chunk_size": self.chunk_size.get(),
+            "max_pronoun_entries": self.max_pronoun_entries.get(),
+            "pronoun_sample_ratio": self.pronoun_sample_ratio.get() / 100.0  # 퍼센트를 소수로 변환
+        }
+        
+        # 고유명사 추출 스레드 시작
+        self.log("고유명사 추출 작업을 시작합니다...")
+        self.log(f"고유명사 추출 작업을 시작합니다 (표본 비율: {self.pronoun_sample_ratio.get():.1f}%)...")
+        pronouns_thread = threading.Thread(target=self.run_pronouns_extraction, args=(config,))
+        pronouns_thread.daemon = True
+        pronouns_thread.start()
+
+    def run_pronouns_extraction(self, config):
+        """고유명사 추출 처리 실행"""
+        try:
+            from batch_translator_pronouns import extract_pronouns_from_file
+            
+            self.log("고유명사 추출 시작...")
+            self.pronouns_csv_path = extract_pronouns_from_file(
+                self.input_file.get(), 
+                config, 
+                self.tqdm_out
+            )
+            self.log(f"고유명사 추출 완료: {self.pronouns_csv_path}")
+            
+            # 추출 완료 후 트리뷰 업데이트
+            self.update_pronouns_treeview()
+        except Exception as e:
+            self.log(f"고유명사 추출 중 오류 발생: {str(e)}")
+
+    def update_pronouns_treeview(self):
+        """고유명사 트리뷰 업데이트"""
+        # 기존 항목 삭제
+        for item in self.pronouns_tree.get_children():
+            self.pronouns_tree.delete(item)
+        
+        # CSV 파일 존재 확인
+        if not self.pronouns_csv_path or not os.path.exists(self.pronouns_csv_path):
+            return
+        
+        # CSV 파일에서 데이터 로드 및 트리뷰 업데이트
+        try:
+            with open(self.pronouns_csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader)  # 헤더 건너뛰기
+                for row in reader:
+                    if len(row) >= 3:
+                        foreign, korean, count = row[0], row[1], row[2]
+                        self.pronouns_tree.insert("", "end", values=(foreign, korean, count))
+        except Exception as e:
+            self.log(f"고유명사 목록 로드 중 오류: {str(e)}")
+
+    def edit_pronouns(self):
+        """고유명사 수정 대화상자 표시"""
+        if not self.pronouns_csv_path or not os.path.exists(self.pronouns_csv_path):
+            self.log("수정할 고유명사 파일이 없습니다. 먼저 고유명사를 추출하세요.")
+            return
+        
+        # 선택된 항목 확인
+        selected_item = self.pronouns_tree.selection()
+        if not selected_item:
+            self.log("수정할 항목을 선택하세요.")
+            return
+        
+        # 선택된 항목 데이터 가져오기
+        values = self.pronouns_tree.item(selected_item, "values")
+        foreign, korean, count = values
+        
+        # 수정 대화상자 생성
+        edit_window = tk.Toplevel(self.root)
+        edit_window.title("고유명사 수정")
+        edit_window.geometry("400x150")
+        edit_window.resizable(False, False)
+        
+        # 입력 폼 구성
+        ttk.Label(edit_window, text="외국어:").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+        ttk.Label(edit_window, text="한국어:").grid(row=1, column=0, sticky="w", padx=10, pady=5)
+        
+        foreign_var = tk.StringVar(value=foreign)
+        korean_var = tk.StringVar(value=korean)
+        
+        ttk.Entry(edit_window, textvariable=foreign_var, width=30).grid(row=0, column=1, padx=10, pady=5)
+        ttk.Entry(edit_window, textvariable=korean_var, width=30).grid(row=1, column=1, padx=10, pady=5)
+        
+        # 버튼 프레임
+        button_frame = ttk.Frame(edit_window)
+        button_frame.grid(row=2, column=0, columnspan=2, pady=10)
+        
+        # 저장 및 취소 버튼
+        ttk.Button(button_frame, text="저장", command=lambda: self.save_pronoun_edit(
+            selected_item, foreign_var.get(), korean_var.get(), count, edit_window
+        )).pack(side="left", padx=10)
+        
+        ttk.Button(button_frame, text="취소", command=edit_window.destroy).pack(side="left", padx=10)
+
+    def save_pronoun_edit(self, item_id, new_foreign, new_korean, count, window):
+        """고유명사 수정 내용 저장"""
+        try:
+            # CSV 파일에서 모든 데이터 로드
+            rows = []
+            with open(self.pronouns_csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                headers = next(reader)
+                for row in reader:
+                    rows.append(row)
+            
+            # 선택된 항목의 인덱스 찾기
+            index = self.pronouns_tree.index(item_id)
+            
+            # 해당 항목 수정
+            rows[index][0] = new_foreign
+            rows[index][1] = new_korean
+            
+            # CSV 파일에 저장
+            with open(self.pronouns_csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                writer.writerows(rows)
+            
+            # 트리뷰 항목 업데이트
+            self.pronouns_tree.item(item_id, values=(new_foreign, new_korean, count))
+            
+            self.log(f"고유명사 '{new_foreign}'의 수정 내용이 저장되었습니다.")
+            window.destroy()
+        except Exception as e:
+            self.log(f"고유명사 수정 저장 중 오류 발생: {str(e)}")
+
+
 
 if __name__ == "__main__":
     root = tk.Tk()
