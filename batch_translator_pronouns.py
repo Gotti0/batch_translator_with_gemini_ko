@@ -44,20 +44,30 @@ class PronounExtractor:
         # 인자로 받은 sample_ratio가 없으면 인스턴스 변수 사용
         if sample_ratio is None:
             sample_ratio = self.sample_ratio
+        
         total_chunks = len(chunks)
         sample_size = max(1, int(total_chunks * sample_ratio))
+        
+        # 샘플 크기가 전체의 90% 이상이면 그냥 모든 청크 반환
+        if sample_size >= total_chunks * 0.9:
+            return chunks
         
         # 청크 균등 분포를 위한 초기 인덱스 계산
         step = total_chunks / sample_size
         
-        # 조밀성 회피를 위한 재귀적 선택 함수
-        def select_non_dense_samples(indices, remaining, current_step):
-            if remaining == 0:
-                return indices
-            
-            # 현재 인덱스 범위에서 무작위 선택
-            range_start = int((len(indices)) * current_step)
-            range_end = int((len(indices) + 1) * current_step)
+        # 인덱스 저장할 리스트
+        selected_indices = []
+        
+        # 최대 시도 횟수 설정 (무한 루프 방지)
+        max_attempts = sample_size * 20
+        attempts = 0
+        
+        # 비재귀적 방식으로 구현
+        while len(selected_indices) < sample_size and attempts < max_attempts:
+            # 현재 인덱스 범위 계산
+            idx_len = len(selected_indices)
+            range_start = int(idx_len * step)
+            range_end = int((idx_len + 1) * step)
             
             # 범위 조정
             range_start = max(0, min(range_start, total_chunks - 1))
@@ -68,20 +78,29 @@ class PronounExtractor:
             
             # 조밀성 검사 (이미 선택된 인덱스와 3개 이상 떨어져 있어야 함)
             density_threshold = 3
-            if all(abs(new_index - idx) >= density_threshold for idx in indices):
-                indices.append(new_index)
-                return select_non_dense_samples(indices, remaining - 1, current_step)
+            
+            # 시도 횟수가 많아지면 점진적으로 threshold 완화
+            if attempts > max_attempts * 0.5:
+                density_threshold = max(1, density_threshold - 1)
+            
+            if all(abs(new_index - idx) >= density_threshold for idx in selected_indices):
+                selected_indices.append(new_index)
+                attempts = 0  # 성공하면 시도 카운터 리셋
             else:
-                # 조밀성 발견 시 다른 위치 시도
-                return select_non_dense_samples(indices, remaining, current_step)
+                attempts += 1
         
-        # 초기 빈 인덱스 목록으로 시작
-        selected_indices = []
-        selected_indices = select_non_dense_samples(selected_indices, sample_size, step)
+        # 최대 시도 횟수 초과 시 남은 인덱스는 균등 분배
+        if len(selected_indices) < sample_size:
+            available_indices = [i for i in range(total_chunks) if i not in selected_indices]
+            if available_indices:
+                remaining = sample_size - len(selected_indices)
+                additional_indices = random.sample(available_indices, min(remaining, len(available_indices)))
+                selected_indices.extend(additional_indices)
         
         # 정렬된 인덱스로 청크 반환
         selected_indices.sort()
         return [chunks[i] for i in selected_indices]
+
     
     def extract_pronouns(self, chunk, retry_count=0, max_retries=5):
         """Gemini API를 사용하여 청크에서 고유명사 추출"""
