@@ -7,6 +7,7 @@ from tqdm import tqdm
 import google.generativeai as genai
 import random
 import re
+import csv
 
 def load_config(config_path):
     """JSON 설정 파일을 불러옵니다."""
@@ -61,6 +62,25 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
         model_name = config["model_name"]
         temperature = config.get("temperature", 0.4)
         top_p = config.get("top_p", 0.9)
+
+        # 고유명사 사전 로드 (새로 추가된 부분)
+        pronouns_csv = config.get("pronouns_csv", None)
+        pronouns_dict = {}
+        
+        if pronouns_csv and os.path.exists(pronouns_csv):
+            # batch_translator_pronouns 모듈에서 함수 가져오기
+            from batch_translator_pronouns import load_pronouns_for_translation, format_pronouns_for_prompt, filter_relevant_pronouns
+            
+            # 고유명사 로드 및 프롬프트 형식으로 변환
+            pronouns_dict = load_pronouns_for_translation(pronouns_csv)
+            
+            # 현재 텍스트에 관련된 고유명사만 필터링
+            relevant_pronouns = filter_relevant_pronouns(text, pronouns_dict)
+    
+            # 필터링된 고유명사를 프롬프트 형식으로 변환
+            pronouns_prompt = format_pronouns_for_prompt(relevant_pronouns)
+        else:
+            pronouns_prompt = ""
         
         # Gemini API 설정
         genai.configure(api_key=api_key)
@@ -77,6 +97,17 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=5):
         # 프롬프트 생성 및 요청
         prompt_template = config.get("prompts", "{{slot}}")
         prompt = prompt_template.replace("{{slot}}", text)
+
+        # 고유명사 정보를 프롬프트에 추가 (새로 추가된 부분)
+        if pronouns_prompt:
+            # 프롬프트 끝에 고유명사 정보 추가
+            prompt_parts = prompt.split("## 번역 결과 (한국어):")
+            if len(prompt_parts) > 1:
+                # 번역 결과 섹션 앞에 고유명사 정보 삽입
+                prompt = prompt_parts[0] + pronouns_prompt + "\n\n## 번역 결과 (한국어):" + prompt_parts[1]
+            else:
+                # 번역 결과 섹션이 없는 경우 끝에 추가
+                prompt += pronouns_prompt
         
         # API 호출
         try:
@@ -212,6 +243,53 @@ def save_result(translated_text, output_path):
     except Exception as e:
         print(f"결과 저장 중 오류 발생: {str(e)}")
 
+def load_pronouns_from_csv(csv_path):
+    """CSV 파일에서 고유명사 사전을 로드합니다. (내부 fallback 함수)"""
+    pronouns = {}
+    try:
+        if os.path.exists(csv_path):
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader)  # 헤더 건너뛰기
+                for row in reader:
+                    if len(row) >= 2:
+                        foreign, korean = row[0], row[1]
+                        pronouns[foreign] = korean
+        return pronouns
+    except Exception as e:
+        print(f"고유명사 로드 중 오류 발생: {str(e)}")
+        return {}
+    
+
+def format_pronouns_for_prompt_fallback(pronouns):
+    """프롬프트에 포함할 형식으로 고유명사 사전을 포맷팅합니다. (내부 fallback 함수)"""
+    if not pronouns:
+        return ""
+    
+    prompt_part = "\n\n# 고유명사 번역 가이드\n\n다음 고유명사는 일관성 있게 번역해주세요:\n\n"
+    for foreign, korean in pronouns.items():
+        prompt_part += f"- {foreign} → {korean}\n"
+    return prompt_part
+
+def display_pronouns_stats(pronouns_csv):
+    """고유명사 사전 사용 통계를 표시합니다."""
+    if not pronouns_csv or not os.path.exists(pronouns_csv):
+        return
+    
+    try:
+        pronouns_count = 0
+        with open(pronouns_csv, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            next(reader)  # 헤더 건너뛰기
+            for _ in reader:
+                pronouns_count += 1
+        
+        print("\n고유명사 사전 통계:")
+        print(f"- 사용된 고유명사 사전: {pronouns_csv}")
+        print(f"- 등록된 고유명사 수: {pronouns_count}")
+    except Exception as e:
+        print(f"고유명사 통계 출력 중 오류 발생: {str(e)}")
+
 def parse_arguments():
     """명령줄 인수를 파싱합니다."""
     parser = argparse.ArgumentParser(description='텍스트 파일을 청크로 나누어 Gemini API로 번역합니다.')
@@ -219,7 +297,11 @@ def parse_arguments():
     parser.add_argument('--input', type=str, help='번역할 텍스트 파일 경로')
     parser.add_argument('--chunk-size', type=int, default=6000, help='청크 최대 크기 (기본값: 6000)')
     parser.add_argument('--delay', type=float, default=2.0, help='API 호출 사이의 지연 시간(초) (기본값: 2.0)')
+    parser.add_argument('--pronouns', type=str, help='고유명사 CSV 파일 경로 (미지정 시 자동 탐색)')
+    
     return parser.parse_args()
+
+
 
 def main():
     # 명령줄 인수 파싱
@@ -239,6 +321,21 @@ def main():
     
     # 설정 불러오기
     config = load_config(config_path)
+
+    # 고유명사 CSV 파일 경로 확인 (수정)
+    if args.pronouns and os.path.exists(args.pronouns):
+        pronouns_csv_path = args.pronouns
+        print(f"지정된 고유명사 파일 사용: {pronouns_csv_path}")
+    else:
+        pronouns_csv_path = txt_file.with_stem(f"{txt_file.stem}_seed").with_suffix('.csv')
+        if os.path.exists(pronouns_csv_path):
+            print(f"고유명사 파일 발견: {pronouns_csv_path}")
+        else:
+            pronouns_csv_path = None
+            print("고유명사 파일을 찾을 수 없습니다. 기본 번역을 진행합니다.")
+    
+    if pronouns_csv_path:
+        config["pronouns_csv"] = str(pronouns_csv_path)
     
     # 청크 생성
     chunks = create_chunks(txt_file_path, args.chunk_size)
@@ -290,6 +387,10 @@ def main():
             print("HTML 태그 정리 완료!")
     except Exception as e:
         print(f"최종 HTML 태그 정리 중 오류 발생: {str(e)}")
+
+    if "pronouns_csv" in config:
+        display_pronouns_stats(config["pronouns_csv"])
+
     print(f"번역이 완료되었습니다. 결과가 {output_path}에 저장되었습니다.")
 
 if __name__ == "__main__":
