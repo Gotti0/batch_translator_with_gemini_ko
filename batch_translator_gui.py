@@ -421,7 +421,7 @@ class BatchTranslatorGUI:
         """번역 결과 헤더를 정규표현식으로 제거합니다."""
         try:
             # "# 번역 결과 (한국어):" 문구와 그 뒤의 빈 줄 제거
-            cleaned_text = re.sub(r'# 번역 결과\s*\n+', '', text)
+            cleaned_text = re.sub(r'#.*\n', '', text)
             return cleaned_text
         except Exception as e:
             self.log(f"번역 헤더 제거 중 오류 발생: {str(e)}")
