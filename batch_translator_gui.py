@@ -55,12 +55,9 @@ class BatchTranslatorGUI:
         log_tab = ttk.Frame(tab_control)
         self.setup_log_tab(log_tab)
         tab_control.add(log_tab, text="로그")
-        
         tab_control.pack(expand=1, fill="both")
         
-        # 설정 파일 로드
-        self.load_config()
-        
+
         # 제어 버튼 프레임
         control_frame = ttk.Frame(root)
         control_frame.pack(fill="x", padx=10, pady=10)
@@ -83,6 +80,9 @@ class BatchTranslatorGUI:
         pronouns_tab = ttk.Frame(tab_control)
         self.setup_pronouns_tab(pronouns_tab)
         tab_control.add(pronouns_tab, text="고유명사 관리")
+
+        # 설정 파일 로드
+        self.load_config()
 
     def setup_settings_tab(self, parent):
         # API 설정 프레임
