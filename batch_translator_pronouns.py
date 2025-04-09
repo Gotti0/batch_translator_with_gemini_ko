@@ -102,7 +102,7 @@ class PronounExtractor:
         return [chunks[i] for i in selected_indices]
 
     
-    def extract_pronouns(self, chunk, retry_count=0, max_retries=5):
+    def extract_pronouns(self, chunk, retry_count=0, max_retries=10):
         """Gemini API를 사용하여 청크에서 고유명사 추출"""
         prompt = """
         # 텍스트에서 고유명사 추출하기
