@@ -4,12 +4,14 @@ import json
 import threading
 import os
 import time
+import random
+import re
+import csv
 from pathlib import Path
 from tqdm import tqdm  # tqdm 라이브러리 추가
 from batch_translator import translate_with_gemini, create_chunks, save_result
 from listed_models import fetch_models_async, fetch_recommended_models
-import re
-import csv
+from concurrent.futures import ThreadPoolExecutor
 
 class TqdmToLogText:
     """tqdm 출력을 GUI 로그로 리디렉션하는 클래스"""
@@ -41,6 +43,7 @@ class BatchTranslatorGUI:
         self.top_p = tk.DoubleVar(value=0.9)
         self.input_file = tk.StringVar()
         self.chunk_size = tk.IntVar(value=6000)
+        self.max_workers = tk.IntVar(value=8)
         self.stop_flag = False
         self.config_file = "config.json"
         
@@ -137,6 +140,26 @@ class BatchTranslatorGUI:
         ttk.Label(file_frame, text="청크 크기:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(file_frame, textvariable=self.chunk_size, width=10).grid(row=1, column=1, sticky="w", padx=5, pady=5)
         
+        # 최대 작업자 수 (max_workers) 추가
+        ttk.Label(file_frame, text="동시 번역 개수:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        
+        # 슬라이더와 입력 필드를 조합한 UI
+        max_workers_frame = ttk.Frame(file_frame)
+        max_workers_frame.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        
+        max_workers_scale = ttk.Scale(max_workers_frame, from_=1, to=16, variable=self.max_workers, 
+                                orient="horizontal", length=150, 
+                                command=lambda v: max_workers_label.config(text=f"{int(float(v))}"))
+        max_workers_scale.pack(side="left")
+        
+        max_workers_label = ttk.Label(max_workers_frame, text=str(self.max_workers.get()))
+        max_workers_label.pack(side="left", padx=5)
+        
+        # 도움말 텍스트
+        ttk.Label(file_frame, text="(병렬 번역 스레드 수, 낮을수록 API 제한에 안전)").grid(
+            row=2, column=2, sticky="w", padx=5, pady=5)
+
+
         # 프롬프트 프레임
         prompt_frame = ttk.LabelFrame(parent, text="번역 프롬프트")
         prompt_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -270,6 +293,7 @@ class BatchTranslatorGUI:
                     self.top_p.set(config.get("top_p", 0.9))
                     self.max_pronoun_entries.set(config.get("max_pronoun_entries", 20))  
                     self.pronoun_sample_ratio.set(config.get("pronoun_sample_ratio", 0.5))
+                    self.max_workers.set(config.get("max_workers", 3))
                     self.prompt_text.delete("1.0", tk.END)
                     self.prompt_text.insert("1.0", config.get("prompts", ""))
                     
@@ -286,7 +310,8 @@ class BatchTranslatorGUI:
                 "top_p": self.top_p.get(),
                 "prompts": self.prompt_text.get("1.0", tk.END),
                 "max_pronoun_entries": self.max_pronoun_entries.get(),
-                "pronoun_sample_ratio": self.pronoun_sample_ratio.get()
+                "pronoun_sample_ratio": self.pronoun_sample_ratio.get(),
+                "max_workers": self.max_workers.get()
             }
 
             with open(self.config_file, 'w', encoding='utf-8') as f:
@@ -328,7 +353,7 @@ class BatchTranslatorGUI:
         try:
             # 번역 시작 시간 기록
             total_start_time = time.time()
-
+            
             config = {
                 "api_key": self.api_key.get(),
                 "model_name": self.model_name.get(),
@@ -337,70 +362,117 @@ class BatchTranslatorGUI:
                 "prompts": self.prompt_text.get("1.0", tk.END)
             }
             
-            # 여기에 고유명사 사전 경로 추가
+            # 고유명사 사전 설정
             input_file_path = Path(self.input_file.get())
-
-            # 수정된 부분: 사용자가 선택한 사전 파일을 우선 사용
             if hasattr(self, 'pronouns_csv_path') and self.pronouns_csv_path and os.path.exists(self.pronouns_csv_path):
                 self.log(f"사용자 지정 고유명사 사전 사용: {self.pronouns_csv_path}")
                 config["pronouns_csv"] = self.pronouns_csv_path
-            # 기본 파일명 기반 사전 파일 찾기
             elif os.path.exists(input_file_path.with_stem(f"{input_file_path.stem}_seed").with_suffix('.csv')):
                 pronouns_csv_path = input_file_path.with_stem(f"{input_file_path.stem}_seed").with_suffix('.csv')
                 self.log(f"입력 파일 기반 고유명사 사전 사용: {pronouns_csv_path}")
                 config["pronouns_csv"] = str(pronouns_csv_path)
             else:
                 self.log("고유명사 사전 파일을 찾을 수 없습니다. 일반 번역을 진행합니다.")
-
+                
             self.log("청크 생성 중...")
             chunks = create_chunks(self.input_file.get(), self.chunk_size.get())
             total_chunks = len(chunks)
+            
             self.log(f"총 {total_chunks}개의 청크가 생성되었습니다.")
             
-            input_file_path = Path(self.input_file.get())
             output_path = input_file_path.with_name(f"{input_file_path.stem}_result{input_file_path.suffix}")
             
-            # tqdm을 사용하여 번역 진행 상황 표시
-            with tqdm(total=total_chunks, desc="번역 진행 중", file=self.tqdm_out, 
-                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
-
-                for i, chunk in enumerate(chunks):
-                    if self.stop_flag:
-                        self.log("번역이 사용자에 의해 중지되었습니다.")
-                        break
+            # 진행 상황 관련 변수
+            self.processed_chunks = 0
+            self.lock = threading.Lock()
+            
+            # 결과를 인덱스와 함께 저장할 리스트 (순서 유지)
+            results = [None] * total_chunks
+            
+            # API 제한을 고려한 최대 작업자 수 설정 (사용자 설정 사용)
+            user_max_workers = self.max_workers.get()
+            max_workers = max(1, min(user_max_workers, total_chunks))  # 최소 1, 최대는 청크 수
+            
+            self.log(f"병렬 번역 시작 (최대 {max_workers}개 스레드 사용)")
+            
+            def translate_chunk_with_index(index, chunk):
+                """청크 번역 함수 (인덱스 유지)"""
+                if self.stop_flag:
+                    return index, None
                     
-                    # 청크 번역 시작 시간 기록
+                try:
+                    # API 호출 간격을 위한 지연
+                    if index > 0:
+                        time.sleep(random.uniform(0.5, 1.0))
+                    
                     chunk_start_time = time.time()
-
-                    self.log(f"청크 {i+1}/{total_chunks} 번역 중...")
+                    self.log(f"청크 {index+1}/{total_chunks} 번역 중...")
+                    
+                    # 청크 번역
                     translated = translate_with_gemini(chunk, config)
                     
-                    # 청크 번역 종료 시간 기록 및 경과 시간 계산
-                    chunk_end_time = time.time()
-                    chunk_elapsed_time = chunk_end_time - chunk_start_time
-                    
-                    # 경과 시간을 분:초 형식으로 변환
+                    # 경과 시간 계산
+                    chunk_elapsed_time = time.time() - chunk_start_time
                     minutes, seconds = divmod(chunk_elapsed_time, 60)
                     formatted_time = f"{int(minutes)}:{int(seconds):02d}"
-
-                    if translated:
-                        save_result(translated, output_path)
-                        self.log(f"청크 {i+1} 번역 완료")
-                    else:
-                        self.log(f"청크 {i+1} 번역 실패")
                     
-                    # 진행 상황 업데이트
-                    self.update_progress(i+1, total_chunks)
-                    pbar.update(1)
+                    # 진행 상황 업데이트 (스레드 안전하게)
+                    with self.lock:
+                        self.processed_chunks += 1
+                        self.update_progress(self.processed_chunks, total_chunks)
+                        self.log(f"청크 {index+1}/{total_chunks} 번역 완료 (소요시간: {formatted_time})")
+                    
+                    return index, translated
+                
+                except Exception as e:
+                    with self.lock:
+                        self.processed_chunks += 1
+                        self.update_progress(self.processed_chunks, total_chunks)
+                        self.log(f"청크 {index+1} 번역 중 오류 발생: {str(e)}")
+                    return index, None
+            
+            # ThreadPoolExecutor를 사용한 병렬 처리
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 각 청크에 대한 번역 작업 제출
+                futures = [executor.submit(translate_chunk_with_index, i, chunk) 
+                        for i, chunk in enumerate(chunks)]
+                
+                # tqdm 진행 표시줄
+                with tqdm(total=total_chunks, desc="번역 진행 중", file=self.tqdm_out,
+                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                    
+                    # 작업 완료 순서대로 결과 처리
+                    for future in futures:
+                        if self.stop_flag:
+                            self.log("번역이 사용자에 의해 중지되었습니다.")
+                            break
+                        
+                        try:
+                            # 결과와 인덱스 받기
+                            index, result = future.result()
+                            if result:
+                                # 순서 유지를 위해 원래 인덱스에 결과 저장
+                                results[index] = result
+                            
+                            # 진행 표시줄 업데이트
+                            pbar.update(1)
+                            
+                        except Exception as e:
+                            self.log(f"작업 결과 처리 중 오류 발생: {str(e)}")
+                            pbar.update(1)
+            
+            # 번역이 중지되지 않았을 경우에만 결과 저장
+            if not self.stop_flag:
+                self.log("번역된 청크를 순서대로 파일에 저장 중...")
+                for result in results:
+                    if result:  # None이 아닌 결과만 저장
+                        save_result(result, output_path)
                 
                 self.log("번역된 결과 후처리 중...")
                 self.post_process_result(output_path)
-
-                # 전체 번역 완료 시간 계산
-                total_end_time = time.time()
-                total_elapsed_time = total_end_time - total_start_time
                 
-                # 총 작업 시간 형식화
+                # 총 소요 시간 계산 및 출력
+                total_elapsed_time = time.time() - total_start_time
                 total_minutes, total_seconds = divmod(total_elapsed_time, 60)
                 total_hours, total_minutes = divmod(total_minutes, 60)
                 
@@ -409,15 +481,16 @@ class BatchTranslatorGUI:
                 else:
                     total_formatted_time = f"{int(total_minutes)}:{int(total_seconds):02d}"
                 
-                self.log(f"번역 프로세스가 완료되었습니다. 총 작업 시간: {{{total_formatted_time}}}")
-                self.log(f"{input_file_path} 에 {output_path} 이/가 생성되었습니다.")
-                      
+                self.log(f"번역 프로세스가 완료되었습니다. 총 작업 시간: {total_formatted_time}")
+                self.log(f"{output_path}에 결과가 저장되었습니다.")
+            
         except Exception as e:
             self.log(f"치명적 오류 발생: {str(e)}")
-        
+            
         finally:
             self.start_button.config(state="normal")
             self.stop_button.config(state="disabled")
+
                     
     def log(self, message):
         self.log_text.configure(state="normal")
