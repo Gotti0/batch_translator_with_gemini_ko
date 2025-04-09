@@ -2,12 +2,15 @@ import json
 import os
 import time
 import argparse
-from pathlib import Path
-from tqdm import tqdm
+import threading
 import google.generativeai as genai
 import random
 import re
 import csv
+from pathlib import Path
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+
 
 def load_config(config_path):
     """JSON 설정 파일을 불러옵니다."""
@@ -224,6 +227,90 @@ def translate_with_gemini(text, config, retry_count=0, max_retries=10):
             return translate_with_gemini(text, config, retry_count + 1, max_retries)
             
         return None
+    
+
+def translate_chunks_parallel(chunks, config, output_path, max_workers=None, delay=2.0):
+    """여러 청크를 병렬로 번역합니다."""
+    
+    # 최대 작업자 수가 지정되지 않은 경우 청크 수와 CPU 코어 수 고려
+    if max_workers is None:
+        # API 요청 제한을 고려하여 최대 작업자 수 제한
+        max_workers = min(8, len(chunks))
+    
+    # 진행 상황 관련 변수
+    total_chunks = len(chunks)
+    successful_chunks = 0
+    failed_chunks = 0
+    lock = threading.Lock()  # 공유 자원 접근을 위한 락
+    
+    # 결과를 인덱스와 함께 저장할 리스트 (순서 유지를 위해)
+    results = [None] * total_chunks
+    
+    def translate_chunk_with_index(index, chunk):
+        nonlocal successful_chunks, failed_chunks
+        
+        try:
+            # API 호출 간 간격을 주기 위한 지연
+            if index > 0:
+                time.sleep(delay * random.uniform(0.5, 1.5))
+                
+            # 청크 번역
+            translated_text = translate_with_gemini(chunk, config)
+            
+            # 성공 시 결과 저장
+            if translated_text:
+                with lock:
+                    successful_chunks += 1
+                    print(f"\n청크 {index+1}/{total_chunks} 번역 완료")
+                return index, translated_text
+            else:
+                with lock:
+                    failed_chunks += 1
+                    print(f"\n청크 {index+1}/{total_chunks} 번역 실패")
+                return index, None
+                
+        except Exception as e:
+            with lock:
+                failed_chunks += 1
+                print(f"\n청크 {index+1} 처리 중 예외 발생: {str(e)}")
+            return index, None
+    
+
+    print(f"병렬 번역 시작 (최대 {max_workers}개 스레드 사용)")
+    
+    # ThreadPoolExecutor를 사용하여 병렬 번역 실행
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 각 청크에 대한 번역 작업 제출
+        futures = [executor.submit(translate_chunk_with_index, i, chunk) 
+                  for i, chunk in enumerate(chunks)]
+        
+        # 진행 상황 표시를 위한 tqdm 설정
+        with tqdm(total=total_chunks, desc="번역 진행 중") as pbar:
+            # 제출된 작업의 결과를 순서대로 처리
+            for future in futures:
+                try:
+                    index, result = future.result()
+                    if result:
+                        # 결과를 원래 인덱스 위치에 저장
+                        results[index] = result
+                    pbar.update(1)
+                except Exception as e:
+                    print(f"\n작업 결과 처리 중 오류 발생: {str(e)}")
+                    pbar.update(1)
+    
+    # 번역 결과를 순서대로 파일에 저장
+    print("\n번역된 청크를 파일에 저장 중...")
+    for result in results:
+        if result:
+            save_result(result, output_path)
+    
+    print(f"\n번역 결과 요약:")
+    print(f"- 총 청크 수: {total_chunks}")
+    print(f"- 성공한 청크: {successful_chunks}")
+    print(f"- 실패한 청크: {failed_chunks}")
+    
+    return successful_chunks, failed_chunks
+
 
 def remove_html_tags(text):
     """HTML 태그를 정규 표현식을 사용하여 제거합니다."""
@@ -298,6 +385,7 @@ def parse_arguments():
     parser.add_argument('--chunk-size', type=int, default=6000, help='청크 최대 크기 (기본값: 6000)')
     parser.add_argument('--delay', type=float, default=2.0, help='API 호출 사이의 지연 시간(초) (기본값: 2.0)')
     parser.add_argument('--pronouns', type=str, help='고유명사 CSV 파일 경로 (미지정 시 자동 탐색)')
+    parser.add_argument('--max-workers', type=int, help='병렬 작업을 위한 최대 스레드 수 (기본값: 자동)')
     
     return parser.parse_args()
 
@@ -343,6 +431,12 @@ def main():
     
     print(f"총 {total_chunks}개의 청크로 분할되었습니다.")
     print(f"출력 파일: {output_path}")
+
+    # 병렬 실행을 위한 스레드 풀 사용
+    start_time = time.time()
+    successful_chunks, failed_chunks = translate_chunks_parallel(
+        chunks, config, output_path, max_workers=args.max_workers, delay=args.delay
+    )
     
     # 각 청크 번역 및 저장
     successful_chunks = 0
@@ -391,7 +485,11 @@ def main():
     if "pronouns_csv" in config:
         display_pronouns_stats(config["pronouns_csv"])
 
-    print(f"번역이 완료되었습니다. 결과가 {output_path}에 저장되었습니다.")
+    # 총 소요 시간 계산 및 출력
+    total_time = time.time() - start_time
+    minutes, seconds = divmod(total_time, 60)
+    print(f"번역이 완료되었습니다. 총 소요 시간: {int(minutes)}분 {seconds:.2f}초")
+    print(f"결과가 {output_path}에 저장되었습니다.")
 
 if __name__ == "__main__":
     main()
