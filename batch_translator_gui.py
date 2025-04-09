@@ -236,6 +236,14 @@ class BatchTranslatorGUI:
         self.pronouns_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+         # 트리뷰에 더블클릭 이벤트 추가
+        def on_double_click(event):
+            selected_item = self.pronouns_tree.selection()
+            if selected_item:
+                self.edit_pronouns()
+
+        self.pronouns_tree.bind("<Double-1>", on_double_click)
+
     def browse_file(self):
         file_path = filedialog.askopenfilename(
             title="파일 선택",
