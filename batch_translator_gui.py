@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from tqdm import tqdm  # tqdm 라이브러리 추가
 from batch_translator import translate_with_gemini, create_chunks, save_result
+from listed_models import fetch_models_async, fetch_recommended_models
 import re
 import csv
 
@@ -93,9 +94,13 @@ class BatchTranslatorGUI:
         ttk.Label(api_frame, text="API 키:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(api_frame, textvariable=self.api_key, width=50).grid(row=0, column=1, padx=5, pady=5)
         
-        # 모델 이름
+        # 모델 선택 드롭다운 (기존 Entry 대신)
         ttk.Label(api_frame, text="모델 이름:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-        ttk.Entry(api_frame, textvariable=self.model_name, width=50).grid(row=1, column=1, padx=5, pady=5)
+        self.model_dropdown = ttk.Combobox(api_frame, textvariable=self.model_name, width=40, state="readonly")
+        self.model_dropdown.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+    
+        # 모델 불러오기 버튼
+        ttk.Button(api_frame, text="모델 목록 가져오기", command=self.load_recommended_models).grid(row=1, column=2, padx=5, pady=5)
         
         # 온도(Temperature)
         ttk.Label(api_frame, text="Temperature:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
@@ -696,6 +701,37 @@ class BatchTranslatorGUI:
         self.pronoun_file.set("")
         
         self.log(f"고유명사 사전이 언로드되었습니다: {old_path}")
+
+
+    # 권장 모델만 로드하는 추가 메서드 
+    def load_recommended_models(self):
+        """번역에 권장되는 모델 목록만 가져오기"""
+        api_key = self.api_key.get().strip()
+        if not api_key:
+            messagebox.showerror("오류", "API 키를 입력하세요.")
+            return
+        
+        self.log("권장 모델 목록을 가져오는 중...")
+        
+        # 비동기로 권장 모델 목록 가져오기
+        def on_recommended_models_loaded(models):
+            if models:
+                self.model_dropdown['values'] = models
+                current_model = self.model_name.get()
+                if not current_model or current_model not in models:
+                    self.model_name.set(models[0])
+                self.log(f"{len(models)}개의 권장 모델을 가져왔습니다.")
+            else:
+                messagebox.showerror("오류", "권장 모델 목록을 가져오지 못했습니다.")
+        
+        # 비동기 권장 모델 로드
+        thread = threading.Thread(
+            target=lambda: on_recommended_models_loaded(
+                fetch_recommended_models(api_key, self.tqdm_out)
+            )
+        )
+        thread.daemon = True
+        thread.start()
 
 
 
