@@ -3,11 +3,14 @@ import csv
 import random
 import json
 import re
-from pathlib import Path
 import google.generativeai as genai
-from tqdm import tqdm
 import time
 import random
+import threading  # 스레드 안전을 위해 추가
+from tqdm import tqdm
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+
 
 class PronounExtractor:
     def __init__(self, config, tqdm_out=None):
@@ -273,7 +276,8 @@ class PronounExtractor:
 
     
     def merge_pronouns(self, new_pronouns):
-        """새로운 고유명사를 기존 딕셔너리와 병합"""
+        """새로운 고유명사를 기존 딕셔너리와 병합 (스레드 안전)"""
+        # 이 메서드 호출 전에 이미 락을 획득한 상태여야 함
         for foreign, data in new_pronouns.items():
             if foreign in self.pronouns_dict:
                 # 외국어 고유명사가 이미 있으면 등장횟수 합산
@@ -379,50 +383,82 @@ class PronounExtractor:
         sample_chunks = self.select_sample_chunks(chunks)
         self.log(f"전체 {len(chunks)}개 청크 중 {len(sample_chunks)}개 표본 청크 선택됨")
         
-        # 처리 성공/실패 카운터
-        successful_chunks = 0
-        failed_chunks = 0
+        # 처리 성공/실패 카운터 (스레드 안전하게 관리하기 위한 락)
+        self.successful_chunks = 0
+        self.failed_chunks = 0
+        self.pronouns_lock = threading.Lock()  # 고유명사 사전 접근을 위한 락
+
+        # 작업자 수 설정 (API 제한 고려)
+        max_workers = min(8, len(sample_chunks))
+        self.log(f"병렬 처리 시작 (최대 {max_workers}개 스레드 사용)")
         
-        # 각 표본 청크에서 고유명사 추출
-        with tqdm(total=len(sample_chunks), desc="고유명사 추출 중", file=self.tqdm_out) as pbar:
-            for i, chunk in enumerate(sample_chunks):
-                try:
-                    self.log(f"청크 {i+1}/{len(sample_chunks)} 처리 중...")
-                    
-                    # 고유명사 추출
-                    new_pronouns = self.extract_pronouns(chunk)
-                    
-                    if new_pronouns:
-                        # 고유명사 병합
-                        self.merge_pronouns(new_pronouns)
-                        successful_chunks += 1
-                    else:
-                        self.log(f"청크 {i+1} 처리 결과가 비어 있습니다.")
-                        failed_chunks += 1
-                    
-                    # CSV 파일 주기적 업데이트 (매 청크마다)
-                    seed_path, fallen_path = self.update_csv_files(output_base_path)
-                    
-                    # 우선순위 체크 및 동적 관리
-                    self.dynamic_priority_check(output_base_path)
-                    
-                    # API 요청 간 지연 시간 추가 (rate limit 방지)
-                    if i < len(sample_chunks) - 1:
-                        time.sleep(2)
-                        
-                except Exception as e:
-                    self.log(f"청크 {i+1} 처리 중 예외 발생: {str(e)}")
-                    failed_chunks += 1
+
+        # 단일 청크 처리 함수
+        def process_chunk(chunk_index, chunk):
+            try:
+                self.log(f"청크 {chunk_index+1}/{len(sample_chunks)} 처리 중...")
                 
-                finally:
-                    # 진행 표시 업데이트
-                    pbar.update(1)
+                # 고유명사 추출
+                new_pronouns = self.extract_pronouns(chunk)
+                
+                if new_pronouns:
+                    # 고유명사 병합 (스레드 안전하게)
+                    with self.pronouns_lock:
+                        self.merge_pronouns(new_pronouns)
+                        
+                        # CSV 파일 업데이트 (주기적으로)
+                        seed_path, fallen_path = self.update_csv_files(output_base_path)
+                        
+                        # 우선순위 체크 및 동적 관리
+                        self.dynamic_priority_check(output_base_path)
+                        
+                        # 성공 카운터 증가
+                        self.successful_chunks += 1
+                        self.log(f"청크 {chunk_index+1} 처리 완료: {len(new_pronouns)}개 고유명사 추출됨")
+                    
+                    return True
+                else:
+                    with self.pronouns_lock:
+                        self.failed_chunks += 1
+                        self.log(f"청크 {chunk_index+1} 처리 결과가 비어 있습니다.")
+                    return False
+                    
+            except Exception as e:
+                with self.pronouns_lock:
+                    self.failed_chunks += 1
+                    self.log(f"청크 {chunk_index+1} 처리 중 예외 발생: {str(e)}")
+                return False
+
+        # ThreadPoolExecutor를 사용한 병렬 처리
+        with tqdm(total=len(sample_chunks), desc="고유명사 추출 중", file=self.tqdm_out) as pbar:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 각 청크에 대한 작업 제출
+                futures = [executor.submit(process_chunk, i, chunk) 
+                        for i, chunk in enumerate(sample_chunks)]
+                
+                # 완료된 작업 결과 처리
+                for future in futures:
+                    try:
+                        # 결과 대기 (이미 process_chunk 내에서 결과를 병합했으므로 여기서는 성공 여부만 확인)
+                        success = future.result()
+                        
+                        # 진행 표시줄 업데이트
+                        pbar.update(1)
+                        
+                        # API 요청 간 지연 시간 조절은 extract_pronouns 내부에서 처리됨
+                        
+                    except Exception as e:
+                        self.log(f"작업 결과 처리 중 오류 발생: {str(e)}")
+                        with self.pronouns_lock:
+                            self.failed_chunks += 1
+                        pbar.update(1)
         
         # 처리 결과 요약
         self.log(f"\n고유명사 추출 결과 요약:")
         self.log(f"- 총 처리 청크: {len(sample_chunks)}")
-        self.log(f"- 성공한 청크: {successful_chunks}")
-        self.log(f"- 실패한 청크: {failed_chunks}")
+        self.log(f"- 성공한 청크: {self.successful_chunks}")
+        self.log(f"- 실패한 청크: {self.failed_chunks}")
+        self.log(f"- 추출된 고유명사: {len(self.pronouns_dict)}")
         
         # 모든 처리 완료 후 fallen.csv 삭제
         fallen_path = f"{output_base_path}_fallen.csv"
@@ -431,7 +467,9 @@ class PronounExtractor:
             self.log(f"임시 파일 {fallen_path} 삭제됨")
         
         self.log(f"고유명사 추출 완료. 결과가 {output_base_path}_seed.csv에 저장되었습니다.")
+        
         return f"{output_base_path}_seed.csv"
+
 
 def extract_pronouns_from_file(input_file, config, tqdm_out=None):
     """파일에서 고유명사 추출 실행"""
