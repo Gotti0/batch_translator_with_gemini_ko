@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext
+from tkinter import ttk, filedialog, scrolledtext, messagebox
 import json
 import threading
 import os
@@ -81,7 +81,7 @@ class BatchTranslatorGUI:
         self.setup_pronouns_tab(pronouns_tab)
         tab_control.add(pronouns_tab, text="고유명사 관리")
 
-        # 설정 파일 로드
+        # 설정 파일 로드 UI 전부 로드 한 다음 초기화 해야 함!
         self.load_config()
 
     def setup_settings_tab(self, parent):
@@ -169,6 +169,15 @@ class BatchTranslatorGUI:
         
         ttk.Button(control_frame, text="고유명사 추출", command=self.extract_pronouns).pack(side="left", padx=5)
         ttk.Button(control_frame, text="고유명사 수정", command=self.edit_pronouns).pack(side="left", padx=5)
+
+        # 새로운 파일 로드 섹션 추가
+        file_frame = ttk.LabelFrame(parent, text="고유명사 사전 파일")
+        file_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.pronoun_file = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.pronoun_file, width=50).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(file_frame, text="찾아보기...", command=self.browse_pronoun_file).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(file_frame, text="언로드", command=self.unload_pronoun_file).grid(row=0, column=4, padx=5, pady=5)
         
         # 슬라이더 프레임 수정: 두 개의 슬라이더를 포함하도록 변경
         slider_frame = ttk.LabelFrame(parent, text="고유명사 설정")
@@ -317,14 +326,16 @@ class BatchTranslatorGUI:
             
             # 여기에 고유명사 사전 경로 추가
             input_file_path = Path(self.input_file.get())
-            pronouns_csv_path = input_file_path.with_stem(f"{input_file_path.stem}_seed").with_suffix('.csv')
-            
-            if os.path.exists(pronouns_csv_path):
-                self.log(f"고유명사 사전 파일을 사용합니다: {pronouns_csv_path}")
-                config["pronouns_csv"] = str(pronouns_csv_path)
-            elif hasattr(self, 'pronouns_csv_path') and self.pronouns_csv_path and os.path.exists(self.pronouns_csv_path):
-                self.log(f"사용할 고유명사 사전: {self.pronouns_csv_path}")
+
+            # 수정된 부분: 사용자가 선택한 사전 파일을 우선 사용
+            if hasattr(self, 'pronouns_csv_path') and self.pronouns_csv_path and os.path.exists(self.pronouns_csv_path):
+                self.log(f"사용자 지정 고유명사 사전 사용: {self.pronouns_csv_path}")
                 config["pronouns_csv"] = self.pronouns_csv_path
+            # 기본 파일명 기반 사전 파일 찾기
+            elif os.path.exists(input_file_path.with_stem(f"{input_file_path.stem}_seed").with_suffix('.csv')):
+                pronouns_csv_path = input_file_path.with_stem(f"{input_file_path.stem}_seed").with_suffix('.csv')
+                self.log(f"입력 파일 기반 고유명사 사전 사용: {pronouns_csv_path}")
+                config["pronouns_csv"] = str(pronouns_csv_path)
             else:
                 self.log("고유명사 사전 파일을 찾을 수 없습니다. 일반 번역을 진행합니다.")
 
@@ -608,6 +619,76 @@ class BatchTranslatorGUI:
             window.destroy()
         except Exception as e:
             self.log(f"고유명사 수정 저장 중 오류 발생: {str(e)}")
+
+    def browse_pronoun_file(self):
+        """고유명사 사전 파일 선택 대화상자"""
+        file_path = filedialog.askopenfilename(
+            title="고유명사 사전 파일 선택",
+            filetypes=[("CSV 파일", "*.csv"), ("모든 파일", "*.*")]
+        )
+        
+        if file_path:
+            self.pronoun_file.set(file_path)
+            self.log(f"선택된 고유명사 사전 파일: {file_path}")
+            self.load_pronoun_file()  # 자동 로드 실행
+
+    def load_pronoun_file(self):
+        """선택된 고유명사 사전 파일 로드"""
+        file_path = self.pronoun_file.get()
+        
+        if not file_path or not os.path.exists(file_path):
+            self.log("오류: 유효한 고유명사 사전 파일을 선택해주세요.")
+            return
+        
+        try:
+            # 기존 데이터 초기화
+            for item in self.pronouns_tree.get_children():
+                self.pronouns_tree.delete(item)
+            
+            # CSV 파일 로드
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                header = next(reader)  # 헤더 건너뛰기
+                
+                if len(header) < 3:
+                    self.log("오류: 올바른 형식의 고유명사 사전 파일이 아닙니다.")
+                    return
+                
+                # 트리뷰에 데이터 추가
+                for row in reader:
+                    if len(row) >= 3:
+                        foreign, korean, count = row[0], row[1], row[2]
+                        self.pronouns_tree.insert("", "end", values=(foreign, korean, count))
+            
+            # 파일 경로 저장
+            self.pronouns_csv_path = file_path
+            self.log(f"고유명사 사전이 성공적으로 로드되었습니다: {len(self.pronouns_tree.get_children())}개 항목")
+            
+        except Exception as e:
+            self.log(f"고유명사 사전 로드 중 오류 발생: {str(e)}")
+
+    
+    def unload_pronoun_file(self):
+        """로드된 고유명사 사전 파일을 언로드"""
+        if not self.pronouns_csv_path:
+            self.log("언로드할 고유명사 사전 파일이 없습니다.")
+            return
+            
+        # 확인 대화상자 표시
+        if not messagebox.askyesno("고유명사 사전 언로드", "현재 로드된 고유명사 사전을 언로드하시겠습니까?"):
+            return
+            
+        # 트리뷰 초기화
+        for item in self.pronouns_tree.get_children():
+            self.pronouns_tree.delete(item)
+            
+        # 변수 초기화
+        old_path = self.pronouns_csv_path
+        self.pronouns_csv_path = None
+        self.pronoun_file.set("")
+        
+        self.log(f"고유명사 사전이 언로드되었습니다: {old_path}")
+
 
 
 
