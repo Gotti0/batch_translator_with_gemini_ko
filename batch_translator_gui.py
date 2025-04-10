@@ -9,9 +9,13 @@ import re
 import csv
 from pathlib import Path
 from tqdm import tqdm  # tqdm 라이브러리 추가
-from batch_translator import translate_with_gemini, create_chunks, save_result
-from listed_models import fetch_models_async, fetch_recommended_models
 from concurrent.futures import ThreadPoolExecutor
+from batch_translator import (
+    translate_with_gemini, create_chunks, save_chunk_with_index, get_metadata_path, 
+    hash_config, create_translation_metadata, load_translation_metadata, update_translation_metadata, 
+    save_merged_chunks, merge_chunk_results,load_chunks_with_index
+)
+from listed_models import fetch_models_async, fetch_recommended_models
 
 class TqdmToLogText:
     """tqdm 출력을 GUI 로그로 리디렉션하는 클래스"""
@@ -359,9 +363,15 @@ class BatchTranslatorGUI:
                 "model_name": self.model_name.get(),
                 "temperature": self.temperature.get(),
                 "top_p": self.top_p.get(),
-                "prompts": self.prompt_text.get("1.0", tk.END)
+                "prompts": self.prompt_text.get("1.0", tk.END),
+                "max_workers": self.max_workers.get()
             }
             
+             # 입력 및 출력 파일 경로
+            input_file_path = Path(self.input_file.get())
+            output_path = input_file_path.with_name(f"{input_file_path.stem}_result{input_file_path.suffix}")
+            metadata_path = get_metadata_path(input_file_path)
+
             # 고유명사 사전 설정
             input_file_path = Path(self.input_file.get())
             if hasattr(self, 'pronouns_csv_path') and self.pronouns_csv_path and os.path.exists(self.pronouns_csv_path):
@@ -374,17 +384,62 @@ class BatchTranslatorGUI:
             else:
                 self.log("고유명사 사전 파일을 찾을 수 없습니다. 일반 번역을 진행합니다.")
                 
+            # 청크 생성 
             self.log("청크 생성 중...")
             chunks = create_chunks(self.input_file.get(), self.chunk_size.get())
             total_chunks = len(chunks)
-            
             self.log(f"총 {total_chunks}개의 청크가 생성되었습니다.")
             
-            output_path = input_file_path.with_name(f"{input_file_path.stem}_result{input_file_path.suffix}")
+            # 진행 상황 확인을 위한 메타데이터 확인
+            resume_translation = False
+            already_translated = {}
+            
+            if metadata_path.exists() and output_path.exists():
+                metadata = load_translation_metadata(input_file_path)
+                
+                # 기존 진행 상황이 있는지 확인
+                if (metadata and metadata["input_file"] == str(input_file_path) and 
+                    metadata["config_hash"] == hash_config(config) and 
+                    len(metadata["translated_chunks"]) > 0):
+                    
+                    # 사용자에게 기존 번역 이어서 할지 확인
+                    if messagebox.askyesno("이어서 번역", 
+                        f"이전 번역 진행 상황이 있습니다 ({len(metadata['translated_chunks'])}/{metadata['total_chunks']} 청크 완료). "
+                        f"이어서 번역하시겠습니까?"):
+                        resume_translation = True
+                        already_translated = metadata["translated_chunks"]
+                        self.log(f"이전 번역에서 {len(already_translated)}개 청크를 완료했습니다. 이어서 번역합니다.")
+                    else:
+                        # 사용자가 처음부터 시작하기를 원함
+                        os.remove(metadata_path)
+                        os.remove(output_path)
+                        self.log("처음부터 번역을 시작합니다.")
+            
+            # 새 메타데이터 생성 (이어서 번역하지 않는 경우)
+            if not resume_translation:
+                create_translation_metadata(input_file_path, chunks, config)
+                # 출력 파일도 초기화
+                if output_path.exists():
+                    os.remove(output_path)
+                    self.log("이전 번역 파일을 초기화했습니다.")
+            elif resume_translation and os.path.exists(output_path):
+                # 이어서 번역할 경우의 처리
+                self.log("이전 번역 파일을 유지합니다.")
+            
+            # 번역할 청크만 필터링 (이미 번역된 청크 제외)
+            chunks_to_translate = []
+            for i, chunk in enumerate(chunks):
+                if str(i) not in already_translated:
+                    chunks_to_translate.append((i, chunk))
             
             # 진행 상황 관련 변수
-            self.processed_chunks = 0
+            self.processed_chunks = len(already_translated)  # 이미 처리된 청크 수
+            total_chunks = len(chunks)  # 전체 청크 수
+            remaining_chunks = len(chunks_to_translate)  # 남은 청크 수
             self.lock = threading.Lock()
+
+            output_path = input_file_path.with_name(f"{input_file_path.stem}_result{input_file_path.suffix}")
+            
             
             # 결과를 인덱스와 함께 저장할 리스트 (순서 유지)
             results = [None] * total_chunks
@@ -399,7 +454,12 @@ class BatchTranslatorGUI:
                 """청크 번역 함수 (인덱스 유지)"""
                 if self.stop_flag:
                     return index, None
-                    
+
+                # 이미 번역된 청크인지 확인 (안전장치)
+                if str(index) in already_translated:
+                    self.log(f"청크 {index+1}/{total_chunks}는 이미 번역되어 있습니다. 건너뜁니다.")
+                    return index, None
+
                 try:
                     # API 호출 간격을 위한 지연
                     if index > 0:
@@ -410,19 +470,35 @@ class BatchTranslatorGUI:
                     
                     # 청크 번역
                     translated = translate_with_gemini(chunk, config)
-                    
+
                     # 경과 시간 계산
                     chunk_elapsed_time = time.time() - chunk_start_time
                     minutes, seconds = divmod(chunk_elapsed_time, 60)
                     formatted_time = f"{int(minutes)}:{int(seconds):02d}"
-                    
-                    # 진행 상황 업데이트 (스레드 안전하게)
-                    with self.lock:
-                        self.processed_chunks += 1
-                        self.update_progress(self.processed_chunks, total_chunks)
+
+                    # 성공한 경우에만 결과 저장
+                    if translated:
+                        # 진행 상황 업데이트
+                        with self.lock:
+                            self.processed_chunks += 1
+                            self.update_progress(self.processed_chunks, total_chunks)
+
+                        # 변경된 부분: 파일에 즉시 저장하는 대신 배열에 저장
+                        results[index] = translated
+                            
+                        # 메타데이터는 여전히 업데이트
+                        update_translation_metadata(metadata_path, index)
+                        
                         self.log(f"청크 {index+1}/{total_chunks} 번역 완료 (소요시간: {formatted_time})")
+                        return index, True
                     
-                    return index, translated
+                    else:
+                        with self.lock:
+                            self.processed_chunks += 1
+                            self.update_progress(self.processed_chunks, total_chunks)
+                        self.log(f"청크 {index+1}/{total_chunks} 번역 실패")
+                        return index, None
+                
                 
                 except Exception as e:
                     with self.lock:
@@ -435,7 +511,7 @@ class BatchTranslatorGUI:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 각 청크에 대한 번역 작업 제출
                 futures = [executor.submit(translate_chunk_with_index, i, chunk) 
-                        for i, chunk in enumerate(chunks)]
+                        for i, chunk in chunks_to_translate]
                 
                 # tqdm 진행 표시줄
                 with tqdm(total=total_chunks, desc="번역 진행 중", file=self.tqdm_out,
@@ -443,53 +519,105 @@ class BatchTranslatorGUI:
                     
                     # 작업 완료 순서대로 결과 처리
                     for future in futures:
-                        if self.stop_flag:
-                            self.log("번역이 사용자에 의해 중지되었습니다.")
-                            break
-                        
                         try:
-                            # 결과와 인덱스 받기
-                            index, result = future.result()
-                            if result:
-                                # 순서 유지를 위해 원래 인덱스에 결과 저장
-                                results[index] = result
-                            
-                            # 진행 표시줄 업데이트
-                            pbar.update(1)
-                            
+                            future.result()
+                            pbar.update(1)  # 명시적 업데이트 추가
                         except Exception as e:
-                            self.log(f"작업 결과 처리 중 오류 발생: {str(e)}")
-                            pbar.update(1)
+                            self.log(f"오류 발생: {str(e)}")
+                            pbar.update(1)  # 예외 발생시에도 업데이트
+  
             
-            # 번역이 중지되지 않았을 경우에만 결과 저장
-            if not self.stop_flag:
-                self.log("번역된 청크를 순서대로 파일에 저장 중...")
-                for result in results:
-                    if result:  # None이 아닌 결과만 저장
-                        save_result(result, output_path)
+
+            # 번역된 결과를 순서대로 파일에 저장합니다...
+            self.log("번역된 결과를 순서대로 파일에 저장합니다...")
+            # 백업 파일 생성
+            if output_path.exists():
+                import shutil
+                backup_path = output_path.with_name(f"{output_path.stem}_backup{output_path.suffix}")
+                shutil.copy2(output_path, backup_path)
+                self.log(f"기존 결과 파일을 {backup_path}로 백업했습니다.")
+
+            # 결과 병합 및 저장 (새로운 코드)
+            if resume_translation and os.path.exists(output_path):
+                # 인덱스 정보가 포함된 청크 로드
+                existing_chunks = load_chunks_with_index(output_path)
                 
-                self.log("번역된 결과 후처리 중...")
+                # 새로 번역한 결과 병합
+                merged_chunks = merge_chunk_results(existing_chunks, results, total_chunks)
+                
+                # 병합된 결과 저장
+                save_merged_chunks(merged_chunks, total_chunks, output_path)
+                # 추가: 메타데이터 다시 로드하고 병합된 모든 청크에 대해 메타데이터 업데이트
+                for chunk_idx in merged_chunks.keys():
+                    update_translation_metadata(metadata_path, chunk_idx)
+                
+                self.log(f"기존 결과({len(already_translated)}개 청크)와 새 번역 결과를 병합했습니다.")
+            else:
+                # 새 파일 생성 및 결과 저장
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    pass  # 파일 초기화
+                
+                # 각 결과를 인덱스와 함께 저장
+                for idx, result in enumerate(results):
+                    if result:
+                        save_chunk_with_index(idx, result, output_path)
+                
+            self.log("모든 결과가 순서대로 저장되었습니다.")
+                
+            # 총 소요 시간 계산 및 출력
+            total_elapsed_time = time.time() - total_start_time
+            total_minutes, total_seconds = divmod(total_elapsed_time, 60)
+            total_hours, total_minutes = divmod(total_minutes, 60)
+            
+            if total_hours > 0:
+                total_formatted_time = f"{int(total_hours)}:{int(total_minutes):02d}:{int(total_seconds):02d}"
+            else:
+                total_formatted_time = f"{int(total_minutes)}:{int(total_seconds):02d}"
+            
+            self.log(f"번역 프로세스가 완료되었습니다. 총 작업 시간: {total_formatted_time}")
+            self.log(f"{output_path}에 결과가 저장되었습니다.")
+            # 모든 청크가 번역되었는지 확인하여 후처리 수행
+            metadata = load_translation_metadata(input_file_path)
+            if metadata and len(metadata["translated_chunks"]) == total_chunks:
                 self.post_process_result(output_path)
-                
-                # 총 소요 시간 계산 및 출력
-                total_elapsed_time = time.time() - total_start_time
-                total_minutes, total_seconds = divmod(total_elapsed_time, 60)
-                total_hours, total_minutes = divmod(total_minutes, 60)
-                
-                if total_hours > 0:
-                    total_formatted_time = f"{int(total_hours)}:{int(total_minutes):02d}:{int(total_seconds):02d}"
-                else:
-                    total_formatted_time = f"{int(total_minutes)}:{int(total_seconds):02d}"
-                
-                self.log(f"번역 프로세스가 완료되었습니다. 총 작업 시간: {total_formatted_time}")
-                self.log(f"{output_path}에 결과가 저장되었습니다.")
             
         except Exception as e:
             self.log(f"치명적 오류 발생: {str(e)}")
+            # 백업 파일 확인 및 복구
+            backup_path = output_path.with_name(f"{output_path.stem}_backup{output_path.suffix}")
+            if os.path.exists(backup_path):
+                import shutil
+                shutil.copy2(backup_path, output_path)
+                self.log(f"오류 발생으로 인해 백업 파일에서 복구했습니다.")
             
         finally:
             self.start_button.config(state="normal")
             self.stop_button.config(state="disabled")
+
+
+    def finalize_translation_result(output_path):
+        """청크 경계 표시를 제거하고 최종 결과 파일 정리"""
+        try:
+            if not os.path.exists(output_path):
+                return False
+                
+            # 파일 내용 읽기
+            with open(output_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 청크 경계 표시 제거
+            cleaned_content = re.sub(r'<!-- CHUNK_START:\d+ -->\n', '', content)
+            cleaned_content = re.sub(r'\n<!-- CHUNK_END:\d+ -->\n', '\n', cleaned_content)
+            
+            # 정리된 내용 저장
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(cleaned_content)
+                
+            return True
+        except Exception as e:
+            print(f"최종 결과 파일 정리 중 오류 발생: {str(e)}")
+            return False
+
 
                     
     def log(self, message):
@@ -498,11 +626,12 @@ class BatchTranslatorGUI:
         self.log_text.see(tk.END)
         self.log_text.configure(state="disabled")
 
-    def update_progress(self, current, total):
-        progress = int((current / total) * 100)
+    # 진행률 업데이트 함수 수정
+    def update_progress(self, current, total, already_done=0):
+        progress = int(((current + already_done) / total) * 100)
         self.progress_bar["value"] = progress
         self.progress_label.config(text=f"{progress}%")
-        self.root.update_idletasks()
+        
 
     def remove_html_tags(self, text):
             """HTML 태그를 정규 표현식을 사용하여 제거합니다."""
@@ -528,7 +657,7 @@ class BatchTranslatorGUI:
         """마크다운 코드 블록 마커(```korean 등)를 정규표현식으로 제거합니다."""
         try:
             # "```
-            cleaned_text = re.sub(r'```korean\s*\n', '', text)
+            cleaned_text = re.sub(r'```.*\n', '', text)
             # 코드 블록 닫는 부분(```
             cleaned_text = re.sub(r'\n\s*```', '', cleaned_text)
             return cleaned_text
@@ -539,9 +668,26 @@ class BatchTranslatorGUI:
     def post_process_result(self, output_path):
         """번역 결과 파일에서 불필요한 요소를 제거합니다."""
         try:
-            if os.path.exists(output_path):
-                self.log("결과 파일에서 불필요한 요소 제거 중...")
+            # 출력 파일이 존재하는지 확인
+            if not os.path.exists(output_path):
+                self.log("결과 파일이 존재하지 않습니다.")
+                return
                 
+            # 입력 파일 경로에서 메타데이터 파일 경로 얻기
+            input_path = Path(self.input_file.get())
+            metadata_path = get_metadata_path(input_path)
+            
+            # 메타데이터 파일이 존재하는지 확인
+            if not os.path.exists(metadata_path):
+                self.log("메타데이터 파일이 존재하지 않습니다.")
+                return
+                
+            # 메타데이터 로드
+            metadata = load_translation_metadata(input_path)
+            
+            # 메타데이터가 올바른지, 모든 청크가 번역되었는지 확인
+            if metadata and len(metadata["translated_chunks"]) == metadata["total_chunks"]:
+                self.log("결과 파일에서 불필요한 요소 제거 중...")
                 # 파일 내용 읽기
                 with open(output_path, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -551,15 +697,25 @@ class BatchTranslatorGUI:
                 
                 # 번역 결과 헤더 제거
                 cleaned_content = self.remove_translation_header(cleaned_content)
-
-                 # 마크다운 코드 블록 마커 제거
+                
+                # 마크다운 코드 블록 마커 제거
                 cleaned_content = self.remove_markdown_code_block_markers(cleaned_content)
-
+                
                 # 정리된 내용 저장
                 with open(output_path, 'w', encoding='utf-8') as f:
                     f.write(cleaned_content)
-                
+                    
                 self.log("불필요한 요소 제거 완료!")
+                
+                # 추가된 부분: 메타데이터 파일 삭제
+                try:
+                    if os.path.exists(metadata_path):
+                        os.remove(metadata_path)
+                        self.log(f"메타데이터 파일 삭제 완료: {metadata_path}")
+                except Exception as del_error:
+                    self.log(f"메타데이터 파일 삭제 중 오류 발생: {str(del_error)}")
+            else:
+                self.log("모든 청크가 번역되지 않았습니다. 후처리를 건너뜁니다.")
         except Exception as e:
             self.log(f"후처리 중 오류 발생: {str(e)}")
 
@@ -596,6 +752,10 @@ class BatchTranslatorGUI:
         try:
             from batch_translator_pronouns import extract_pronouns_from_file
             
+            # 동시 번역 개수 설정이 config에 있는지 확인
+            if "max_workers" not in config:
+                config["max_workers"] = self.max_workers.get()
+
             self.log("고유명사 추출 시작...")
             self.pronouns_csv_path = extract_pronouns_from_file(
                 self.input_file.get(), 
