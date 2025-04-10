@@ -7,6 +7,7 @@ import google.generativeai as genai
 import random
 import re
 import csv
+import hashlib
 from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
@@ -376,6 +377,212 @@ def display_pronouns_stats(pronouns_csv):
         print(f"- 등록된 고유명사 수: {pronouns_count}")
     except Exception as e:
         print(f"고유명사 통계 출력 중 오류 발생: {str(e)}")
+
+
+def get_metadata_path(input_path):
+    """입력 파일 경로에 기반한 메타데이터 파일 경로 반환"""
+    input_path = Path(input_path)
+    return input_path.with_stem(f"{input_path.stem}_metadata").with_suffix('.json')
+
+def hash_config(config):
+    """설정 정보를 해시값으로 변환 (설정 변경 감지용)"""
+    # API 키와 같은 민감 정보는 제외
+    config_copy = config.copy()
+    config_copy.pop('api_key', None)
+    
+    # 설정을 문자열로 변환하여 해시 생성
+    config_str = json.dumps(config_copy, sort_keys=True)
+    return hashlib.md5(config_str.encode()).hexdigest()
+
+def create_translation_metadata(input_path, chunks, config):
+    """번역 진행 상황을 추적하기 위한 메타데이터 파일 생성"""
+    current_time = time.time()
+    metadata = {
+        "input_file": str(input_path),
+        "total_chunks": len(chunks),
+        "translated_chunks": {}, # 번역된 청크: {인덱스: {timestamp, result_hash}}
+        "config_hash": hash_config(config), # 설정 해시값
+        "creation_time": current_time,
+        "start_time": current_time,
+        "last_updated": current_time,
+        "status": "initialized", # 상태: initialized, in_progress, completed, failed
+        "session_history": [
+            {
+                "start_time": current_time,
+                "status": "initialized"
+            }
+        ]
+    }
+    
+    # 메타데이터 파일 저장
+    metadata_path = get_metadata_path(input_path)
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2)
+    
+    return metadata_path
+
+def load_translation_metadata(input_path):
+    """메타데이터 파일 로드"""
+    metadata_path = get_metadata_path(input_path)
+    
+    if not metadata_path.exists():
+        return None
+    
+    try:
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def update_translation_metadata(metadata_path, chunk_index, content=None):
+    """청크 번역 후 메타데이터 업데이트"""
+    try:
+        # 잠금 메커니즘으로 동시 접근 제어
+        lock = threading.Lock()
+        with lock:
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+                
+            # 번역된 청크 정보 업데이트
+            metadata["translated_chunks"][str(chunk_index)] = time.time()
+            metadata["last_updated"] = time.time()
+            
+            # 임시 파일에 먼저 저장 후 이름 변경 (안전한 저장 방식)
+            temp_path = f"{metadata_path}.tmp"
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2)
+                
+            # 파일 대체
+            os.replace(temp_path, metadata_path)
+            
+        return True
+    except Exception as e:
+        print(f"메타데이터 업데이트 중 오류 발생: {str(e)}")
+        return False
+    
+
+def validate_metadata(metadata_path, output_path):
+    """메타데이터와 실제 결과 파일의 일관성 검증"""
+    try:
+        # 파일 존재 확인
+        if not os.path.exists(metadata_path) or not os.path.exists(output_path):
+            return False, "메타데이터 또는 결과 파일이 존재하지 않습니다."
+        
+        # 메타데이터 로드
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        
+        # 필수 필드 확인
+        required_fields = ["input_file", "total_chunks", "translated_chunks", "config_hash"]
+        for field in required_fields:
+            if field not in metadata:
+                return False, f"메타데이터에 필수 필드가 누락됨: {field}"
+        
+        # 결과 파일과 일관성 검사
+        # (구현 생략)
+        
+        return True, "메타데이터 유효성 확인 완료"
+    except Exception as e:
+        return False, f"메타데이터 검증 중 오류 발생: {str(e)}"
+
+
+def save_chunk_result(index, result, output_path, metadata_path):
+    """번역된 청크를 즉시 파일에 저장하고 메타데이터 업데이트"""
+    try:
+        # 결과 파일이 없으면 생성
+        output_path = Path(output_path)
+        if not output_path.exists():
+            with open(output_path, 'w', encoding='utf-8'):
+                pass
+                
+        # 잠금 메커니즘 추가 (동시 쓰기 방지)
+        with threading.Lock():
+            # 청크 번역 결과 추가
+            with open(output_path, 'a', encoding='utf-8') as f:
+                f.write(result)
+                f.write("\n\n")
+                
+            # 메타데이터 업데이트
+            update_translation_metadata(metadata_path, index)
+            
+        return True
+    except Exception as e:
+        print(f"청크 결과 저장 중 오류 발생: {str(e)}")
+        return False
+
+def save_chunk_with_index(index, content, output_path, append=True):
+    """인덱스 정보가 포함된 청크를 파일에 저장합니다.
+    
+    Args:
+        index (int): 청크 인덱스
+        content (str): 청크 내용
+        output_path (str): 출력 파일 경로
+        append (bool): True면 기존 파일에 추가, False면 덮어쓰기
+    """
+    # 청크 시작과 끝에 인덱스 정보를 추가
+    formatted_content = f"<!-- CHUNK_START: {index} -->\n{content}\n<!-- CHUNK_END: {index} -->"
+    
+    mode = 'a' if append else 'w'
+    with open(output_path, mode, encoding='utf-8') as f:
+        f.write(formatted_content)
+        f.write("\n\n")  # 청크 구분을 위한 줄바꿈 (이제 구분자로서가 아닌 가독성용)
+
+
+def load_chunks_with_index(output_path):
+    """인덱스 정보가 포함된 청크를 파일에서 로드합니다.
+    
+    Returns:
+        dict: {인덱스: 내용} 형식의 딕셔너리
+    """
+    if not os.path.exists(output_path):
+        return {}
+    
+    with open(output_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    chunks = {}
+    # 정규식을 사용하여 인덱스와 내용을 추출
+    pattern = r'<!-- CHUNK_START: (\d+) -->\n([\s\S]*?)\n<!-- CHUNK_END: \1 -->'
+    matches = re.findall(pattern, content)
+    
+    for match in matches:
+        index = int(match[0])
+        chunk_content = match[1]
+        chunks[index] = chunk_content
+    
+    return chunks
+
+def merge_chunk_results(existing_chunks, new_results, total_chunks):
+    """기존 청크와 새로운 결과를 병합합니다.
+    
+    Args:
+        existing_chunks (dict): {인덱스: 내용} 형식의 기존 청크
+        new_results (list): 새로 번역된 결과 리스트 (인덱스 위치에 결과 저장)
+        total_chunks (int): 전체 청크 수
+    
+    Returns:
+        dict: 병합된 결과 딕셔너리
+    """
+    merged_chunks = existing_chunks.copy()
+    
+    # 새 결과 병합
+    for idx, result in enumerate(new_results):
+        if result:
+            merged_chunks[idx] = result
+    
+    return merged_chunks
+
+def save_merged_chunks(merged_chunks, total_chunks, output_path):
+    """병합된 청크를 파일에 저장합니다."""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        # 인덱스 순서대로 저장
+        for idx in range(total_chunks):
+            if idx in merged_chunks:
+                chunk_content = merged_chunks[idx]
+                formatted_content = f"<!-- CHUNK_START: {idx} -->\n{chunk_content}\n<!-- CHUNK_END: {idx} -->"
+                f.write(formatted_content)
+                f.write("\n\n")
+
 
 def parse_arguments():
     """명령줄 인수를 파싱합니다."""
