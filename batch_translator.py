@@ -59,7 +59,7 @@ def create_chunks(file_path, max_chunk_size=6000):
         print(f"파일 처리 중 오류 발생: {str(e)}")
         exit(1)
 
-def translate_with_gemini(text, config, retry_count=0, max_retries=10):
+def translate_with_gemini(text, config, retry_count=0, max_retries=5):
     """Gemini API를 사용하여 텍스트를 번역합니다."""
     try:
         api_key = config["api_key"]
