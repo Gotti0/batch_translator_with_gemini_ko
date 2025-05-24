@@ -682,8 +682,8 @@ class BatchTranslatorGUI:
                 short_name = m.get("short_name") # gemini_client.py에서 추가된 short_name 사용
                 full_name = m.get("name")
                 
-                # UI에 표시할 이름 선택 (우선순위: display_name > short_name > full_name)
-                chosen_name_for_display = display_name if display_name else (short_name if short_name else full_name)
+                # 우선순위 변경: short_name > display_name > full_name
+                chosen_name_for_display = short_name if short_name else (display_name if display_name else full_name)
                 
                 if chosen_name_for_display and isinstance(chosen_name_for_display, str) and chosen_name_for_display.strip():
                     model_display_names_for_ui.append(chosen_name_for_display.strip())
