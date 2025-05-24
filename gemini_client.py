@@ -5,7 +5,6 @@ import time
 import random
 import re
 import json
-import requests
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
 
@@ -223,27 +222,11 @@ class GeminiClient:
                 self.client = genai.Client(**client_options)
                 logger.info(f"Vertex AI용 Client 초기화 시도: {client_options}")
             elif self.auth_mode == "API_KEY":
-                if not self.current_api_key:
-                    raise GeminiInvalidRequestException("API 키가 설정되지 않았습니다.")
-                
-                # API 키를 환경변수에도 설정 (Client가 자동 인식하도록)
-                if not os.environ.get("GOOGLE_API_KEY"):
-                    os.environ["GOOGLE_API_KEY"] = self.current_api_key
-                    logger.info(f"GOOGLE_API_KEY 환경변수 설정: {self.current_api_key[:5]}...")
-                
-                try:
-                    # 새로운 SDK에서는 api_key 파라미터로 직접 전달
-                    self.client = genai.Client(api_key=self.current_api_key)
-                    logger.info(f"Gemini Developer API용 Client 초기화 완료 (API 키: {self.current_api_key[:5]}...)")
-                except Exception as e:
-                    logger.error(f"API 키 직접 전달 방식 실패: {e}")
-                    try:
-                        # 환경변수 방식으로 재시도
-                        self.client = genai.Client()
-                        logger.info(f"Gemini Developer API용 Client 초기화 완료 (환경변수 방식)")
-                    except Exception as e2:
-                        logger.error(f"환경변수 방식도 실패: {e2}")
-                        raise GeminiInvalidRequestException(f"Client 초기화 실패: {e2}") from e2
+                # API 키 모드에서는 Client()가 API 키를 직접 받지 않을 가능성이 높음.
+                # GOOGLE_API_KEY 환경 변수를 사용하거나,
+                # client.models.generate_content(model='models/model-name?key=YOUR_API_KEY') 형태로 전달.
+                self.client = genai.Client(api_key=self.current_api_key)
+                logger.info(f"Gemini Developer API용 Client 초기화 (API 키는 환경 변수 또는 호출 시 전달 가정).")
             else: 
                 raise GeminiInvalidRequestException("클라이언트 초기화 로직 오류: 인증 모드가 설정되었으나 필요한 정보가 부족합니다.")
         except AttributeError as e_attr: # 'Client' 클래스 또는 인자 관련 오류
@@ -260,29 +243,18 @@ class GeminiClient:
             raise GeminiInvalidRequestException(f"Gemini API 클라이언트 생성 실패: {e}") from e
 
     def _normalize_model_name(self, model_name: str, for_api_key_mode: bool = False) -> str:
-        # API 키 모드에서 client.models.generate_content 사용 시,
-        # 모델 이름에 API 키를 포함해야 할 수 있음: "models/gemini-pro?key=YOUR_API_KEY"
-        # 또는 "gemini-pro"만 전달하고 API 키는 Client가 환경 변수 등에서 가져오도록 함.
-        # Vertex AI는 보통 "gemini-1.5-pro-001" 또는 전체 경로.
+        """
+        모델명을 정규화합니다.
+        새 SDK에서는 API 키를 모델명에 포함시키지 않습니다.
+        """
+        # API 키 모드에서는 간단한 모델명만 사용
+        if for_api_key_mode:
+            # "models/" 접두사가 있으면 제거
+            if model_name.startswith("models/"):
+                return model_name.split("/")[-1]
+            return model_name
         
-        if for_api_key_mode and self.current_api_key:
-            # `models/` 접두사가 없는 경우 추가하고, API 키를 쿼리 파라미터로 추가
-            # 예: "gemini-1.5-flash-latest" -> "models/gemini-1.5-flash-latest?key=YOUR_API_KEY"
-            # 이미 "models/"가 있으면 키만 추가
-            if not model_name.startswith("models/"):
-                model_name_with_prefix = f"models/{model_name}"
-            else:
-                model_name_with_prefix = model_name
-            
-            # 이미 키가 포함되어 있는지 확인 (중복 추가 방지)
-            if "?key=" not in model_name_with_prefix:
-                logger.debug(f"API 키 모드: 모델 이름 '{model_name_with_prefix}'에 API 키 추가.")
-                return f"{model_name_with_prefix}?key={self.current_api_key}"
-            else: # 이미 키가 포함된 경우 (예: 설정 파일에서 직접 입력)
-                logger.debug(f"API 키 모드: 모델 이름 '{model_name_with_prefix}'에 이미 API 키가 포함되어 있습니다.")
-                return model_name_with_prefix # 이미 키가 포함된 경우 그대로 반환
-        
-        # Vertex AI 또는 API 키가 없는 경우 (환경 변수 사용 기대)
+        # Vertex AI에서는 전체 경로 또는 간단한 모델명 모두 허용
         return model_name
 
 
@@ -510,171 +482,68 @@ class GeminiClient:
             return False
 
     def list_models(self) -> List[Dict[str, Any]]:
-        """모델 목록 조회 - API 키 모드는 REST API 직접 호출, Vertex AI는 기존 로직 사용"""
-        
-        if self.auth_mode == "API_KEY":
-            return self._list_models_via_rest_api()
-        elif self.auth_mode == "VERTEX_AI":
-            return self._list_models_via_client()
-        else:
-            raise GeminiApiException("인증 모드가 설정되지 않았습니다.")
-    
-    def _list_models_via_rest_api(self) -> List[Dict[str, Any]]:
-        """API 키 모드: REST API 직접 호출"""
-        if not self.api_keys_list:
-            raise GeminiApiException("API 키가 설정되지 않았습니다.")
-        
-        total_keys = len(self.api_keys_list)
-        attempted_keys = 0
-        
-        while attempted_keys < total_keys:
-            current_api_key = self.api_keys_list[self.current_api_key_index]
-            
+        if not self.client: 
+             logger.error("list_models: self.client가 초기화되지 않았습니다.")
+             raise GeminiApiException("모델 목록 조회 실패: 클라이언트가 유효하지 않습니다.")
+
+        # API 키 모드에서 list_models가 API 키를 어떻게 사용하는지 확인 필요.
+        # genai.Client()가 환경 변수를 사용한다면, _rotate_api_key_and_reconfigure에서
+        # 환경 변수를 설정하거나, 여기서 list_models 호출 시점에 임시로 설정할 수 있음.
+        # 또는, list_models가 API 키를 인자로 받는다면 전달해야 함.
+        # 현재는 Client가 환경 변수를 통해 API 키를 인지한다고 가정.
+
+        total_keys_for_list = len(self.api_keys_list) if self.auth_mode == "API_KEY" and self.api_keys_list else 1
+        attempted_keys_for_list_models = 0
+
+        while attempted_keys_for_list_models < total_keys_for_list:
             try:
-                logger.info(f"REST API로 모델 목록 조회 중 (API 키: {current_api_key[:5]}...)")
-                
-                # REST API 엔드포인트 호출
-                url = f"https://generativelanguage.googleapis.com/v1beta/models?key={current_api_key}"
-                headers = {
-                    'Content-Type': 'application/json',
-                }
-                
-                response = requests.get(url, headers=headers, timeout=30)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    models_info = []
+                logger.info(f"사용 가능한 모델 목록 조회 중 (현재 API 키 인덱스: {self.current_api_key_index if self.auth_mode == 'API_KEY' else 'N/A'})...")
+                models_info = []
+                if not self.client: 
+                    raise GeminiApiException("list_models: 루프 내에서 Client가 유효하지 않음.")
+
+                for m in self.client.models.list(): 
+                    full_model_name = m.name
+                    short_model_name = full_model_name.split('/')[-1] if '/' in full_model_name else full_model_name
                     
-                    if 'models' in data:
-                        for model_data in data['models']:
-                            # 실험용 모델 필터링 개선
-                            standard_name = self._extract_standard_model_name_from_api(model_data)
-                            
-                            models_info.append({
-                                "name": model_data.get("name", ""),
-                                "short_name": standard_name,
-                                "base_model_id": model_data.get("baseModelId", ""),
-                                "version": model_data.get("version", ""),
-                                "display_name": model_data.get("displayName", ""),
-                                "description": model_data.get("description", ""),
-                                "input_token_limit": model_data.get("inputTokenLimit", 0),
-                                "output_token_limit": model_data.get("outputTokenLimit", 0),
-                                "supported_actions": model_data.get("supportedGenerationMethods", []),
-                            })
+                    models_info.append({
+                        "name": full_model_name,
+                        "short_name": short_model_name, 
+                        "base_model_id": getattr(m, "base_model_id", ""), 
+                        "version": getattr(m, "version", ""), 
+                        "display_name": m.display_name,
+                        "description": m.description,
+                        "input_token_limit": getattr(m, "input_token_limit", 0), 
+                        "output_token_limit": getattr(m, "output_token_limit", 0), 
+                    })
+                logger.info(f"{len(models_info)}개의 모델을 찾았습니다.")
+                return models_info
+
+            except (GoogleAuthError, Exception) as e: 
+                error_message = str(e)
+                logger.warning(f"모델 목록 조회 중 API/인증 오류 발생: {type(e).__name__} - {error_message}")
+                if isinstance(e, RefreshError) and 'invalid_scope' in error_message.lower():
+                    logger.error(f"OAuth 범위 문제로 모델 목록 조회 실패: {error_message}")
+                    raise GeminiInvalidRequestException(f"OAuth 범위 문제로 모델 목록 조회 실패: {error_message}") from e
+
+                if self.auth_mode == "API_KEY" and self.api_keys_list and len(self.api_keys_list) > 1:
+                    attempted_keys_for_list_models += 1 
+                    if attempted_keys_for_list_models >= total_keys_for_list: 
+                        logger.error("모든 API 키를 사용하여 모델 목록 조회에 실패했습니다.")
+                        raise GeminiAllApiKeysExhaustedException("모든 API 키로 모델 목록 조회에 실패했습니다.") from e
                     
-                    logger.info(f"REST API로 {len(models_info)}개의 모델을 조회했습니다.")
-                    return models_info
-                    
-                elif response.status_code == 401:
-                    logger.warning(f"API 키 인증 실패 (401): {current_api_key[:5]}...")
-                    attempted_keys += 1
-                    if attempted_keys < total_keys:
-                        self._rotate_api_key_and_reconfigure()
-                        continue
-                    else:
-                        raise GeminiInvalidRequestException("모든 API 키에서 인증 실패")
-                        
-                elif response.status_code == 429:
-                    logger.warning(f"API 사용량 제한 (429): {current_api_key[:5]}...")
-                    attempted_keys += 1
-                    if attempted_keys < total_keys:
-                        self._rotate_api_key_and_reconfigure()
-                        continue
-                    else:
-                        raise GeminiRateLimitException("모든 API 키에서 사용량 제한")
-                        
-                else:
-                    error_text = response.text
-                    logger.error(f"REST API 호출 실패 ({response.status_code}): {error_text}")
-                    attempted_keys += 1
-                    if attempted_keys < total_keys:
-                        self._rotate_api_key_and_reconfigure()
-                        continue
-                    else:
-                        raise GeminiApiException(f"REST API 호출 실패: {response.status_code} - {error_text}")
-                        
-            except requests.exceptions.RequestException as e:
-                logger.error(f"REST API 요청 중 네트워크 오류: {e}")
-                attempted_keys += 1
-                if attempted_keys < total_keys:
-                    self._rotate_api_key_and_reconfigure()
-                    continue
-                else:
-                    raise GeminiApiException(f"네트워크 오류로 모델 목록 조회 실패: {e}")
-                    
-            except Exception as e:
-                logger.error(f"REST API 호출 중 예상치 못한 오류: {e}", exc_info=True)
-                attempted_keys += 1
-                if attempted_keys < total_keys:
-                    self._rotate_api_key_and_reconfigure()
-                    continue
-                else:
-                    raise GeminiApiException(f"모델 목록 조회 중 알 수 없는 오류: {e}")
+                    logger.info("다음 API 키로 회전하여 모델 목록 조회 재시도...")
+                    if not self._rotate_api_key_and_reconfigure(): 
+                        logger.error("API 키 회전 또는 클라이언트 재설정 실패 (list_models).")
+                        raise GeminiAllApiKeysExhaustedException("API 키 회전 중 문제 발생 또는 모든 키 시도됨 (list_models).") from e
+                else: 
+                    logger.error(f"모델 목록 조회 실패 (키 회전 불가 또는 Vertex 모드): {error_message}")
+                    raise GeminiApiException(f"모델 목록 조회 실패: {error_message}") from e
+            except Exception as e: 
+                logger.error(f"모델 목록 조회 중 예상치 못한 오류 발생: {type(e).__name__} - {e}", exc_info=True)
+                raise GeminiApiException(f"모델 목록 조회 중 알 수 없는 오류: {e}") from e
         
-        raise GeminiAllApiKeysExhaustedException("모든 API 키로 REST API 호출에 실패했습니다.")
-
-    def _list_models_via_client(self) -> List[Dict[str, Any]]:
-        """Vertex AI 모드: 기존 클라이언트 로직 사용"""
-        if not self.client:
-            raise GeminiApiException("Vertex AI 클라이언트가 초기화되지 않았습니다.")
-        
-        try:
-            logger.info(f"Vertex AI 클라이언트로 모델 목록 조회 중 (프로젝트: {self.vertex_project})...")
-            models_info = []
-            
-            for m in self.client.models.list():
-                standard_model_name = self._get_standard_model_name(m)
-                models_info.append({
-                    "name": m.name,
-                    "short_name": standard_model_name,
-                    "base_model_id": getattr(m, "base_model_id", ""),
-                    "version": getattr(m, "version", ""),
-                    "display_name": m.display_name,
-                    "description": m.description,
-                    "input_token_limit": getattr(m, "input_token_limit", 0),
-                    "output_token_limit": getattr(m, "output_token_limit", 0),
-                    "supported_actions": getattr(m, "supported_actions", []),
-                })
-            
-            logger.info(f"Vertex AI에서 {len(models_info)}개의 모델을 조회했습니다.")
-            return models_info
-            
-        except Exception as e:
-            logger.error(f"Vertex AI 모델 목록 조회 중 오류: {e}", exc_info=True)
-            raise GeminiApiException(f"Vertex AI 모델 목록 조회 실패: {e}")
-
-    def _extract_standard_model_name_from_api(self, model_data: Dict[str, Any]) -> str:
-        """REST API 응답에서 표준 모델명 추출 (실험용 모델 형식 개선)"""
-        
-        # 1순위: baseModelId 사용
-        if model_data.get("baseModelId"):
-            return model_data["baseModelId"]
-        
-        # 2순위: name에서 추출
-        model_name = model_data.get("name", "")
-        if model_name and "/" in model_name:
-            extracted_name = model_name.split("/")[-1]
-            
-            return extracted_name
-        
-        # 3순위: displayName 정규화
-        display_name = model_data.get("displayName", "")
-        if display_name:
-            normalized = display_name.lower().replace(" ", "-")
-            
-            # 실험용 모델 패턴 검사
-            if self._is_experimental_model(normalized):
-                return self._normalize_experimental_model_name(normalized)
-            
-            return normalized
-        
-        return "unknown-model"
-
-    
-
-
-
-    
+        raise GeminiApiException("모델 목록 조회에 실패했습니다 (알 수 없는 내부 오류).")
 
 
 if __name__ == '__main__':
