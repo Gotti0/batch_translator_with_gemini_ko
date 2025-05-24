@@ -62,6 +62,8 @@ except ImportError as e:
     def delete_file(p): pass
 
 
+
+
     class AppService: # Mock AppService
         def __init__(self, config_file_path: Optional[Union[str, Path]] = None):
             self.config_file_path = config_file_path
@@ -212,11 +214,78 @@ class TqdmToTkinter(io.StringIO):
     def flush(self):
         pass
 
+class ScrollableFrame:
+    """스크롤 가능한 프레임을 생성하는 클래스"""
+    
+    def __init__(self, parent, height=None):
+        # 메인 프레임 생성
+        self.main_frame = ttk.Frame(parent)
+        
+        # Canvas와 Scrollbar 생성
+        self.canvas = tk.Canvas(self.main_frame, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.main_frame, orient="vertical", command=self.canvas.yview)
+        
+        # 스크롤 가능한 내용을 담을 프레임
+        self.scrollable_frame = ttk.Frame(self.canvas)
+        
+        # 스크롤바 설정
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        # 프레임이 변경될 때마다 스크롤 영역 업데이트
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        # Canvas에 프레임 추가
+        self.canvas_frame = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Canvas 크기 변경 시 내부 프레임 크기 조정
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        
+        # 마우스 휠 스크롤 바인딩
+        self._bind_mouse_wheel()
+        
+        # 위젯 배치
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        
+        # 높이 설정 (선택사항)
+        if height:
+            self.canvas.configure(height=height)
+    
+    def _on_canvas_configure(self, event):
+        """Canvas 크기 변경 시 내부 프레임 너비 조정"""
+        self.canvas.itemconfig(self.canvas_frame, width=event.width)
+    
+    def _bind_mouse_wheel(self):
+        """마우스 휠 스크롤 이벤트 바인딩"""
+        def _on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _bind_to_mousewheel(event):
+            self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        def _unbind_from_mousewheel(event):
+            self.canvas.unbind_all("<MouseWheel>")
+        
+        self.main_frame.bind('<Enter>', _bind_to_mousewheel)
+        self.main_frame.bind('<Leave>', _unbind_from_mousewheel)
+    
+    def pack(self, **kwargs):
+        """메인 프레임 pack"""
+        self.main_frame.pack(**kwargs)
+    
+    def grid(self, **kwargs):
+        """메인 프레임 grid"""
+        self.main_frame.grid(**kwargs)
+
+
 class BatchTranslatorGUI:
     def __init__(self, master: tk.Tk):
         self.master = master
         master.title("BTG - 배치 번역기 (4-Tier Refactored)")
-        master.geometry("900x1050") 
+        master.geometry("950x800") 
 
         self.app_service: Optional[AppService] = None
         try:
@@ -246,17 +315,21 @@ class BatchTranslatorGUI:
         style.map("TButton", background=[('active', '#ccc')])
         style.configure("TNotebook.Tab", padding=[10, 5], font=('Helvetica', 10))
 
+        # 노트북 생성
         self.notebook = ttk.Notebook(master)
-
-        self.settings_tab = ttk.Frame(self.notebook, padding="10")
-        self.pronouns_tab = ttk.Frame(self.notebook, padding="10")
-        self.log_tab = ttk.Frame(self.notebook, padding="10")
-
-        self.notebook.add(self.settings_tab, text='설정 및 번역')
-        self.notebook.add(self.pronouns_tab, text='고유명사 관리')
+        
+        # 스크롤 가능한 프레임들로 탭 생성
+        self.settings_scroll = ScrollableFrame(self.notebook)
+        self.pronouns_scroll = ScrollableFrame(self.notebook)
+        self.log_tab = ttk.Frame(self.notebook, padding="10")  # 로그 탭은 기존 유지
+        
+        # 탭 추가
+        self.notebook.add(self.settings_scroll.main_frame, text='설정 및 번역')
+        self.notebook.add(self.pronouns_scroll.main_frame, text='고유명사 관리')
         self.notebook.add(self.log_tab, text='실행 로그')
         self.notebook.pack(expand=True, fill='both')
-
+        
+        # 위젯 생성 (스크롤 가능한 프레임 사용)
         self._create_settings_widgets()
         self._create_pronouns_widgets()
         self._create_log_widgets()
@@ -265,6 +338,8 @@ class BatchTranslatorGUI:
             self._load_initial_config_to_ui() 
         else:
             self._log_message("AppService 초기화 실패로 UI에 설정을 로드할 수 없습니다.", "ERROR")
+
+        
 
     def _load_initial_config_to_ui(self):
         if not self.app_service:
@@ -368,16 +443,24 @@ class BatchTranslatorGUI:
 
 
     def _create_settings_widgets(self):
-        api_frame = ttk.LabelFrame(self.settings_tab, text="API 및 인증 설정", padding="10")
-        api_frame.pack(fill="x", padx=5, pady=5)
+        # 스크롤 가능한 프레임의 내부 프레임 사용
+        settings_frame = self.settings_scroll.scrollable_frame   
 
+        # API 및 인증 설정
+        api_frame = ttk.LabelFrame(settings_frame, text="API 및 인증 설정", padding="10")
+        api_frame.pack(fill="x", padx=5, pady=5)
+        
         self.api_keys_label = ttk.Label(api_frame, text="API 키 목록 (Gemini Developer, 한 줄에 하나씩):")
         self.api_keys_label.grid(row=0, column=0, padx=5, pady=5, sticky="nw")
+        
         self.api_keys_text = scrolledtext.ScrolledText(api_frame, width=58, height=3, wrap=tk.WORD)
         self.api_keys_text.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
-
+        
+        # Vertex AI 설정
         self.use_vertex_ai_var = tk.BooleanVar()
-        self.use_vertex_ai_check = ttk.Checkbutton(api_frame, text="Vertex AI 사용", variable=self.use_vertex_ai_var, command=self._toggle_vertex_fields)
+        self.use_vertex_ai_check = ttk.Checkbutton(api_frame, text="Vertex AI 사용", 
+                                                   variable=self.use_vertex_ai_var, 
+                                                   command=self._toggle_vertex_fields)
         self.use_vertex_ai_check.grid(row=1, column=0, columnspan=3, padx=5, pady=2, sticky="w")
 
         self.service_account_file_label = ttk.Label(api_frame, text="서비스 계정 JSON 파일 (Vertex AI):")
@@ -403,82 +486,72 @@ class BatchTranslatorGUI:
         self.refresh_models_button = ttk.Button(api_frame, text="새로고침", command=self._update_model_list_ui)
         self.refresh_models_button.grid(row=5, column=2, padx=5, pady=5)
 
-        gen_param_frame = ttk.LabelFrame(self.settings_tab, text="생성 파라미터", padding="10")
+        # 생성 파라미터
+        gen_param_frame = ttk.LabelFrame(settings_frame, text="생성 파라미터", padding="10")
         gen_param_frame.pack(fill="x", padx=5, pady=5)
-
+        
+        # Temperature 설정
         ttk.Label(gen_param_frame, text="Temperature:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.temperature_scale = ttk.Scale(gen_param_frame, from_=0.0, to=2.0, orient="horizontal", length=200,
-                                           command=lambda v: self.temperature_label.config(text=f"{float(v):.2f}")) 
+                                         command=lambda v: self.temperature_label.config(text=f"{float(v):.2f}"))
         self.temperature_scale.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         self.temperature_label = ttk.Label(gen_param_frame, text="0.00")
         self.temperature_label.grid(row=0, column=2, padx=5, pady=5)
-
+        
+        # Top P 설정
         ttk.Label(gen_param_frame, text="Top P:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.top_p_scale = ttk.Scale(gen_param_frame, from_=0.0, to=1.0, orient="horizontal", length=200,
-                                     command=lambda v: self.top_p_label.config(text=f"{float(v):.2f}")) 
+                                   command=lambda v: self.top_p_label.config(text=f"{float(v):.2f}"))
         self.top_p_scale.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         self.top_p_label = ttk.Label(gen_param_frame, text="0.00")
         self.top_p_label.grid(row=1, column=2, padx=5, pady=5)
-
-        file_chunk_frame = ttk.LabelFrame(self.settings_tab, text="파일 및 처리 설정", padding="10")
+        
+        # 파일 및 처리 설정
+        file_chunk_frame = ttk.LabelFrame(settings_frame, text="파일 및 처리 설정", padding="10")
         file_chunk_frame.pack(fill="x", padx=5, pady=5)
-
+        
+        # 입력 파일
         ttk.Label(file_chunk_frame, text="입력 파일:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.input_file_entry = ttk.Entry(file_chunk_frame, width=50)
         self.input_file_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         self.browse_input_button = ttk.Button(file_chunk_frame, text="찾아보기", command=self._browse_input_file)
         self.browse_input_button.grid(row=0, column=2, padx=5, pady=5)
-
+        
+        # 출력 파일
         ttk.Label(file_chunk_frame, text="출력 파일:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.output_file_entry = ttk.Entry(file_chunk_frame, width=50)
         self.output_file_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         self.browse_output_button = ttk.Button(file_chunk_frame, text="찾아보기", command=self._browse_output_file)
         self.browse_output_button.grid(row=1, column=2, padx=5, pady=5)
-
-        chunk_worker_frame = ttk.Frame(file_chunk_frame) 
+        
+        # 청크 크기 및 작업자 수
+        chunk_worker_frame = ttk.Frame(file_chunk_frame)
         chunk_worker_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
-
+        
         ttk.Label(chunk_worker_frame, text="청크 크기:").pack(side="left", padx=(0,5))
         self.chunk_size_entry = ttk.Entry(chunk_worker_frame, width=10)
         self.chunk_size_entry.pack(side="left", padx=(0,15))
-
-        ttk.Label(chunk_worker_frame, text="최대 작업자 수 (Max Workers):").pack(side="left", padx=(10,5))
+        
+        ttk.Label(chunk_worker_frame, text="최대 작업자 수:").pack(side="left", padx=(10,5))
         self.max_workers_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.max_workers_entry.pack(side="left")
-        default_workers = os.cpu_count() or 1
-        self.max_workers_entry.insert(0, str(default_workers)) 
-
-        prompt_frame = ttk.LabelFrame(self.settings_tab, text="번역 프롬프트", padding="10")
+        self.max_workers_entry.insert(0, str(os.cpu_count() or 1))
+        
+        # 번역 프롬프트
+        prompt_frame = ttk.LabelFrame(settings_frame, text="번역 프롬프트", padding="10")
         prompt_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
         self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=8, width=70)
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
-
-        action_frame = ttk.Frame(self.settings_tab, padding="10")
-        action_frame.pack(fill="x", padx=5, pady=5)
-
-        self.save_settings_button = ttk.Button(action_frame, text="설정 저장", command=self._save_settings)
-        self.save_settings_button.pack(side="left", padx=5)
-        self.load_settings_button = ttk.Button(action_frame, text="설정 불러오기", command=self._load_settings_ui)
-        self.load_settings_button.pack(side="left", padx=5)
-
-        self.start_button = ttk.Button(action_frame, text="번역 시작", command=self._start_translation_thread_with_resume_check)
-        self.start_button.pack(side="right", padx=5)
-        self.stop_button = ttk.Button(action_frame, text="중지", command=self._request_stop_translation, state=tk.DISABLED)
-        self.stop_button.pack(side="right", padx=5)
-
-        self.progress_bar = ttk.Progressbar(self.settings_tab, orient="horizontal", length=300, mode="determinate")
-        self.progress_bar.pack(fill="x", padx=15, pady=10)
-        self.progress_label = ttk.Label(self.settings_tab, text="대기 중...")
-        self.progress_label.pack(pady=2)
-
-        # 콘텐츠 안전 재시도 설정 프레임
-        content_safety_frame = ttk.LabelFrame(self.settings_tab, text="콘텐츠 안전 재시도 설정", padding="10")
+        
+        # 콘텐츠 안전 재시도 설정
+        content_safety_frame = ttk.LabelFrame(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
         content_safety_frame.pack(fill="x", padx=5, pady=5)
         
         self.use_content_safety_retry_var = tk.BooleanVar()
         self.use_content_safety_retry_check = ttk.Checkbutton(
-            content_safety_frame, 
-            text="검열 오류시 청크 분할 재시도 사용", 
+            content_safety_frame,
+            text="검열 오류시 청크 분할 재시도 사용",
             variable=self.use_content_safety_retry_var
         )
         self.use_content_safety_retry_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
@@ -492,6 +565,32 @@ class BatchTranslatorGUI:
         self.min_chunk_size_entry = ttk.Entry(content_safety_frame, width=10)
         self.min_chunk_size_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         self.min_chunk_size_entry.insert(0, "100")
+        
+        # 액션 버튼들
+        action_frame = ttk.Frame(settings_frame, padding="10")
+        action_frame.pack(fill="x", padx=5, pady=5)
+        
+        self.save_settings_button = ttk.Button(action_frame, text="설정 저장", command=self._save_settings)
+        self.save_settings_button.pack(side="left", padx=5)
+        
+        self.load_settings_button = ttk.Button(action_frame, text="설정 불러오기", command=self._load_settings_ui)
+        self.load_settings_button.pack(side="left", padx=5)
+        
+        self.start_button = ttk.Button(action_frame, text="번역 시작", command=self._start_translation_thread_with_resume_check)
+        self.start_button.pack(side="right", padx=5)
+        
+        self.stop_button = ttk.Button(action_frame, text="중지", command=self._request_stop_translation, state=tk.DISABLED)
+        self.stop_button.pack(side="right", padx=5)
+        
+        # 진행률 표시
+        progress_frame = ttk.Frame(settings_frame)
+        progress_frame.pack(fill="x", padx=15, pady=10)
+        
+        self.progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=300, mode="determinate")
+        self.progress_bar.pack(fill="x", pady=5)
+        
+        self.progress_label = ttk.Label(progress_frame, text="대기 중...")
+        self.progress_label.pack(pady=2)
 
     def _browse_service_account_file(self):
         filepath = filedialog.askopenfilename(
@@ -522,18 +621,22 @@ class BatchTranslatorGUI:
 
 
     def _create_pronouns_widgets(self):
-        path_frame = ttk.LabelFrame(self.pronouns_tab, text="고유명사 CSV 파일", padding="10")
+        # 스크롤 가능한 프레임의 내부 프레임 사용
+        pronouns_frame = self.pronouns_scroll.scrollable_frame
+        
+        # 고유명사 CSV 파일 설정
+        path_frame = ttk.LabelFrame(pronouns_frame, text="고유명사 CSV 파일", padding="10")
         path_frame.pack(fill="x", padx=5, pady=5)
-
+        
         ttk.Label(path_frame, text="CSV 파일 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.pronoun_csv_path_entry = ttk.Entry(path_frame, width=50)
         self.pronoun_csv_path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         self.browse_pronoun_csv_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_pronoun_csv)
         self.browse_pronoun_csv_button.grid(row=0, column=2, padx=5, pady=5)
-
+        
         extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 고유명사 추출", command=self._extract_pronouns_thread)
         extract_button.grid(row=1, column=0, columnspan=3, padx=5, pady=10)
-
+        
         self.pronoun_progress_label = ttk.Label(path_frame, text="고유명사 추출 대기 중...")
         self.pronoun_progress_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
 
@@ -945,6 +1048,8 @@ class BatchTranslatorGUI:
                 self.master.destroy()
         else:
             self.master.destroy()
+
+    
 
 class TextHandler(logging.Handler):
     def __init__(self, text_widget: scrolledtext.ScrolledText):
