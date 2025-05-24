@@ -31,7 +31,7 @@ class PostProcessingService:
             r'(?:.*?네트워크\s*\(www\..*?\).*?|주소는\s+입니다\.?|를\s*지원합니다[!\.]*)',
             
             # 기타 정리 패턴들 - Non-capturing groups 적용
-            r'(?:```'
+            r'(?:```)',
         ]
 
         # HTML/XML 태그 정리 패턴
