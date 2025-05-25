@@ -455,6 +455,9 @@ class BatchTranslatorGUI:
         
         self.api_keys_text = scrolledtext.ScrolledText(api_frame, width=58, height=3, wrap=tk.WORD)
         self.api_keys_text.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        # API 키 텍스트가 변경될 때마다 이벤트 핸들러 연결
+        self.api_keys_text.bind('<KeyRelease>', self._on_api_key_changed)
+
         
         # Vertex AI 설정
         self.use_vertex_ai_var = tk.BooleanVar()
@@ -663,68 +666,69 @@ class BatchTranslatorGUI:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             self._log_message("모델 목록 업데이트 시도 실패: AppService 없음", "ERROR")
             return
+
+        # 변수 스코프 문제 해결: try 블록 밖에서 정의
+        current_user_input_model = self.model_name_combobox.get()
+        
         try:
             self._log_message("모델 목록 새로고침 중...")
-            current_user_input_model = self.model_name_combobox.get() 
-
+            
+            # 1단계: 클라이언트가 없으면 자동으로 설정 저장 및 초기화
             if not self.app_service.gemini_client:
-                self.model_name_combobox['values'] = []
-                self.model_name_combobox.set(current_user_input_model) 
-                logger.warning("모델 목록 조회 실패: Gemini 클라이언트가 AppService에 초기화되지 않음.")
-                self._log_message("모델 목록 조회 실패: Gemini 클라이언트가 초기화되지 않았습니다. API 키 또는 Vertex AI 설정을 확인하세요.", "WARNING")
+                self._log_message("클라이언트가 초기화되지 않아 설정을 자동 저장하여 초기화합니다...")
+                try:
+                    current_ui_config = self._get_config_from_ui()
+                    self.app_service.save_app_config(current_ui_config)
+                    self._log_message("설정 자동 저장 및 클라이언트 초기화 완료.")
+                except Exception as e:
+                    self._log_message(f"설정 자동 저장 실패: {e}", "ERROR")
+                    messagebox.showerror("설정 오류", f"API 설정 저장 중 오류가 발생했습니다: {e}")
+                    self._reset_model_combobox(current_user_input_model)
+                    return
+
+            # 2단계: 클라이언트 재확인 (자동 초기화 후에도 실패할 수 있음)
+            if not self.app_service.gemini_client:
+                self._log_message("클라이언트 초기화 후에도 사용할 수 없습니다. API 키 또는 Vertex AI 설정을 확인하세요.", "WARNING")
+                messagebox.showwarning("인증 필요", "API 키가 유효하지 않거나 Vertex AI 설정을 확인해주세요.")
+                self._reset_model_combobox(current_user_input_model)
                 return
 
-            models_data = self.app_service.get_available_models() 
+            # 3단계: 모델 목록 조회 (한 번만 호출)
+            models_data = self.app_service.get_available_models()
             
+            # 4단계: UI 모델 목록 구성
             model_display_names_for_ui = []
             for m in models_data:
                 display_name = m.get("display_name")
-                short_name = m.get("short_name") # gemini_client.py에서 추가된 short_name 사용
+                short_name = m.get("short_name")
                 full_name = m.get("name")
                 
-                # 우선순위 변경: short_name > display_name > full_name
-                chosen_name_for_display = short_name if short_name else (display_name if display_name else full_name)
+                # 우선순위: short_name > display_name > full_name
+                chosen_name_for_display = short_name or display_name or full_name
                 
                 if chosen_name_for_display and isinstance(chosen_name_for_display, str) and chosen_name_for_display.strip():
                     model_display_names_for_ui.append(chosen_name_for_display.strip())
             
             model_display_names_for_ui = sorted(list(set(model_display_names_for_ui)))
-
             self.model_name_combobox['values'] = model_display_names_for_ui
             
-            # 현재 설정된 모델 이름(config) 또는 사용자가 입력한 모델 이름 유지 시도
-            config_model_name = self.app_service.config.get("model_name", "")
-            # config_model_name이 전체 경로일 수 있으므로, UI 목록과 비교 시 짧은 이름 형태로 변환하여 비교
-            config_model_short_name = config_model_name.split('/')[-1] if '/' in config_model_name else config_model_name
-
-            if current_user_input_model and current_user_input_model.strip() in model_display_names_for_ui:
-                self.model_name_combobox.set(current_user_input_model)
-            elif config_model_short_name and config_model_short_name in model_display_names_for_ui: # config의 short_name과 비교
-                self.model_name_combobox.set(config_model_short_name)
-            elif config_model_name and config_model_name in model_display_names_for_ui: # config의 full_name과 비교
-                self.model_name_combobox.set(config_model_name)
-            elif model_display_names_for_ui: # 위 조건 모두 만족 못하면 목록의 첫 번째 모델 선택
-                self.model_name_combobox.set(model_display_names_for_ui[0])
-            else: # 사용 가능한 모델이 없으면 빈 문자열로 설정
-                self.model_name_combobox.set("") 
+            # 5단계: 모델 선택 (우선순위에 따라)
+            self._set_optimal_model_selection(current_user_input_model, model_display_names_for_ui)
             
             self._log_message(f"{len(model_display_names_for_ui)}개 모델 로드 완료.")
 
         except BtgApiClientException as e:
             messagebox.showerror("API 오류", f"모델 목록 조회 실패: {e}")
             self._log_message(f"모델 목록 조회 API 오류: {e}", "ERROR")
-            self.model_name_combobox['values'] = []
-            self.model_name_combobox.set(current_user_input_model if 'current_user_input_model' in locals() else "")
+            self._reset_model_combobox(current_user_input_model)
         except BtgServiceException as e: 
             messagebox.showerror("서비스 오류", f"모델 목록 조회 실패: {e}")
             self._log_message(f"모델 목록 조회 서비스 오류: {e}", "ERROR")
-            self.model_name_combobox['values'] = []
-            self.model_name_combobox.set(current_user_input_model if 'current_user_input_model' in locals() else "")
+            self._reset_model_combobox(current_user_input_model)
         except Exception as e:
             messagebox.showerror("오류", f"모델 목록 조회 중 예상치 못한 오류: {e}")
             self._log_message(f"모델 목록 조회 중 오류: {e}", "ERROR", exc_info=True)
-            self.model_name_combobox['values'] = []
-            self.model_name_combobox.set(current_user_input_model if 'current_user_input_model' in locals() else "")
+            self._reset_model_combobox(current_user_input_model)
 
 
     def _browse_input_file(self):
@@ -1049,7 +1053,33 @@ class BatchTranslatorGUI:
         else:
             self.master.destroy()
 
-    
+    def _on_api_key_changed(self, event=None):
+        """API 키가 변경되었을 때 클라이언트 초기화 상태 리셋"""
+        if hasattr(self, 'app_service') and self.app_service:
+            # 다음 모델 새로고침 시 자동으로 재초기화되도록 플래그 설정
+            self._client_needs_refresh = True
+
+    def _reset_model_combobox(self, current_user_input_model: str):
+        """모델 콤보박스를 초기 상태로 리셋"""
+        self.model_name_combobox['values'] = []
+        self.model_name_combobox.set(current_user_input_model)
+
+    def _set_optimal_model_selection(self, current_user_input_model: str, model_display_names_for_ui: List[str]):
+        """최적의 모델 선택 로직"""
+        config_model_name = self.app_service.config.get("model_name", "")
+        config_model_short_name = config_model_name.split('/')[-1] if '/' in config_model_name else config_model_name
+
+        # 우선순위에 따른 모델 선택
+        if current_user_input_model and current_user_input_model.strip() in model_display_names_for_ui:
+            self.model_name_combobox.set(current_user_input_model)
+        elif config_model_short_name and config_model_short_name in model_display_names_for_ui:
+            self.model_name_combobox.set(config_model_short_name)
+        elif config_model_name and config_model_name in model_display_names_for_ui:
+            self.model_name_combobox.set(config_model_name)
+        elif model_display_names_for_ui:
+            self.model_name_combobox.set(model_display_names_for_ui[0])
+        else:
+            self.model_name_combobox.set("")
 
 class TextHandler(logging.Handler):
     def __init__(self, text_widget: scrolledtext.ScrolledText):
