@@ -953,8 +953,11 @@ class BatchTranslatorGUI:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             return
         try:
-            current_config = self._get_config_from_ui()
-            self.app_service.save_app_config(current_config) 
+            # 기존 전체 설정을 유지하고 UI 변경사항만 업데이트
+            current_config = self.app_service.config.copy()
+            ui_config = self._get_config_from_ui()
+            current_config.update(ui_config)
+            self.app_service.save_app_config(current_config)
             messagebox.showinfo("성공", "설정이 성공적으로 저장되었습니다.")
             self._log_message("설정 저장됨.")
             self._load_initial_config_to_ui() 
