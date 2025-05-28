@@ -433,6 +433,17 @@ class BatchTranslatorGUI:
             self.pronoun_csv_path_entry.delete(0, tk.END)
             self.pronoun_csv_path_entry.insert(0, pronoun_csv_val if pronoun_csv_val is not None else "")
 
+            sample_ratio = config.get("pronoun_sample_ratio", 25.0)
+            self.sample_ratio_scale.set(sample_ratio)
+            self.sample_ratio_label.config(text=f"{sample_ratio:.1f}%")
+            
+            max_entries = config.get("max_pronoun_entries", 20)
+            self.max_entries_spinbox.set(str(max_entries))
+            
+            extraction_temp = config.get("pronoun_extraction_temperature", 0.2)
+            self.extraction_temp_scale.set(extraction_temp)
+            self.extraction_temp_label.config(text=f"{extraction_temp:.2f}")
+
             logger.info("UI에 설정 로드 완료.")
         except BtgConfigException as e: 
             messagebox.showerror("설정 로드 오류", f"설정 로드 중 오류: {e}")
@@ -643,6 +654,138 @@ class BatchTranslatorGUI:
         self.pronoun_progress_label = ttk.Label(path_frame, text="고유명사 추출 대기 중...")
         self.pronoun_progress_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
 
+        # 새로운 고유명사 추출 설정 프레임
+        extraction_settings_frame = ttk.LabelFrame(pronouns_frame, text="고유명사 추출 설정", padding="10")
+        extraction_settings_frame.pack(fill="x", padx=5, pady=5)
+        
+        # 샘플링 비율 설정 (pronoun_sample_ratio)
+        ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        
+        sample_ratio_frame = ttk.Frame(extraction_settings_frame)
+        sample_ratio_frame.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        
+        self.sample_ratio_scale = ttk.Scale(
+            sample_ratio_frame, 
+            from_=5.0, 
+            to=100.0, 
+            orient="horizontal", 
+            length=200,
+            command=self._update_sample_ratio_label
+        )
+        self.sample_ratio_scale.pack(side="left", padx=(0,10))
+        
+        self.sample_ratio_label = ttk.Label(sample_ratio_frame, text="25.0%", width=8)
+        self.sample_ratio_label.pack(side="left")
+        
+        # 도움말 레이블
+        ttk.Label(extraction_settings_frame, 
+                text="전체 텍스트에서 고유명사 추출에 사용할 청크의 비율", 
+                font=("Arial", 8), 
+                foreground="gray").grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
+        
+        # 최대 고유명사 항목 수 설정 (max_pronoun_entries)
+        ttk.Label(extraction_settings_frame, text="최대 고유명사 수:").grid(row=2, column=0, padx=5, pady=(15,5), sticky="w")
+        
+        max_entries_frame = ttk.Frame(extraction_settings_frame)
+        max_entries_frame.grid(row=2, column=1, columnspan=2, padx=5, pady=(15,5), sticky="ew")
+        
+        self.max_entries_spinbox = ttk.Spinbox(
+            max_entries_frame,
+            from_=1,
+            to=100,
+            width=8,
+            command=self._update_max_entries_label,
+            validate="key",
+            validatecommand=(self.master.register(self._validate_max_entries), '%P')
+        )
+        self.max_entries_spinbox.pack(side="left", padx=(0,10))
+        self.max_entries_spinbox.set("20")  # 기본값
+        
+        self.max_entries_label = ttk.Label(max_entries_frame, text="개 항목", width=8)
+        self.max_entries_label.pack(side="left")
+        
+        # 도움말 레이블
+        ttk.Label(extraction_settings_frame, 
+                text="번역 시 프롬프트에 포함할 최대 고유명사 개수", 
+                font=("Arial", 8), 
+                foreground="gray").grid(row=3, column=1, columnspan=2, padx=5, sticky="w")
+        
+        # 고급 설정 (접을 수 있는 형태)
+        self.advanced_var = tk.BooleanVar()
+        advanced_check = ttk.Checkbutton(
+            extraction_settings_frame, 
+            text="고급 설정 표시", 
+            variable=self.advanced_var,
+            command=self._toggle_advanced_settings
+        )
+        advanced_check.grid(row=4, column=0, columnspan=3, padx=5, pady=(15,5), sticky="w")
+        
+        # 고급 설정 프레임 (초기에는 숨김)
+        self.advanced_frame = ttk.Frame(extraction_settings_frame)
+        self.advanced_frame.grid(row=5, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
+        
+        # 온도 설정 (고유명사 추출용)
+        ttk.Label(self.advanced_frame, text="추출 온도:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        
+        self.extraction_temp_scale = ttk.Scale(
+            self.advanced_frame,
+            from_=0.0,
+            to=1.0,
+            orient="horizontal",
+            length=150,
+            command=self._update_extraction_temp_label
+        )
+        self.extraction_temp_scale.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.extraction_temp_scale.set(0.2)  # 기본값
+        
+        self.extraction_temp_label = ttk.Label(self.advanced_frame, text="0.20", width=6)
+        self.extraction_temp_label.grid(row=0, column=2, padx=5, pady=5)
+        
+        # 초기에는 고급 설정 숨김
+        self.advanced_frame.grid_remove()
+
+        # 액션 버튼 프레임 추가
+        pronoun_action_frame = ttk.Frame(pronouns_frame, padding="10")
+        pronoun_action_frame.pack(fill="x", padx=5, pady=5)
+        
+        # 설정 저장 버튼
+        self.save_pronoun_settings_button = ttk.Button(
+            pronoun_action_frame, 
+            text="고유명사 설정 저장", 
+            command=self._save_pronoun_settings
+        )
+        self.save_pronoun_settings_button.pack(side="left", padx=5)
+        
+        # 설정 초기화 버튼
+        self.reset_pronoun_settings_button = ttk.Button(
+            pronoun_action_frame, 
+            text="기본값으로 초기화", 
+            command=self._reset_pronoun_settings
+        )
+        self.reset_pronoun_settings_button.pack(side="left", padx=5)
+        
+        # 실시간 미리보기 버튼
+        self.preview_pronoun_settings_button = ttk.Button(
+            pronoun_action_frame, 
+            text="설정 미리보기", 
+            command=self._preview_pronoun_settings
+        )
+        self.preview_pronoun_settings_button.pack(side="right", padx=5)
+
+        # 상태 표시 레이블
+        self.pronoun_status_label = ttk.Label(
+            pronoun_action_frame, 
+            text="⏸️ 설정 변경 대기 중...", 
+            font=("Arial", 9),
+            foreground="gray"
+        )
+        self.pronoun_status_label.pack(side="bottom", pady=5)
+
+        # 설정 변경 감지 이벤트 바인딩
+        self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_pronoun_setting_changed)
+        self.max_entries_spinbox.bind("<KeyRelease>", self._on_pronoun_setting_changed)
+        self.extraction_temp_scale.bind("<ButtonRelease-1>", self._on_pronoun_setting_changed)
+
     def _create_log_widgets(self):
         self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD, state=tk.DISABLED, height=20)
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
@@ -797,12 +940,12 @@ class BatchTranslatorGUI:
             "chunk_size": int(self.chunk_size_entry.get() or "6000"), 
             "max_workers": max_workers_val, 
             "prompts": prompt_content,
-            "pronouns_csv": self.pronoun_csv_path_entry.get().strip() or None, 
+            "pronouns_csv": self.pronoun_csv_path_entry.get().strip() or None,
+            "pronoun_sample_ratio": self.sample_ratio_scale.get(),
+            "max_pronoun_entries": int(self.max_entries_spinbox.get()),
+            "pronoun_extraction_temperature": self.extraction_temp_scale.get(),
         }
-        if self.app_service and self.app_service.config:
-            for key in ["max_pronoun_entries", "pronoun_sample_ratio"]: 
-                if key not in config_data and key in self.app_service.config: 
-                    config_data[key] = self.app_service.config[key]
+        
         return config_data
 
     def _save_settings(self):
@@ -1080,6 +1223,199 @@ class BatchTranslatorGUI:
             self.model_name_combobox.set(model_display_names_for_ui[0])
         else:
             self.model_name_combobox.set("")
+
+
+    def _update_sample_ratio_label(self, value):
+        """샘플링 비율 레이블 업데이트"""
+        ratio = float(value)
+        self.sample_ratio_label.config(text=f"{ratio:.1f}%")
+
+    def _validate_max_entries(self, value):
+        """최대 고유명사 수 유효성 검사"""
+        if value == "":
+            return True
+        try:
+            num = int(value)
+            return 1 <= num <= 100
+        except ValueError:
+            return False
+
+    def _update_max_entries_label(self):
+        """최대 고유명사 수 변경 시 호출"""
+        try:
+            value = int(self.max_entries_spinbox.get())
+            if value == 1:
+                self.max_entries_label.config(text="개 항목")
+            else:
+                self.max_entries_label.config(text="개 항목")
+        except ValueError:
+            pass
+
+    def _update_extraction_temp_label(self, value):
+        """추출 온도 레이블 업데이트"""
+        temp = float(value)
+        # extraction_temp_label이 존재하는지 확인
+        if hasattr(self, 'extraction_temp_label'):
+            self.extraction_temp_label.config(text=f"{temp:.2f}")
+
+    def _toggle_advanced_settings(self):
+        """고급 설정 표시/숨김 토글"""
+        if self.advanced_var.get():
+            self.advanced_frame.grid()
+        else:
+            self.advanced_frame.grid_remove()
+
+    def _show_sampling_estimate(self):
+        """샘플링 비율에 따른 예상 처리량 표시"""
+        input_file = self.input_file_entry.get()
+        if not input_file or not Path(input_file).exists():
+            return
+        
+        try:
+            # 파일 크기 기반 추정
+            file_size = Path(input_file).stat().st_size
+            chunk_size = int(self.chunk_size_entry.get() or "6000")
+            estimated_chunks = file_size // chunk_size
+            
+            sample_ratio = self.sample_ratio_scale.get() / 100.0
+            estimated_sample_chunks = int(estimated_chunks * sample_ratio)
+            
+            # 추정 정보를 툴팁이나 레이블로 표시
+            estimate_text = f"예상 분석 청크: {estimated_sample_chunks}/{estimated_chunks}"
+            
+            # 기존 라벨이 있다면 업데이트, 없다면 생성
+            if hasattr(self, 'sampling_estimate_label'):
+                self.sampling_estimate_label.config(text=estimate_text)
+            
+        except Exception:
+            pass  # 추정 실패 시 무시
+
+    def _save_pronoun_settings(self):
+        """고유명사 관련 설정만 저장"""
+        if not self.app_service:
+            messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
+            return
+        
+        try:
+            # 현재 전체 설정 가져오기
+            current_config = self.app_service.config.copy()
+            
+            # 고유명사 관련 설정만 업데이트
+            pronoun_config = self._get_pronoun_config_from_ui()
+            current_config.update(pronoun_config)
+            
+            # 설정 저장
+            success = self.app_service.save_app_config(current_config)
+            
+            if success:
+                messagebox.showinfo("성공", "고유명사 설정이 저장되었습니다.")
+                self._log_message("고유명사 설정 저장 완료")
+                
+                # 상태 레이블 업데이트
+                self._update_pronoun_status_label("✅ 설정 저장됨")
+            else:
+                messagebox.showerror("오류", "설정 저장에 실패했습니다.")
+                
+        except Exception as e:
+            messagebox.showerror("오류", f"설정 저장 중 오류: {e}")
+            self._log_message(f"고유명사 설정 저장 오류: {e}", "ERROR")
+
+    def _get_pronoun_config_from_ui(self) -> Dict[str, Any]:
+        """UI에서 고유명사 관련 설정만 추출"""
+        try:
+            config = {
+                "pronouns_csv": self.pronoun_csv_path_entry.get().strip() or None,
+                "pronoun_sample_ratio": self.sample_ratio_scale.get(),
+                "max_pronoun_entries": int(self.max_entries_spinbox.get()),
+                "pronoun_extraction_temperature": self.extraction_temp_scale.get(),
+            }
+            return {k: v for k, v in config.items() if v is not None}
+        except Exception as e:
+            raise ValueError(f"고유명사 설정 값 오류: {e}")
+
+    def _reset_pronoun_settings(self):
+        """고유명사 설정을 기본값으로 초기화"""
+        if not self.app_service:
+            return
+        
+        result = messagebox.askyesno(
+            "설정 초기화", 
+            "고유명사 설정을 기본값으로 초기화하시겠습니까?"
+        )
+        
+        if result:
+            try:
+                # 기본값 로드
+                default_config = self.app_service.config_manager.get_default_config()
+                
+                # UI에 기본값 적용
+                self.sample_ratio_scale.set(default_config.get("pronoun_sample_ratio", 25.0))
+                self.max_entries_spinbox.set(str(default_config.get("max_pronoun_entries", 20)))
+                self.extraction_temp_scale.set(default_config.get("pronoun_extraction_temperature", 0.2))
+                
+                # 레이블 업데이트
+                self._update_sample_ratio_label(str(self.sample_ratio_scale.get()))
+                self._update_extraction_temp_label(str(self.extraction_temp_scale.get()))
+                
+                self._update_pronoun_status_label("🔄 기본값으로 초기화됨")
+                self._log_message("고유명사 설정이 기본값으로 초기화되었습니다.")
+                
+            except Exception as e:
+                messagebox.showerror("오류", f"기본값 로드 중 오류: {e}")
+
+    def _preview_pronoun_settings(self):
+        """현재 설정의 예상 효과 미리보기"""
+        try:
+            input_file = self.input_file_entry.get()
+            if not input_file or not Path(input_file).exists():
+                messagebox.showwarning("파일 없음", "입력 파일을 선택해주세요.")
+                return
+            
+            # 현재 설정 값들
+            sample_ratio = self.sample_ratio_scale.get()
+            max_entries = int(self.max_entries_spinbox.get())
+            extraction_temp = self.extraction_temp_scale.get()
+            
+            # 파일 크기 기반 추정
+            file_size = Path(input_file).stat().st_size
+            chunk_size = int(self.chunk_size_entry.get() or "6000")
+            estimated_chunks = max(1, file_size // chunk_size)
+            estimated_sample_chunks = max(1, int(estimated_chunks * sample_ratio / 100.0))
+            
+            # 미리보기 정보 표시
+            preview_msg = (
+                f"📊 고유명사 추출 설정 미리보기\n\n"
+                f"📁 입력 파일: {Path(input_file).name}\n"
+                f"📏 파일 크기: {file_size:,} 바이트\n"
+                f"🧩 예상 청크 수: {estimated_chunks:,}개\n"
+                f"🎯 분석할 샘플: {estimated_sample_chunks:,}개 ({sample_ratio:.1f}%)\n"
+                f"📋 최대 저장 항목: {max_entries}개\n"
+                f"🌡️ 추출 온도: {extraction_temp:.2f}\n\n"
+                f"⏱️ 예상 처리 시간: {estimated_sample_chunks * 2:.0f}~{estimated_sample_chunks * 5:.0f}초"
+            )
+            
+            messagebox.showinfo("설정 미리보기", preview_msg)
+            
+        except Exception as e:
+            messagebox.showerror("오류", f"미리보기 생성 중 오류: {e}")
+
+    def _update_pronoun_status_label(self, message: str):
+        """고유명사 설정 상태 업데이트"""
+        if hasattr(self, 'pronoun_status_label'):
+            self.pronoun_status_label.config(text=message)
+            
+            # 3초 후 기본 메시지로 복귀
+            self.master.after(3000, lambda: self.pronoun_status_label.config(
+                text="⏸️ 설정 변경 대기 중..."
+            ))
+
+    def _on_pronoun_setting_changed(self, event=None):
+        """고유명사 설정이 변경될 때 호출"""
+        self._update_pronoun_status_label("⚠️ 설정이 변경됨 (저장 필요)")
+        
+        # 저장 버튼 강조
+        if hasattr(self, 'save_pronoun_settings_button'):
+            self.save_pronoun_settings_button.config(style="Accent.TButton")
 
 class TextHandler(logging.Handler):
     def __init__(self, text_widget: scrolledtext.ScrolledText):
