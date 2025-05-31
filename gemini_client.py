@@ -119,10 +119,12 @@ class GeminiClient:
     def __init__(self,
                  auth_credentials: Optional[Union[str, List[str], Dict[str, Any]]] = None,
                  project: Optional[str] = None,
-                 location: Optional[str] = None):
+                 location: Optional[str] = None,
+                 requests_per_minute: Optional[int] = None): # 분당 요청 수 추가
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
 
         self.client: Optional[genai.Client] = None 
+        # self.generative_model_instance: Optional[genai.GenerativeModel] = None # 모델 인스턴스 저장용
         self.auth_mode: Optional[str] = None 
         self.api_keys_list: List[str] = []
         self.current_api_key_index: int = 0
@@ -131,6 +133,13 @@ class GeminiClient:
         self.vertex_location: Optional[str] = None
         self.vertex_credentials: Optional[ServiceAccountCredentials] = None
         self._key_rotation_lock = threading.Lock() # For thread-safe key rotation
+
+        self.requests_per_minute = requests_per_minute
+        self.delay_between_requests = 0.0
+        if self.requests_per_minute and self.requests_per_minute > 0:
+            self.delay_between_requests = 60.0 / self.requests_per_minute
+        self.last_request_timestamp = 0.0  # time.monotonic() 사용
+        self._rpm_lock = threading.Lock()
 
         service_account_info: Optional[Dict[str, Any]] = None
         is_api_key_mode = False
@@ -290,6 +299,19 @@ class GeminiClient:
         # Vertex AI에서는 전체 경로 또는 간단한 모델명 모두 허용
         return model_name
 
+    def _apply_rpm_delay(self):
+        """요청 속도 제어를 위한 지연 적용"""
+        if self.delay_between_requests > 0:
+            with self._rpm_lock:
+                current_time = time.monotonic()
+                time_since_last_request = current_time - self.last_request_timestamp
+                if time_since_last_request < self.delay_between_requests:
+                    sleep_duration = self.delay_between_requests - time_since_last_request
+                    if sleep_duration > 0: # 음수 sleep 방지
+                        logger.debug(f"RPM: {self.requests_per_minute}, Sleeping for {sleep_duration:.3f}s.")
+                        time.sleep(sleep_duration)
+                self.last_request_timestamp = time.monotonic() # 실제 요청 직전 또는 직후에 업데이트 (여기서는 sleep 후)
+
 
     def _is_rate_limit_error(self, error_obj: Any) -> bool:
         from google.api_core import exceptions as gapi_exceptions
@@ -353,6 +375,8 @@ class GeminiClient:
         stream: bool = False
     ) -> Optional[Union[str, Any]]: 
         if not self.client:
+            # 클라이언트가 초기화되지 않은 경우, 여기서 API 키 회전을 시도하는 것은 의미가 없을 수 있음.
+            # 초기화 실패는 더 근본적인 문제일 가능성이 높음.
              raise GeminiApiException("Gemini 클라이언트가 초기화되지 않았습니다.")
         if not model_name:
             raise ValueError("모델 이름이 제공되지 않았습니다.")
@@ -396,6 +420,7 @@ class GeminiClient:
 
             while current_retry_for_this_key <= max_retries:
                 try:
+                    self._apply_rpm_delay() # RPM 지연 적용
                     logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
 
                     # 수정된 코드
@@ -560,6 +585,7 @@ class GeminiClient:
 
         while attempted_keys_for_list_models < total_keys_for_list:
             try:
+                self._apply_rpm_delay() # RPM 지연 적용
                 logger.info(f"사용 가능한 모델 목록 조회 중 (현재 API 키 인덱스: {self.current_api_key_index if self.auth_mode == 'API_KEY' else 'N/A'})...")
                 models_info = []
                 if not self.client: 

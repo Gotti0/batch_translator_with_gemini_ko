@@ -194,6 +194,7 @@ def parse_arguments():
     config_override_group = parser.add_argument_group('Configuration Overrides')
     config_override_group.add_argument("--novel-language-override", type=str, help="설정 파일의 'novel_language' 값을 덮어씁니다. (--novel-language와 동일)")
     config_override_group.add_argument("--novel-language-fallback-override", type=str, help="설정 파일의 'novel_language_fallback' 값을 덮어씁니다.")
+    config_override_group.add_argument("--rpm", type=int, help="분당 API 요청 수를 설정합니다. (예: 60). 0은 제한 없음을 의미합니다.")
     return parser.parse_args()
 
 def main():
@@ -288,6 +289,10 @@ def main():
         if args.novel_language_fallback_override:
             app_service.config["novel_language_fallback"] = args.novel_language_fallback_override
             cli_auth_applied = True
+        if args.rpm is not None:
+            app_service.config["requests_per_minute"] = args.rpm
+            cli_auth_applied = True
+            cli_logger.info(f"분당 요청 수(RPM)가 CLI 인수로 인해 '{args.rpm}' (으)로 설정됩니다.")
 
         if cli_auth_applied:
             cli_logger.info("CLI 인수로 제공된 인증/Vertex 정보를 반영하기 위해 설정을 다시 로드합니다.")

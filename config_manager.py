@@ -43,6 +43,7 @@ class ConfigManager:
             "gcp_project": None,
             "gcp_location": None,
             "auth_credentials": "", 
+            "requests_per_minute": 60, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
             "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
             "novel_language_fallback": "ja", # 자동 감지 실패 시 사용할 폴백 언어
             "model_name": "gemini-1.5-flash-latest",
@@ -239,6 +240,7 @@ if __name__ == '__main__':
     assert config1["novel_language"] == "auto" # Changed from ko to auto to match new default
     assert config1["novel_language_fallback"] == "ja"
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
+    assert config1["requests_per_minute"] == 60 # RPM 기본값 확인
     assert config1["enable_dynamic_lorebook_injection"] is False
     assert config1["max_lorebook_entries_per_chunk_injection"] == 3
     assert config1["max_lorebook_chars_per_chunk_injection"] == 500
@@ -254,6 +256,7 @@ if __name__ == '__main__':
     config_to_save["novel_language"] = "en"
     config_to_save["novel_language_fallback"] = "en_gb"
     config_to_save["max_workers"] = 4 # max_workers 값 설정
+    config_to_save["requests_per_minute"] = 30 
     config_to_save["enable_dynamic_lorebook_injection"] = True
     config_to_save["lorebook_json_path_for_injection"] = "path/to/injection_lorebook.json"
     save_success = manager_no_file.save_config(config_to_save)
@@ -276,6 +279,7 @@ if __name__ == '__main__':
     assert config2.get("lorebook_sampling_method") == "uniform"
     assert config2.get("lorebook_chunk_size") == 8000
     assert config2.get("lorebook_output_json_filename_suffix") == "_lorebook.json"
+    assert config2["requests_per_minute"] == 30
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
     assert config2["enable_dynamic_lorebook_injection"] is True
     assert config2["max_lorebook_entries_per_chunk_injection"] == 3 # 기본값 유지 확인
@@ -287,6 +291,7 @@ if __name__ == '__main__':
         "api_key": "single_api_key_test",
         "temperature": 0.5,
         "max_workers": "invalid", # 잘못된 max_workers 값 테스트
+        "requests_per_minute": 0, # RPM 제한 없음 테스트
         "lorebook_sampling_ratio": 50.0, # 로어북 설정 중 하나만 포함
         "max_lorebook_chars_per_chunk_injection": 600 # 동적 주입 설정 중 하나만 포함
     }
@@ -302,6 +307,7 @@ if __name__ == '__main__':
     assert config3.get("lorebook_sampling_ratio") == 50.0 # 저장된 로어북 설정 확인
     assert config3.get("lorebook_max_entries_per_segment") == 5 # 기본 로어북 설정 확인
     assert config3["max_workers"] == (os.cpu_count() or 1) # 잘못된 값일 경우 기본값으로 복원되는지 확인
+    assert config3["requests_per_minute"] == 0 
     assert config3["enable_dynamic_lorebook_injection"] is False # 기본값 확인
     assert config3["max_lorebook_chars_per_chunk_injection"] == 600 # 저장된 값 확인
 

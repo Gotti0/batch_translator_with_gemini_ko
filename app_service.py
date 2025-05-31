@@ -160,11 +160,13 @@ class AppService:
             if should_initialize_client:
                 try:
                     project_to_pass_to_client = gcp_project_from_config if gcp_project_from_config and gcp_project_from_config.strip() else None
-                    logger.info(f"GeminiClient 초기화 시도: project='{project_to_pass_to_client}', location='{gcp_location}'")
+                    rpm_value = self.config.get("requests_per_minute")
+                    logger.info(f"GeminiClient 초기화 시도: project='{project_to_pass_to_client}', location='{gcp_location}', RPM='{rpm_value}'")
                     self.gemini_client = GeminiClient(
                         auth_credentials=auth_credentials_for_gemini_client,
                         project=project_to_pass_to_client,
-                        location=gcp_location
+                        location=gcp_location,
+                        requests_per_minute=rpm_value
                     )
                 except GeminiInvalidRequestException as e_inv:
                     logger.error(f"GeminiClient 초기화 실패 (잘못된 요청/인증): {e_inv}")
@@ -802,7 +804,8 @@ if __name__ == '__main__':
         "prompts": "Translate to Korean: {{slot}}",
         "chunk_size": 50, 
         "pronouns_csv": str(test_output_dir / "sample_pronouns.csv"),
-        "max_pronoun_entries": 5,
+        "requests_per_minute": 60,
+        # "max_pronoun_entries": 5, # 로어북으로 대체되면서 이 설정은 직접 사용되지 않을 수 있음
         "pronoun_sample_ratio": 100.0, 
         "max_workers": 2 
     }

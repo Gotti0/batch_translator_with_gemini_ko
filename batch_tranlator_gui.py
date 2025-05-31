@@ -95,6 +95,7 @@ except ImportError as e:
                 "prompts": "Translate to Korean: {{slot}}",
                 "lorebook_json_path": "mock_lorebook.json", # Changed from pronouns_csv
                 "max_workers": os.cpu_count() or 1, 
+                "requests_per_minute": 60,
                 "auth_credentials": "",
                 # Mock Lorebook settings
                 "lorebook_sampling_method": "uniform",
@@ -432,6 +433,11 @@ class BatchTranslatorGUI:
             self.max_workers_entry.delete(0, tk.END)
             self.max_workers_entry.insert(0, str(max_workers_val))
 
+            rpm_val = config.get("requests_per_minute", 60)
+            logger.debug(f"Config에서 가져온 requests_per_minute: {rpm_val}")
+            self.rpm_entry.delete(0, tk.END)
+            self.rpm_entry.insert(0, str(rpm_val))
+
             # Language settings
             novel_lang_val = config.get("novel_language", "auto")
             self.novel_language_entry.delete(0, tk.END)
@@ -611,6 +617,11 @@ class BatchTranslatorGUI:
         self.max_workers_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.max_workers_entry.pack(side="left")
         self.max_workers_entry.insert(0, str(os.cpu_count() or 1))
+        
+        # RPM 설정
+        ttk.Label(chunk_worker_frame, text="분당 요청 수 (RPM):").pack(side="left", padx=(10,5))
+        self.rpm_entry = ttk.Entry(chunk_worker_frame, width=5)
+        self.rpm_entry.pack(side="left")
 
         # Language Settings Frame
         language_settings_frame = ttk.LabelFrame(settings_frame, text="언어 설정", padding="10")
@@ -1093,6 +1104,15 @@ class BatchTranslatorGUI:
             self.max_workers_entry.delete(0, tk.END)
             self.max_workers_entry.insert(0, str(max_workers_val))
 
+        try:
+            rpm_val = int(self.rpm_entry.get() or "60")
+            if rpm_val < 0: rpm_val = 0 # 0은 제한 없음, 음수는 0으로
+        except ValueError:
+            rpm_val = 60
+            messagebox.showwarning("입력 오류", f"분당 요청 수는 숫자여야 합니다. 기본값 ({rpm_val})으로 설정됩니다.")
+            self.rpm_entry.delete(0, tk.END)
+            self.rpm_entry.insert(0, str(rpm_val))
+
         config_data = {
             "api_keys": api_keys_list if not use_vertex else [],
             "service_account_file_path": self.service_account_file_entry.get().strip() if use_vertex else None,
@@ -1104,6 +1124,7 @@ class BatchTranslatorGUI:
             "top_p": self.top_p_scale.get(),
             "chunk_size": int(self.chunk_size_entry.get() or "6000"), 
             "max_workers": max_workers_val, 
+            "requests_per_minute": rpm_val,
             "prompts": prompt_content,
             "novel_language": self.novel_language_entry.get().strip() or "auto",
             "novel_language_fallback": self.novel_language_fallback_entry.get().strip() or "ja",
