@@ -90,7 +90,7 @@ class ConfigManager:
             "max_content_safety_split_attempts": 3,
             "min_content_safety_chunk_size": 100,
             "content_safety_split_by_sentences": True,
-            "max_workers": os.cpu_count() or 1, # max_workers 기본값 추가 (CPU 코어 수 또는 1)
+            "max_workers": 4,
             "chunk_size": 6000,
             "enable_post_processing": True,
             "lorebook_extraction_temperature": 0.2, # 로어북 추출 온도
