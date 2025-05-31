@@ -119,7 +119,8 @@ class TranslationService:
                                     category=item_dict.get("category"),
                                     importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                     sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
-                                    isSpoiler=bool(item_dict.get("isSpoiler", False))
+                                    isSpoiler=bool(item_dict.get("isSpoiler", False)),
+                                    source_language=item_dict.get("source_language") # 로어북 JSON에서 source_language 로드
                                 )
                                 if entry.keyword and entry.description: # 필수 필드 확인
                                     self.lorebook_entries_for_injection.append(entry)
@@ -144,18 +145,57 @@ class TranslationService:
         if isinstance(prompt_template, (list, tuple)):
             prompt_template = prompt_template[0] if prompt_template else "Translate to Korean: {{slot}}"
 
-        final_prompt = prompt_template 
+        final_prompt = prompt_template
+
+        # Determine the source language for the current chunk to filter lorebook entries
+        config_source_lang = self.config.get("source_language_for_translation")
+        # Fallback language from config, with a hardcoded default if the config key itself is missing
+        config_fallback_lang = self.config.get("source_language_for_translation_fallback", "ja") 
+
+        current_source_lang_for_translation: str # Type hint for clarity
+
+        if config_source_lang == "auto":
+            if chunk_text and chunk_text.strip():
+                logger.info(f"번역 출발 언어 자동 감지 시도 (설정: 'auto', 청크 일부: '{chunk_text[:30].strip()}...')...")
+                try:
+                    detected_lang = self.gemini_client.detect_language(chunk_text)
+                    if detected_lang:
+                        current_source_lang_for_translation = detected_lang
+                        logger.info(f"청크 언어 자동 감지 성공: '{current_source_lang_for_translation}'")
+                    else:
+                        current_source_lang_for_translation = config_fallback_lang
+                        logger.warning(f"청크 언어 자동 감지 실패 (API가 None 반환). 폴백 언어 '{current_source_lang_for_translation}' 사용.")
+                except Exception as e_detect:
+                    current_source_lang_for_translation = config_fallback_lang
+                    logger.error(f"청크 언어 자동 감지 중 오류 발생: {e_detect}. 폴백 언어 '{current_source_lang_for_translation}' 사용.")
+            else:
+                current_source_lang_for_translation = config_fallback_lang
+                logger.info(f"청크 텍스트가 비어있어 언어 자동 감지를 건너뛰고 폴백 언어 '{current_source_lang_for_translation}' 사용.")
+        elif config_source_lang and isinstance(config_source_lang, str) and config_source_lang.strip(): # Specific language code provided
+            current_source_lang_for_translation = config_source_lang
+            logger.info(f"명시적 번역 출발 언어 '{current_source_lang_for_translation}' 사용.")
+        else: # config_source_lang is None, empty string, or not "auto"
+            current_source_lang_for_translation = config_fallback_lang
+            logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_translation}' 사용.")
 
         # 1. Dynamic Lorebook Injection
         if self.config.get("enable_dynamic_lorebook_injection", False) and \
            self.lorebook_entries_for_injection and \
            "{{lorebook_context}}" in final_prompt:
-            
+
+            logger.debug(f"번역 프롬프트 구성 중: 번역 출발 언어로 '{current_source_lang_for_translation}' 사용.")
             # 1.a. Filter lorebook entries relevant to the current chunk_text
             relevant_entries_for_chunk: List[LorebookEntryDTO] = []
             chunk_text_lower = chunk_text.lower() # For case-insensitive keyword matching
             for entry in self.lorebook_entries_for_injection:
-                if entry.keyword.lower() in chunk_text_lower:
+                # 로어북 항목의 언어와 현재 번역 출발 언어가 일치하는지 확인
+                if entry.source_language and \
+                   current_source_lang_for_translation and \
+                   entry.source_language.lower() != current_source_lang_for_translation.lower():
+                    logger.debug(f"로어북 항목 '{entry.keyword}' 건너뜀: 언어 불일치 (로어북: {entry.source_language}, 번역 출발: {current_source_lang_for_translation}).")
+                    continue
+
+                if entry.keyword.lower() in chunk_text_lower: # 중요: 로어북 키워드는 번역 출발 언어와 일치해야 함
                     relevant_entries_for_chunk.append(entry)
             
             logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 로어북 항목 발견.")

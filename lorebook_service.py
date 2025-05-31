@@ -76,7 +76,12 @@ class LorebookService:
         # prompt += f"\n참고: 이 텍스트는 '{sampling_method}' 방식으로 샘플링되었습니다."
         return prompt
 
-    def _parse_raw_lorebook_items_to_dto(self, raw_item_list: List[Dict[str, Any]], segment_text_preview: str) -> List[LorebookEntryDTO]:
+    def _parse_raw_lorebook_items_to_dto(
+        self,
+        raw_item_list: List[Dict[str, Any]],
+        segment_text_preview: str,
+        source_language_code: Optional[str] = None
+    ) -> List[LorebookEntryDTO]:
         """
         API 응답 등으로 받은 원시 로어북 항목 딕셔너리 리스트를 LorebookEntryDTO 리스트로 변환합니다.
         """
@@ -93,7 +98,8 @@ class LorebookService:
                     "category": item_dict.get("category"),
                     "importance": item_dict.get("importance"),
                     "isSpoiler": item_dict.get("isSpoiler", False),
-                    "sourceSegmentTextPreview": segment_text_preview
+                    "sourceSegmentTextPreview": segment_text_preview,
+                    "source_language": source_language_code
                 }
                 if not entry_data["keyword"] or not entry_data["description"]:
                     logger.warning(f"필수 필드(keyword 또는 description) 누락된 로어북 항목 건너뜀: {item_dict}")
@@ -128,17 +134,20 @@ class LorebookService:
         prompt = prompt.replace("{conflicting_items_text}", "\n".join(items_text_list))
         return prompt
 
-    def _extract_lorebook_entries_from_segment_via_api(self, segment_text: str, retry_count: int = 0, max_retries: int = 3) -> List[LorebookEntryDTO]:
+    def _extract_lorebook_entries_from_segment_via_api(
+        self,
+        segment_text: str,
+        source_language_of_segment: Optional[str] = None, # 세그먼트의 언어 코드
+        retry_count: int = 0, max_retries: int = 3
+    ) -> List[LorebookEntryDTO]:
         """
         단일 텍스트 세그먼트에서 Gemini API를 사용하여 로어북 항목들을 추출합니다.
 
         Args:
             segment_text (str): 분석할 텍스트 세그먼트.
+            source_language_of_segment (Optional[str]): 이 세그먼트의 언어 코드.
             retry_count (int): 현재 재시도 횟수.
             max_retries (int): 최대 재시도 횟수.
-
-        Returns:
-            List[LorebookEntryDTO]: 추출된 로어북 항목 리스트. 오류 시 빈 리스트.
         """
         prompt = self._get_extraction_prompt(segment_text)
         model_name = self.config.get("model_name", "gemini-1.5-flash-latest")
@@ -165,7 +174,7 @@ class LorebookService:
             if isinstance(response_data, list):
                 # API가 이미 파싱된 리스트를 반환한 경우
                 logger.debug("GeminiClient가 파싱된 리스트를 반환했습니다.")
-                return self._parse_raw_lorebook_items_to_dto(response_data, segment_text[:100])
+                return self._parse_raw_lorebook_items_to_dto(response_data, segment_text[:100], source_language_of_segment)
             elif isinstance(response_data, str):
                 logger.warning("GeminiClient가 JSON 문자열을 반환했습니다 (파싱 실패 또는 JSON 응답 아님). LorebookService에서 파싱 시도.")
                 json_str = response_data.strip()
@@ -175,13 +184,13 @@ class LorebookService:
                 try:
                     parsed_list = json.loads(json_str)
                     if isinstance(parsed_list, list):
-                        return self._parse_raw_lorebook_items_to_dto(parsed_list, segment_text[:100])
+                        return self._parse_raw_lorebook_items_to_dto(parsed_list, segment_text[:100], source_language_of_segment)
                     else:
                         logger.warning(f"파싱된 JSON 데이터가 리스트가 아닙니다: {type(parsed_list)}. 응답: {json_str[:100]}")
                         # 단일 객체로 응답한 경우 리스트로 감싸서 처리 시도
                         if isinstance(parsed_list, dict):
                             logger.info("단일 JSON 객체 응답을 리스트로 변환하여 처리합니다.")
-                            return self._parse_raw_lorebook_items_to_dto([parsed_list], segment_text[:100])
+                            return self._parse_raw_lorebook_items_to_dto([parsed_list], segment_text[:100], source_language_of_segment)
                         return [] # 그 외 경우는 빈 리스트
                 except json.JSONDecodeError as je:
                     logger.warning(f"JSON 파싱 오류 (문자열 응답): {je}. 응답: {json_str[:200]}")
@@ -192,14 +201,14 @@ class LorebookService:
                             refined_json_str = json_match.group(0)
                             parsed_list_refined = json.loads(refined_json_str)
                             if isinstance(parsed_list_refined, list):
-                                return self._parse_raw_lorebook_items_to_dto(parsed_list_refined, segment_text[:100])
+                                return self._parse_raw_lorebook_items_to_dto(parsed_list_refined, segment_text[:100], source_language_of_segment)
                         except json.JSONDecodeError as je2:
                             logger.error(f"정제된 JSON 파싱 실패: {je2}. 응답: {json_match.group(0)[:200]}")
                             # 재시도 로직으로 넘어감
             elif isinstance(response_data, dict): # GeminiClient가 단일 JSON 객체를 파싱하여 반환한 경우
                 logger.debug("GeminiClient가 파싱된 딕셔너리를 반환했습니다. 리스트로 변환하여 DTO 파싱 시도.")
                 # 프롬프트는 JSON 배열을 요청하므로, 단일 객체는 예상 밖일 수 있으나 처리 시도
-                return self._parse_raw_lorebook_items_to_dto([response_data], segment_text[:100])
+                return self._parse_raw_lorebook_items_to_dto([response_data], segment_text[:100], source_language_of_segment)
             else: # None 또는 다른 예기치 않은 타입
                 logger.warning(f"GeminiClient로부터 예상치 않은 타입의 응답을 받았습니다: {type(response_data)}. 세그먼트: {segment_text[:50]}...")
                 return []
@@ -209,7 +218,7 @@ class LorebookService:
             if retry_count < max_retries:
                 logger.info(f"로어북 추출 응답 형식 오류 또는 파싱 실패, 재시도 중 ({retry_count + 1}/{max_retries})...")
                 time.sleep(1 + retry_count)
-                return self._extract_lorebook_entries_from_segment_via_api(segment_text, retry_count + 1, max_retries)
+                return self._extract_lorebook_entries_from_segment_via_api(segment_text, source_language_of_segment, retry_count + 1, max_retries)
             else:
                 logger.error("최대 재시도 횟수 초과 (응답 형식 오류 또는 파싱 실패). 빈 결과 반환.")
                 return []
@@ -222,7 +231,7 @@ class LorebookService:
             if retry_count < max_retries:
                 logger.info(f"API 오류, 재시도 중 ({retry_count + 1}/{max_retries})...")
                 time.sleep( (1 + retry_count) * 2 ) 
-                return self._extract_lorebook_entries_from_segment_via_api(segment_text, retry_count + 1, max_retries)
+                return self._extract_lorebook_entries_from_segment_via_api(segment_text, source_language_of_segment, retry_count + 1, max_retries)
             else:
                 logger.error(f"최대 재시도 횟수 초과 (API 오류).")
                 raise BtgApiClientException(f"로어북 추출 API 호출 최대 재시도 실패: {e_api}", original_exception=e_api) from e_api
@@ -348,7 +357,8 @@ class LorebookService:
                                 "category": merged_entry_dict.get("category"),
                                 "importance": merged_entry_dict.get("importance"),
                                 "isSpoiler": merged_entry_dict.get("isSpoiler", False),
-                                "sourceSegmentTextPreview": source_preview
+                                "sourceSegmentTextPreview": source_preview,
+                                "source_language": entries_for_keyword[0].source_language # 원본 항목의 언어 코드 사용
                             }
                             if not merged_entry_data["keyword"] or not merged_entry_data["description"]:
                                 logger.warning(f"병합된 로어북 항목에 필수 필드 누락: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
@@ -376,6 +386,7 @@ class LorebookService:
                                   # all_text_segments: List[str], # 직접 세그먼트 리스트를 받는 대신 원본 텍스트를 받도록 변경
                                   novel_text_content: str, # 원본 텍스트 내용
                                   input_file_path_for_naming: Union[str, Path],
+                                  novel_language_code: Optional[str] = None, # 소설의 언어 코드
                                   progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None,
                                   seed_lorebook_path: Optional[Union[str, Path]] = None # 시드 로어북 경로 추가
                                  ) -> Path:
@@ -386,6 +397,7 @@ class LorebookService:
             novel_text_content (str): 분석할 전체 텍스트 내용.
             input_file_path_for_naming (Union[str, Path]):
                 출력 JSON 파일 이름 생성에 사용될 원본 입력 파일 경로.
+            novel_language_code (Optional[str]): 로어북 항목에 설정할 소스 언어 코드.
             progress_callback (Optional[Callable[[LorebookExtractionProgressDTO], None]], optional):
                 진행 상황을 알리기 위한 콜백 함수.
             seed_lorebook_path (Optional[Union[str, Path]], optional):
@@ -399,6 +411,23 @@ class LorebookService:
         """
         all_extracted_entries_from_segments: List[LorebookEntryDTO] = []
         seed_entries: List[LorebookEntryDTO] = []
+
+        # Determine the actual language code to be stored with lorebook entries
+        actual_source_language_for_entries: Optional[str] = None
+
+        if novel_language_code == "auto":
+            if novel_text_content and novel_text_content.strip():
+                # API 호출을 통한 자동 감지 제거
+                actual_source_language_for_entries = self.config.get("default_novel_language_fallback", "ko")
+                logger.info(f"'{novel_language_code}' 설정: 언어 자동 감지 API 호출을 건너뛰고, "
+                            f"폴백 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
+            else:
+                actual_source_language_for_entries = self.config.get("default_novel_language_fallback", "ko")
+                logger.info("입력 텍스트가 비어있어 언어 자동 감지를 건너뛰고, "
+                            f"폴백 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
+        else: # novel_language_code is a specific code (e.g., "ko", "en") or the default from config
+            actual_source_language_for_entries = novel_language_code
+            logger.info(f"명시적/기본 소설 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
 
         if seed_lorebook_path:
             seed_path_obj = Path(seed_lorebook_path)
@@ -416,7 +445,8 @@ class LorebookService:
                                         category=item_dict.get("category"),
                                         importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                         sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
-                                        isSpoiler=bool(item_dict.get("isSpoiler", False))
+                                        isSpoiler=bool(item_dict.get("isSpoiler", False)),
+                                        source_language=item_dict.get("source_language", actual_source_language_for_entries) # 시드 파일 내 언어 우선, 없으면 감지/설정된 언어
                                     )
                                     if entry.keyword and entry.description:
                                         seed_entries.append(entry)
@@ -481,7 +511,7 @@ class LorebookService:
                 ))
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_segment = {executor.submit(self._extract_lorebook_entries_from_segment_via_api, segment): segment
+                future_to_segment = {executor.submit(self._extract_lorebook_entries_from_segment_via_api, segment, actual_source_language_for_entries): segment
                            for segment in sample_segments}
                 
                 for future in as_completed(future_to_segment):

@@ -104,7 +104,9 @@ except ImportError as e:
                 "lorebook_keyword_sensitivity": "medium",
                 "lorebook_priority_settings": {"character": 5, "worldview": 5, "story_element": 5},
                 "lorebook_chunk_size": 8000,
-                "lorebook_extraction_temperature": 0.2,
+                "lorebook_extraction_temperature": 0.2, # For lorebook extraction
+                "default_novel_language": "ko", # Default language for novel (lorebook extraction)
+                "source_language_for_translation": "ko", # Source language for translation
                 "lorebook_output_json_filename_suffix": "_lorebook.json"
             }
         def load_app_config(self) -> Dict[str, Any]:
@@ -147,12 +149,16 @@ except ImportError as e:
                 {"name": "models/gemini-pro", "display_name": "Gemini Pro", "short_name": "gemini-pro", "description": "Mock Pro model"},
                 {"name": "models/text-embedding-004", "display_name": "Text Embedding 004", "short_name": "text-embedding-004"}
             ]
-        def extract_lorebook(self, input_file_path: Union[str, Path], progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None, tqdm_file_stream=None) -> Path: # Renamed and DTO changed
-            print(f"Mock AppService: extract_lorebook called for {input_file_path}")
+        def extract_lorebook(self, 
+                             input_file_path: Union[str, Path], 
+                             progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None, 
+                             novel_language_code: Optional[str] = None, # Added
+                             seed_lorebook_path: Optional[Union[str, Path]] = None, # Added
+                             tqdm_file_stream=None # tqdm_file_stream is not directly used by AppService.extract_lorebook
+                            ) -> Path:
+            print(f"Mock AppService: extract_lorebook called for {input_file_path}, lang: {novel_language_code}, seed: {seed_lorebook_path}")
             total_segments_mock = 5
-            iterable_segments = range(total_segments_mock)
-            if tqdm_file_stream:
-                iterable_segments = tqdm(iterable_segments, total=total_segments_mock, desc="로어북 세그먼트 처리(Mock)", file=tqdm_file_stream, unit="세그먼트", leave=False)
+            iterable_segments = range(total_segments_mock) # tqdm handled by CLI or GUI directly if needed
             for i in iterable_segments:
                 if hasattr(self, 'stop_requested') and self.stop_requested: break
                 time.sleep(0.05)
@@ -426,6 +432,16 @@ class BatchTranslatorGUI:
             self.max_workers_entry.delete(0, tk.END)
             self.max_workers_entry.insert(0, str(max_workers_val))
 
+            # Language settings
+            default_novel_lang_val = config.get("default_novel_language", "ko")
+            self.default_novel_language_entry.delete(0, tk.END)
+            self.default_novel_language_entry.insert(0, default_novel_lang_val)
+
+            source_lang_translation_val = config.get("source_language_for_translation", "ko")
+            self.source_language_for_translation_entry.delete(0, tk.END)
+            self.source_language_for_translation_entry.insert(0, source_lang_translation_val)
+
+
             prompts_val = config.get("prompts", "") 
             logger.debug(f"Config에서 가져온 prompts: '{str(prompts_val)[:100]}...', 타입: {type(prompts_val)}")
             self.prompt_text.delete('1.0', tk.END)
@@ -593,6 +609,20 @@ class BatchTranslatorGUI:
         self.max_workers_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.max_workers_entry.pack(side="left")
         self.max_workers_entry.insert(0, str(os.cpu_count() or 1))
+
+        # Language Settings Frame
+        language_settings_frame = ttk.LabelFrame(settings_frame, text="언어 설정", padding="10")
+        language_settings_frame.pack(fill="x", padx=5, pady=5)
+
+        ttk.Label(language_settings_frame, text="기본 소설 언어 (로어북 추출용):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.default_novel_language_entry = ttk.Entry(language_settings_frame, width=10)
+        self.default_novel_language_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        self.default_novel_language_entry.insert(0, "ko") # Default value
+
+        ttk.Label(language_settings_frame, text="번역 출발 언어:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.source_language_for_translation_entry = ttk.Entry(language_settings_frame, width=10)
+        self.source_language_for_translation_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        self.source_language_for_translation_entry.insert(0, "ko") # Default value
         
         # 번역 프롬프트
         prompt_frame = ttk.LabelFrame(settings_frame, text="번역 프롬프트", padding="10")
@@ -717,11 +747,12 @@ class BatchTranslatorGUI:
         self.browse_lorebook_json_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_lorebook_json) # Renamed
         self.browse_lorebook_json_button.grid(row=0, column=2, padx=5, pady=5)
         
+
         extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 로어북 추출", command=self._extract_lorebook_thread) # Text and command changed
-        extract_button.grid(row=1, column=0, columnspan=3, padx=5, pady=10)
+        extract_button.grid(row=2, column=0, columnspan=3, padx=5, pady=10)
         
         self.lorebook_progress_label = ttk.Label(path_frame, text="로어북 추출 대기 중...") # Renamed
-        self.lorebook_progress_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
+        self.lorebook_progress_label.grid(row=3, column=0, columnspan=3, padx=5, pady=2)
 
         # 로어북 추출 설정 프레임
         extraction_settings_frame = ttk.LabelFrame(lorebook_frame, text="로어북 추출 설정", padding="10") # Text changed
@@ -1070,6 +1101,8 @@ class BatchTranslatorGUI:
             "chunk_size": int(self.chunk_size_entry.get() or "6000"), 
             "max_workers": max_workers_val, 
             "prompts": prompt_content,
+            "default_novel_language": self.default_novel_language_entry.get().strip() or "",
+            "source_language_for_translation": self.source_language_for_translation_entry.get().strip() or "",
             # Lorebook settings
             "lorebook_json_path": self.lorebook_json_path_entry.get().strip() or None,
             "lorebook_sampling_ratio": self.sample_ratio_scale.get(),
@@ -1310,13 +1343,16 @@ class BatchTranslatorGUI:
 
         self.lorebook_progress_label.config(text="로어북 추출 시작 중...") # Changed
         self._log_message(f"로어북 추출 시작: {input_file}") # Text changed
-
+        
+        # GUI에서 직접 소설 언어를 입력받는 UI가 제거되었으므로, 항상 None을 전달하여 AppService가 설정을 따르도록 합니다.
+        novel_lang_for_extraction = None
         def _extraction_task_wrapper():
             try:
                 if self.app_service: 
                     result_json_path = self.app_service.extract_lorebook( # Method name changed
                         input_file,
-                        self._update_lorebook_extraction_progress # Callback changed
+                        progress_callback=self._update_lorebook_extraction_progress, # Callback changed
+                        novel_language_code=novel_lang_for_extraction # Pass the language
                     )
                     self.master.after(0, lambda: messagebox.showinfo("성공", f"로어북 추출 완료!\n결과 파일: {result_json_path}")) # Text changed
                     self.master.after(0, lambda: self.lorebook_progress_label.config(text=f"추출 완료: {result_json_path.name}")) # Changed

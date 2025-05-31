@@ -181,6 +181,9 @@ def parse_arguments():
     parser.add_argument("--log_level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO', help="로그 레벨 설정 (기본값: INFO)")
     parser.add_argument("--log_file", type=Path, default=None, help="로그를 저장할 파일 경로 (기본값: btg_cli.log)")
 
+    # 로어북 추출 시 소설 언어 지정
+    parser.add_argument("--novel-lang", type=str, default=None, help="로어북 추출 시 사용할 소설의 원본 언어 코드 (예: ko, en, ja)")
+
     # 동적 로어북 주입 설정
     dyn_lorebook_group = parser.add_argument_group('Dynamic Lorebook Injection Settings')
     dyn_lorebook_group.add_argument("--enable-dynamic-lorebook-injection", action="store_true", help="동적 로어북 주입 기능을 활성화합니다.")
@@ -188,6 +191,10 @@ def parse_arguments():
     dyn_lorebook_group.add_argument("--max-lorebook-chars-injection", type=int, help="번역 청크당 주입할 로어북의 최대 총 문자 수 (예: 500)")
     dyn_lorebook_group.add_argument("--lorebook-json-path-injection", type=Path, help="동적 주입에 사용할 로어북 JSON 파일 경로")
 
+    # 설정 오버라이드
+    config_override_group = parser.add_argument_group('Configuration Overrides')
+    config_override_group.add_argument("--default-novel-language-override", type=str, help="설정 파일의 'default_novel_language' 값을 덮어씁니다.")
+    config_override_group.add_argument("--source-language-for-translation-override", type=str, help="설정 파일의 'source_language_for_translation' 값을 덮어씁니다.")
     return parser.parse_args()
 
 def main():
@@ -274,6 +281,13 @@ def main():
             app_service.config["lorebook_json_path_for_injection"] = str(args.lorebook_json_path_injection.resolve())
             cli_auth_applied = True
 
+        if args.default_novel_language_override:
+            app_service.config["default_novel_language"] = args.default_novel_language_override
+            cli_auth_applied = True
+        if args.source_language_for_translation_override:
+            app_service.config["source_language_for_translation"] = args.source_language_for_translation_override
+            cli_auth_applied = True
+
         if cli_auth_applied:
             cli_logger.info("CLI 인수로 제공된 인증/Vertex 정보를 반영하기 위해 설정을 다시 로드합니다.")
             app_service.load_app_config()
@@ -296,7 +310,8 @@ def main():
             result_lorebook_path = app_service.extract_lorebook( # app_service 메서드명 변경 가정
                 args.input_file,
                 progress_callback=cli_lorebook_extraction_progress_callback, # 콜백 함수명 변경
-                seed_lorebook_path=args.lorebook_seed_file # 추가 인자 전달 (선택)
+                novel_language_code=args.novel_lang, # 소설 언어 코드 전달
+                seed_lorebook_path=args.lorebook_seed_file
             )
             Tqdm.write(f"\n로어북 추출 완료. 결과 파일: {result_lorebook_path}", file=sys.stdout) # 메시지 변경
 

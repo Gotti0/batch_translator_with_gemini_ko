@@ -232,6 +232,7 @@ class AppService:
         self,
         input_file_path: Union[str, Path],
         progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None, # DTO Changed
+        novel_language_code: Optional[str] = None, # 명시적 언어 코드 전달
         seed_lorebook_path: Optional[Union[str, Path]] = None # CLI에서 전달된 시드 로어북 경로
         # tqdm_file_stream is not typically used by lorebook extraction directly in AppService,
         # but can be passed down if LorebookService supports it (currently it doesn't directly)
@@ -249,10 +250,16 @@ class AppService:
                 # For lorebook, an empty input means an empty lorebook, unless a seed is provided.
                 # LorebookService.extract_and_save_lorebook handles empty content.
 
+            # 로어북 추출 시 사용할 언어 코드 결정
+            # 1. 명시적으로 전달된 novel_language_code
+            # 2. 설정 파일의 default_novel_language
+            # 3. None (LorebookService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
+            lang_code_for_extraction = novel_language_code or self.config.get("default_novel_language")
             result_path = self.lorebook_service.extract_and_save_lorebook( # Method changed
                 file_content, # Pass content directly
                 input_file_path, 
-                progress_callback,
+                lang_code_for_extraction, # 결정된 언어 코드 전달
+                progress_callback, # 콜백 위치 변경
                 seed_lorebook_path=seed_lorebook_path # 시드 로어북 경로 전달
             )
             logger.info(f"로어북 추출 완료. 결과 파일: {result_path}") # Message updated

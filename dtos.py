@@ -63,6 +63,7 @@ class LorebookEntryDTO:
     importance: Optional[int] = None # 1-10
     sourceSegmentTextPreview: Optional[str] = None # 추출된 원본 세그먼트 미리보기
     isSpoiler: Optional[bool] = False
+    source_language: Optional[str] = None # 로어북 키워드의 원본 언어 (예: "en", "ja", "ko")
     # 추가 필드 가능
 
 @dataclass
@@ -120,7 +121,8 @@ if __name__ == '__main__':
         description="고대 유물, 소유자에게 막대한 힘을 부여함",
         category="아이템",
         importance=9,
-        isSpoiler=True
+        isSpoiler=True,
+        source_language="ko"
     )
     print(f"로어북 항목 예시: {lorebook_entry_example}")
 
