@@ -6,6 +6,7 @@ import random
 import re
 import json
 from pathlib import Path
+import threading # Added for thread safety
 from typing import Dict, Any, Optional, Union, List
 
 # Google 관련 imports
@@ -129,6 +130,7 @@ class GeminiClient:
         self.vertex_project: Optional[str] = None
         self.vertex_location: Optional[str] = None
         self.vertex_credentials: Optional[ServiceAccountCredentials] = None
+        self._key_rotation_lock = threading.Lock() # For thread-safe key rotation
 
         service_account_info: Optional[Dict[str, Any]] = None
         is_api_key_mode = False
@@ -189,9 +191,30 @@ class GeminiClient:
         elif is_api_key_mode:
             self.auth_mode = "API_KEY"
             if not self.api_keys_list:
-                 raise GeminiInvalidRequestException("API 키 모드이지만 유효한 API 키가 제공되지 않았습니다.")
+                raise GeminiInvalidRequestException("API 키 모드이지만 유효한 API 키가 제공되지 않았습니다.")
+            
+            self.client_pool: Dict[str, genai.Client] = {}
+            successful_keys = []
+            for key_value in self.api_keys_list:
+                try:
+                    # Attempt to create an SDK client instance for each key
+                    sdk_client = genai.Client(api_key=key_value)
+                    self.client_pool[key_value] = sdk_client
+                    successful_keys.append(key_value)
+                    logger.info(f"API 키 '{key_value[:7]}...'에 대한 SDK 클라이언트 인스턴스 생성 성공.")
+                except Exception as e_sdk_init:
+                    logger.warning(f"API 키 '{key_value[:7]}...'에 대한 SDK 클라이언트 생성 실패: {e_sdk_init}")
+            
+            if not successful_keys:
+                raise GeminiAllApiKeysExhaustedException("제공된 모든 API 키에 대해 SDK 클라이언트를 초기화하지 못했습니다.")
+            
+            self.api_keys_list = successful_keys # Use only keys for which clients were created
+            self.current_api_key_index = 0
             self.current_api_key = self.api_keys_list[self.current_api_key_index]
-            logger.info(f"API 키 모드 설정. 사용 키: {self.current_api_key[:5]}...")
+            self.client = self.client_pool.get(self.current_api_key) # Get the first valid client
+            if not self.client: # Should not happen if successful_keys is not empty
+                raise GeminiAllApiKeysExhaustedException("초기 클라이언트 설정에 실패했습니다 (풀에서 클라이언트를 찾을 수 없음).")
+            logger.info(f"API 키 모드 설정 완료. 활성 클라이언트 풀 크기: {len(self.client_pool)}. 현재 사용 키: {self.current_api_key[:7]}...")
         elif os.environ.get("GOOGLE_API_KEY"): 
             env_api_key = os.environ.get("GOOGLE_API_KEY","").strip()
             if env_api_key:
@@ -199,6 +222,15 @@ class GeminiClient:
                 self.api_keys_list = [env_api_key] # 환경 변수 키를 목록의 첫 번째로 사용
                 self.current_api_key = self.api_keys_list[0]
                 logger.info(f"GOOGLE_API_KEY 환경 변수 사용. 키: {self.current_api_key[:5]}...")
+                # For environment variable key, initialize the client directly
+                # and the pool will contain this single client.
+                try:
+                    self.client = genai.Client(api_key=self.current_api_key) # Or genai.Client() if it picks up env var
+                    self.client_pool = {self.current_api_key: self.client}
+                    logger.info(f"환경 변수 API 키 '{self.current_api_key[:7]}...'에 대한 SDK 클라이언트 생성 성공.")
+                except Exception as e_sdk_init_env:
+                    logger.error(f"환경 변수 API 키 '{self.current_api_key[:7]}...'로 SDK 클라이언트 생성 실패: {e_sdk_init_env}")
+                    raise GeminiInvalidRequestException(f"환경 변수 API 키로 클라이언트 초기화 실패: {e_sdk_init_env}") from e_sdk_init_env
             else: 
                 raise GeminiInvalidRequestException("GOOGLE_API_KEY 환경 변수가 설정되어 있으나 값이 비어있습니다.")
         else:
@@ -224,8 +256,9 @@ class GeminiClient:
             elif self.auth_mode == "API_KEY":
                 # API 키 모드에서는 Client()가 API 키를 직접 받지 않을 가능성이 높음.
                 # GOOGLE_API_KEY 환경 변수를 사용하거나,
-                # client.models.generate_content(model='models/model-name?key=YOUR_API_KEY') 형태로 전달.
-                self.client = genai.Client(api_key=self.current_api_key)
+                # self.client is already set from the client_pool or env var initialization
+                if not self.client: # Should have been set if API_KEY mode was successful
+                    raise GeminiInvalidRequestException("API 키 모드이지만 self.client가 초기화되지 않았습니다.")
                 logger.info(f"Gemini Developer API용 Client 초기화 (API 키는 환경 변수 또는 호출 시 전달 가정).")
             else: 
                 raise GeminiInvalidRequestException("클라이언트 초기화 로직 오류: 인증 모드가 설정되었으나 필요한 정보가 부족합니다.")
@@ -338,7 +371,7 @@ class GeminiClient:
         if isinstance(prompt, str):
             final_contents.append(prompt)
         elif isinstance(prompt, list):
-            final_contents.extend(prompt)
+            final_contents.extend(prompt) # type: ignore
         else:
             raise ValueError("프롬프트는 문자열 또는 (문자열 또는 Part 객체의) 리스트여야 합니다.")
 
@@ -350,7 +383,7 @@ class GeminiClient:
             current_backoff = initial_backoff
             
             if self.auth_mode == "API_KEY":
-                current_key_for_log = self.current_api_key or os.environ.get("GOOGLE_API_KEY", "N/A")
+                current_key_for_log = self.current_api_key # self.current_api_key should be set
                 logger.info(f"API 키 '{current_key_for_log[:5]}...'로 작업 시도.")
                 # _normalize_model_name에서 API 키가 모델명에 포함되도록 수정했으므로, 여기서 추가 작업 불필요
             elif self.auth_mode == "VERTEX_AI":
@@ -388,16 +421,36 @@ class GeminiClient:
                         # ... (안전 오류 처리) ...
                         raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
 
+                    text_content_from_api: Optional[str] = None
                     if hasattr(response, 'text') and response.text is not None:
-                        return response.text
+                        text_content_from_api = response.text
                     elif hasattr(response, 'candidates') and response.candidates:
                         # ... (candidates 처리) ...
                         for candidate in response.candidates:
                             if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
                                 if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
-                                    return "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
-                                return "" # 내용 없는 정상 종료
-                        raise GeminiApiException("텍스트 생성이 비정상적으로 종료되었거나 내용이 없습니다.")
+                                    text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
+                                    break # 첫 번째 유효한 후보 사용
+                        if text_content_from_api is None: # 정상 종료했으나 내용이 없는 경우
+                            text_content_from_api = "" 
+
+                    if text_content_from_api is not None:
+                        # generation_config_dict가 None일 수 있으므로 확인
+                        is_json_response_expected = generation_config_dict and \
+                                                    generation_config_dict.get("response_mime_type") == "application/json"
+
+                        if is_json_response_expected:
+                            try:
+                                logger.debug("GeminiClient에서 JSON 응답 파싱 시도 중.")
+                                # 간단한 Markdown 코드 블록 제거
+                                cleaned_json_str = re.sub(r'^```json\s*', '', text_content_from_api.strip(), flags=re.IGNORECASE)
+                                cleaned_json_str = re.sub(r'\s*```$', '', cleaned_json_str, flags=re.IGNORECASE)
+                                return json.loads(cleaned_json_str.strip()) # 파싱된 Python 객체 반환
+                            except json.JSONDecodeError as e_parse:
+                                logger.warning(f"GeminiClient에서 JSON 응답 파싱 실패 (mime type이 application/json임에도 불구하고): {e_parse}. 원본 문자열 반환. 원본: {text_content_from_api[:200]}...")
+                                return text_content_from_api # 파싱 실패 시 원본 문자열 반환
+                        else:
+                            return text_content_from_api # JSON이 아니면 그냥 텍스트 반환
                     
                     raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
 
@@ -450,9 +503,12 @@ class GeminiClient:
             
             attempted_keys_count += 1
             if attempted_keys_count < total_keys and self.auth_mode == "API_KEY":
-                if not self._rotate_api_key_and_reconfigure(): 
+                if not self._rotate_api_key_and_reconfigure():
                     logger.error("다음 API 키로 전환하거나 클라이언트를 재설정하는 데 실패했습니다.")
                     raise GeminiAllApiKeysExhaustedException("유효한 다음 API 키로 전환할 수 없습니다.")
+                if not self.client: # Check if rotation resulted in a valid client
+                    logger.error("API 키 회전 후 유효한 클라이언트가 없습니다. 모든 키가 소진된 것으로 간주합니다.")
+                    raise GeminiAllApiKeysExhaustedException("API 키 회전 후 유효한 클라이언트를 찾지 못했습니다.")
             elif self.auth_mode == "VERTEX_AI": 
                 logger.error("Vertex AI 모드에서 복구 불가능한 오류 발생 또는 최대 재시도 도달.")
                 raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.")
@@ -461,24 +517,31 @@ class GeminiClient:
 
 
     def _rotate_api_key_and_reconfigure(self) -> bool:
-        if not self.api_keys_list or len(self.api_keys_list) == 0:
-            logger.warning("API 키 목록이 비어있어 키 회전을 수행할 수 없습니다.")
-            return False
+        with self._key_rotation_lock: # Ensure thread safety for key rotation
+            if not self.api_keys_list or len(self.api_keys_list) <= 1: # No keys or only one successful key
+                logger.warning("API 키 목록이 비어있거나 단일 유효 키만 있어 회전할 수 없습니다.")
+                # If only one key, and it failed, there's nothing to rotate to.
+                # If it's the only key and it's causing issues, this method shouldn't be called
+                # or it should indicate no other options.
+                self.client = None # Mark that no valid client is available after attempting rotation
+                return False
 
-        self.current_api_key_index = (self.current_api_key_index + 1) % len(self.api_keys_list)
-        self.current_api_key = self.api_keys_list[self.current_api_key_index]
-        logger.info(f"다음 API 키로 전환 시도: {self.current_api_key[:5]}... (인덱스: {self.current_api_key_index})")
-
-        try:
-            # Client 객체는 API 키를 직접 받지 않는다고 가정하고, 환경 변수 GOOGLE_API_KEY를
-            # 이 시점에 업데이트하거나, _normalize_model_name에서 처리하도록 함.
-            # 여기서는 self.current_api_key만 업데이트하고, Client는 그대로 둠.
-            # self.client = google_genai_top_level.Client() # Client 재생성은 불필요할 수 있음
-            logger.info(f"현재 API 키를 '{self.current_api_key[:5]}...'로 업데이트했습니다.")
-            return True
-        except Exception as e:
-            logger.error(f"API 키 업데이트 중 오류: {e}", exc_info=True)
-            # self.client = None # Client 재생성 실패 시 None으로 설정할 수 있으나, 여기서는 current_api_key만 변경
+            original_index = self.current_api_key_index
+            for i in range(len(self.api_keys_list)): # Iterate once through all available successful keys
+                self.current_api_key_index = (original_index + 1 + i) % len(self.api_keys_list)
+                next_key = self.api_keys_list[self.current_api_key_index]
+                
+                # Check if a client for this key exists in our pool
+                if next_key in self.client_pool:
+                    self.current_api_key = next_key
+                    self.client = self.client_pool[self.current_api_key]
+                    logger.info(f"API 키를 '{self.current_api_key[:7]}...' (인덱스: {self.current_api_key_index})로 성공적으로 회전하고 클라이언트를 업데이트했습니다.")
+                    return True
+                else: # Should not happen if api_keys_list only contains keys from client_pool
+                    logger.warning(f"회전 시도 중 API 키 '{next_key[:7]}...'에 대한 클라이언트를 풀에서 찾을 수 없습니다. 다음 키로 넘어갑니다.")
+            
+            logger.error("유효한 다음 API 키로 회전하지 못했습니다. 모든 풀의 클라이언트가 유효하지 않을 수 있습니다.")
+            self.client = None # No valid client found after trying all pooled keys
             return False
 
     def list_models(self) -> List[Dict[str, Any]]:
@@ -533,9 +596,12 @@ class GeminiClient:
                         raise GeminiAllApiKeysExhaustedException("모든 API 키로 모델 목록 조회에 실패했습니다.") from e
                     
                     logger.info("다음 API 키로 회전하여 모델 목록 조회 재시도...")
-                    if not self._rotate_api_key_and_reconfigure(): 
+                    if not self._rotate_api_key_and_reconfigure():
                         logger.error("API 키 회전 또는 클라이언트 재설정 실패 (list_models).")
                         raise GeminiAllApiKeysExhaustedException("API 키 회전 중 문제 발생 또는 모든 키 시도됨 (list_models).") from e
+                    if not self.client: # Check if rotation resulted in a valid client
+                        logger.error("API 키 회전 후 유효한 클라이언트가 없습니다 (list_models).")
+                        raise GeminiAllApiKeysExhaustedException("API 키 회전 후 유효한 클라이언트를 찾지 못했습니다 (list_models).")
                 else: 
                     logger.error(f"모델 목록 조회 실패 (키 회전 불가 또는 Vertex 모드): {error_message}")
                     raise GeminiApiException(f"모델 목록 조회 실패: {error_message}") from e

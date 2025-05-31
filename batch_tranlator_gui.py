@@ -21,10 +21,10 @@ import logging
 # 4계층 아키텍처의 AppService 및 DTOs, Exceptions 임포트
 try:
     from app_service import AppService
-    from dtos import TranslationJobProgressDTO, PronounExtractionProgressDTO, ModelInfoDTO
-    from exceptions import BtgConfigException, BtgServiceException, BtgFileHandlerException, BtgApiClientException, BtgPronounException, BtgException
+    from dtos import TranslationJobProgressDTO, LorebookExtractionProgressDTO, ModelInfoDTO # Changed PronounExtractionProgressDTO
+    from exceptions import BtgConfigException, BtgServiceException, BtgFileHandlerException, BtgApiClientException, BtgBusinessLogicException, BtgException # BtgPronounException removed, BtgBusinessLogicException added
     from logger_config import setup_logger
-    from file_handler import get_metadata_file_path, load_metadata, _hash_config_for_metadata, delete_file
+    from file_handler import get_metadata_file_path, load_metadata, _hash_config_for_metadata, delete_file # PRONOUN_CSV_HEADER removed
 except ImportError as e:
     print(f"초기 임포트 오류: {e}. 스크립트가 프로젝트 루트에서 실행되고 있는지, "
           f"PYTHONPATH가 올바르게 설정되었는지 확인하세요.")
@@ -44,8 +44,8 @@ except ImportError as e:
         total_chunks: int = 0; processed_chunks: int = 0; successful_chunks: int = 0; failed_chunks: int = 0
         current_status_message: str = "대기 중"; current_chunk_processing: Optional[int] = None; last_error_message: Optional[str] = None
     @dataclass
-    class PronounExtractionProgressDTO:
-        total_sample_chunks: int = 0; processed_sample_chunks: int = 0; current_status_message: str = "대기 중"
+    class LorebookExtractionProgressDTO: # Changed from PronounExtractionProgressDTO
+        total_segments: int = 0; processed_segments: int = 0; current_status_message: str = "대기 중"; extracted_entries_count: int = 0
     @dataclass
     class ModelInfoDTO: name: str; display_name: str; description: Optional[str] = None; version: Optional[str] = None
     class BtgBaseException(Exception): pass
@@ -53,7 +53,7 @@ except ImportError as e:
     class BtgServiceException(BtgBaseException): pass
     class BtgFileHandlerException(BtgBaseException): pass
     class BtgApiClientException(BtgBaseException): pass
-    class BtgPronounException(BtgBaseException): pass
+    class BtgBusinessLogicException(BtgBaseException): pass # Added for fallback
     BtgException = BtgBaseException
 
     def get_metadata_file_path(p): return Path(str(p) + "_metadata.json")
@@ -75,7 +75,7 @@ except ImportError as e:
             self.processed_chunks_count = 0
             self.successful_chunks_count = 0
             self.failed_chunks_count = 0
-            self.pronoun_service = self
+            self.lorebook_service = self # Renamed from pronoun_service
             self.translation_service = self
             self.gemini_client = True 
             self.config_manager = self 
@@ -93,9 +93,19 @@ except ImportError as e:
                 "model_name": "gemini-2.0-flash", 
                 "temperature": 0.7, "top_p": 0.9, "chunk_size": 100,
                 "prompts": "Translate to Korean: {{slot}}",
-                "pronouns_csv": "mock_pronouns.csv", 
+                "lorebook_json_path": "mock_lorebook.json", # Changed from pronouns_csv
                 "max_workers": os.cpu_count() or 1, 
-                "auth_credentials": ""
+                "auth_credentials": "",
+                # Mock Lorebook settings
+                "lorebook_sampling_method": "uniform",
+                "lorebook_sampling_ratio": 25.0,
+                "lorebook_max_entries_per_segment": 5,
+                "lorebook_max_chars_per_entry": 200,
+                "lorebook_keyword_sensitivity": "medium",
+                "lorebook_priority_settings": {"character": 5, "worldview": 5, "story_element": 5},
+                "lorebook_chunk_size": 8000,
+                "lorebook_extraction_temperature": 0.2,
+                "lorebook_output_json_filename_suffix": "_lorebook.json"
             }
         def load_app_config(self) -> Dict[str, Any]:
             print("Mock AppService: load_app_config called.")
@@ -137,19 +147,20 @@ except ImportError as e:
                 {"name": "models/gemini-pro", "display_name": "Gemini Pro", "short_name": "gemini-pro", "description": "Mock Pro model"},
                 {"name": "models/text-embedding-004", "display_name": "Text Embedding 004", "short_name": "text-embedding-004"}
             ]
-        def extract_pronouns(self, input_file_path: Union[str, Path], progress_callback: Optional[Callable[[PronounExtractionProgressDTO], None]] = None, tqdm_file_stream=None) -> Path:
-            print(f"Mock AppService: extract_pronouns called for {input_file_path}")
-            total_samples = 5
-            iterable_chunks = range(total_samples)
+        def extract_lorebook(self, input_file_path: Union[str, Path], progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None, tqdm_file_stream=None) -> Path: # Renamed and DTO changed
+            print(f"Mock AppService: extract_lorebook called for {input_file_path}")
+            total_segments_mock = 5
+            iterable_segments = range(total_segments_mock)
             if tqdm_file_stream:
-                iterable_chunks = tqdm(iterable_chunks, total=total_samples, desc="고유명사 샘플 처리(Mock)", file=tqdm_file_stream, unit="청크", leave=False)
-            for i in iterable_chunks:
+                iterable_segments = tqdm(iterable_segments, total=total_segments_mock, desc="로어북 세그먼트 처리(Mock)", file=tqdm_file_stream, unit="세그먼트", leave=False)
+            for i in iterable_segments:
                 if hasattr(self, 'stop_requested') and self.stop_requested: break
                 time.sleep(0.05)
                 if progress_callback:
-                    msg = f"표본 청크 {i+1}/{total_samples} 처리 중" if i < total_samples -1 else "고유명사 추출 완료"
-                    progress_callback(PronounExtractionProgressDTO(total_sample_chunks=total_samples, processed_sample_chunks=i+1, current_status_message=msg))
-            return Path(str(input_file_path) + "_seed.csv")
+                    msg = f"표본 세그먼트 {i+1}/{total_segments_mock} 처리 중" if i < total_segments_mock -1 else "로어북 추출 완료"
+                    progress_callback(LorebookExtractionProgressDTO(total_segments=total_segments_mock, processed_segments=i+1, current_status_message=msg, extracted_entries_count=i*2))
+            output_suffix = self.config.get("lorebook_output_json_filename_suffix", "_lorebook.json")
+            return Path(input_file_path).with_name(f"{Path(input_file_path).stem}{output_suffix}")
 
         def start_translation(self, input_file_path: Union[str, Path], output_file_path: Union[str, Path],
                               progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
@@ -320,18 +331,18 @@ class BatchTranslatorGUI:
         
         # 스크롤 가능한 프레임들로 탭 생성
         self.settings_scroll = ScrollableFrame(self.notebook)
-        self.pronouns_scroll = ScrollableFrame(self.notebook)
+        self.lorebook_scroll = ScrollableFrame(self.notebook) # Renamed from pronouns_scroll
         self.log_tab = ttk.Frame(self.notebook, padding="10")  # 로그 탭은 기존 유지
         
         # 탭 추가
         self.notebook.add(self.settings_scroll.main_frame, text='설정 및 번역')
-        self.notebook.add(self.pronouns_scroll.main_frame, text='고유명사 관리')
+        self.notebook.add(self.lorebook_scroll.main_frame, text='로어북 관리') # Tab text changed
         self.notebook.add(self.log_tab, text='실행 로그')
         self.notebook.pack(expand=True, fill='both')
         
         # 위젯 생성 (스크롤 가능한 프레임 사용)
         self._create_settings_widgets()
-        self._create_pronouns_widgets()
+        self._create_lorebook_widgets() # Renamed from _create_pronouns_widgets
         self._create_log_widgets()
 
         if self.app_service:
@@ -427,23 +438,55 @@ class BatchTranslatorGUI:
                 default_prompt_str = default_prompt_config[0] if isinstance(default_prompt_config, tuple) and default_prompt_config else str(default_prompt_config)
                 self.prompt_text.insert('1.0', default_prompt_str)
                 logger.warning(f"Prompts 타입이 예상과 다릅니다 ({type(prompts_val)}). 기본 프롬프트 사용.")
+            
+            # Lorebook specific settings
+            lorebook_json_path_val = config.get("lorebook_json_path") # Removed fallback to pronouns_csv
+            logger.debug(f"Config에서 가져온 lorebook_json_path: {lorebook_json_path_val}")
+            self.lorebook_json_path_entry.delete(0, tk.END)
+            self.lorebook_json_path_entry.insert(0, lorebook_json_path_val if lorebook_json_path_val is not None else "")
 
-            pronoun_csv_val = config.get("pronouns_csv")
-            logger.debug(f"Config에서 가져온 pronouns_csv: {pronoun_csv_val}")
-            self.pronoun_csv_path_entry.delete(0, tk.END)
-            self.pronoun_csv_path_entry.insert(0, pronoun_csv_val if pronoun_csv_val is not None else "")
-
-            sample_ratio = config.get("pronoun_sample_ratio", 25.0)
+            sample_ratio = config.get("lorebook_sampling_ratio", 25.0)
             self.sample_ratio_scale.set(sample_ratio)
             self.sample_ratio_label.config(text=f"{sample_ratio:.1f}%")
             
-            max_entries = config.get("max_pronoun_entries", 20)
-            self.max_entries_spinbox.set(str(max_entries))
+            max_entries_segment = config.get("lorebook_max_entries_per_segment", 5)
+            self.max_entries_per_segment_spinbox.set(str(max_entries_segment))
+
+            self.lorebook_sampling_method_combobox.set(config.get("lorebook_sampling_method", "uniform"))
+            self.lorebook_max_chars_entry.delete(0, tk.END)
+            self.lorebook_max_chars_entry.insert(0, str(config.get("lorebook_max_chars_per_entry", 200)))
+            self.lorebook_keyword_sensitivity_combobox.set(config.get("lorebook_keyword_sensitivity", "medium"))
+            # For priority_settings, ai_prompt_template, conflict_resolution_prompt_template - ScrolledText
+            self.lorebook_priority_text.delete('1.0', tk.END)
+            self.lorebook_priority_text.insert('1.0', json.dumps(config.get("lorebook_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2))
+            self.lorebook_chunk_size_entry.delete(0, tk.END)
+            self.lorebook_chunk_size_entry.insert(0, str(config.get("lorebook_chunk_size", 8000)))
             
-            extraction_temp = config.get("pronoun_extraction_temperature", 0.2)
+            # Dynamic Lorebook Injection Settings
+            self.enable_dynamic_lorebook_injection_var.set(config.get("enable_dynamic_lorebook_injection", False))
+            self.max_lorebook_entries_injection_entry.delete(0, tk.END)
+            self.max_lorebook_entries_injection_entry.insert(0, str(config.get("max_lorebook_entries_per_chunk_injection", 3)))
+            self.max_lorebook_chars_injection_entry.delete(0, tk.END)
+            self.max_lorebook_chars_injection_entry.insert(0, str(config.get("max_lorebook_chars_per_chunk_injection", 500)))
+            lorebook_injection_path_val = config.get("lorebook_json_path_for_injection")
+            self.lorebook_json_path_for_injection_entry.delete(0, tk.END)
+            self.lorebook_json_path_for_injection_entry.insert(0, lorebook_injection_path_val if lorebook_injection_path_val is not None else "")
+
+            extraction_temp = config.get("lorebook_extraction_temperature", 0.2)
             self.extraction_temp_scale.set(extraction_temp)
             self.extraction_temp_label.config(text=f"{extraction_temp:.2f}")
 
+            # Content Safety Retry Settings
+            use_content_safety_retry_val = config.get("use_content_safety_retry", True)
+            self.use_content_safety_retry_var.set(use_content_safety_retry_val)
+
+            max_split_attempts_val = config.get("max_content_safety_split_attempts", 3)
+            self.max_split_attempts_entry.delete(0, tk.END)
+            self.max_split_attempts_entry.insert(0, str(max_split_attempts_val))
+
+            min_chunk_size_val = config.get("min_content_safety_chunk_size", 100)
+            self.min_chunk_size_entry.delete(0, tk.END)
+            self.min_chunk_size_entry.insert(0, str(min_chunk_size_val))
             logger.info("UI에 설정 로드 완료.")
         except BtgConfigException as e: 
             messagebox.showerror("설정 로드 오류", f"설정 로드 중 오류: {e}")
@@ -579,6 +622,32 @@ class BatchTranslatorGUI:
         self.min_chunk_size_entry = ttk.Entry(content_safety_frame, width=10)
         self.min_chunk_size_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         self.min_chunk_size_entry.insert(0, "100")
+
+        # 동적 로어북 주입 설정
+        dynamic_lorebook_frame = ttk.LabelFrame(settings_frame, text="동적 로어북 주입 설정", padding="10")
+        dynamic_lorebook_frame.pack(fill="x", padx=5, pady=5)
+
+        self.enable_dynamic_lorebook_injection_var = tk.BooleanVar()
+        self.enable_dynamic_lorebook_injection_check = ttk.Checkbutton(
+            dynamic_lorebook_frame,
+            text="동적 로어북 주입 활성화",
+            variable=self.enable_dynamic_lorebook_injection_var
+        )
+        self.enable_dynamic_lorebook_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
+
+        ttk.Label(dynamic_lorebook_frame, text="청크당 최대 주입 항목 수:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.max_lorebook_entries_injection_entry = ttk.Entry(dynamic_lorebook_frame, width=5)
+        self.max_lorebook_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+
+        ttk.Label(dynamic_lorebook_frame, text="청크당 최대 주입 문자 수:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.max_lorebook_chars_injection_entry = ttk.Entry(dynamic_lorebook_frame, width=10)
+        self.max_lorebook_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+
+        ttk.Label(dynamic_lorebook_frame, text="주입용 로어북 JSON 경로:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.lorebook_json_path_for_injection_entry = ttk.Entry(dynamic_lorebook_frame, width=50)
+        self.lorebook_json_path_for_injection_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        self.browse_lorebook_injection_button = ttk.Button(dynamic_lorebook_frame, text="찾아보기", command=self._browse_lorebook_json_for_injection)
+        self.browse_lorebook_injection_button.grid(row=3, column=2, padx=5, pady=5)
         
         # 액션 버튼들
         action_frame = ttk.Frame(settings_frame, padding="10")
@@ -634,31 +703,31 @@ class BatchTranslatorGUI:
         logger.debug(f"Vertex 필드 상태: {vertex_related_state}, API 키 필드 상태: {api_related_state}")
 
 
-    def _create_pronouns_widgets(self):
+    def _create_lorebook_widgets(self): # Renamed from _create_pronouns_widgets
         # 스크롤 가능한 프레임의 내부 프레임 사용
-        pronouns_frame = self.pronouns_scroll.scrollable_frame
+        lorebook_frame = self.lorebook_scroll.scrollable_frame # Renamed
         
-        # 고유명사 CSV 파일 설정
-        path_frame = ttk.LabelFrame(pronouns_frame, text="고유명사 CSV 파일", padding="10")
+        # 로어북 JSON 파일 설정
+        path_frame = ttk.LabelFrame(lorebook_frame, text="로어북 JSON 파일", padding="10") # Text changed
         path_frame.pack(fill="x", padx=5, pady=5)
         
-        ttk.Label(path_frame, text="CSV 파일 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.pronoun_csv_path_entry = ttk.Entry(path_frame, width=50)
-        self.pronoun_csv_path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.browse_pronoun_csv_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_pronoun_csv)
-        self.browse_pronoun_csv_button.grid(row=0, column=2, padx=5, pady=5)
+        ttk.Label(path_frame, text="JSON 파일 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w") # Text changed
+        self.lorebook_json_path_entry = ttk.Entry(path_frame, width=50) # Renamed
+        self.lorebook_json_path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.browse_lorebook_json_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_lorebook_json) # Renamed
+        self.browse_lorebook_json_button.grid(row=0, column=2, padx=5, pady=5)
         
-        extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 고유명사 추출", command=self._extract_pronouns_thread)
+        extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 로어북 추출", command=self._extract_lorebook_thread) # Text and command changed
         extract_button.grid(row=1, column=0, columnspan=3, padx=5, pady=10)
         
-        self.pronoun_progress_label = ttk.Label(path_frame, text="고유명사 추출 대기 중...")
-        self.pronoun_progress_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
+        self.lorebook_progress_label = ttk.Label(path_frame, text="로어북 추출 대기 중...") # Renamed
+        self.lorebook_progress_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
 
-        # 새로운 고유명사 추출 설정 프레임
-        extraction_settings_frame = ttk.LabelFrame(pronouns_frame, text="고유명사 추출 설정", padding="10")
+        # 로어북 추출 설정 프레임
+        extraction_settings_frame = ttk.LabelFrame(lorebook_frame, text="로어북 추출 설정", padding="10") # Text changed
         extraction_settings_frame.pack(fill="x", padx=5, pady=5)
         
-        # 샘플링 비율 설정 (pronoun_sample_ratio)
+        # 샘플링 비율 설정 (lorebook_sampling_ratio)
         ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         
         sample_ratio_frame = ttk.Frame(extraction_settings_frame)
@@ -679,30 +748,56 @@ class BatchTranslatorGUI:
         
         # 도움말 레이블
         ttk.Label(extraction_settings_frame, 
-                text="전체 텍스트에서 고유명사 추출에 사용할 청크의 비율", 
+                text="전체 텍스트에서 로어북 추출에 사용할 세그먼트 비율", # Text changed
                 font=("Arial", 8), 
                 foreground="gray").grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
         
-        # 최대 고유명사 항목 수 설정 (max_pronoun_entries)
-        ttk.Label(extraction_settings_frame, text="최대 고유명사 수:").grid(row=2, column=0, padx=5, pady=(15,5), sticky="w")
+        # 최대 항목 수 (세그먼트 당) 설정 (lorebook_max_entries_per_segment)
+        ttk.Label(extraction_settings_frame, text="세그먼트 당 최대 항목 수:").grid(row=2, column=0, padx=5, pady=(15,5), sticky="w") # Text changed
         
-        max_entries_frame = ttk.Frame(extraction_settings_frame)
-        max_entries_frame.grid(row=2, column=1, columnspan=2, padx=5, pady=(15,5), sticky="ew")
+        max_entries_segment_frame = ttk.Frame(extraction_settings_frame)
+        max_entries_segment_frame.grid(row=2, column=1, columnspan=2, padx=5, pady=(15,5), sticky="ew")
         
-        self.max_entries_spinbox = ttk.Spinbox(
-            max_entries_frame,
+        self.max_entries_per_segment_spinbox = ttk.Spinbox( # Renamed
+            max_entries_segment_frame,
             from_=1,
-            to=100,
+            to=20, # Adjusted range
             width=8,
-            command=self._update_max_entries_label,
+            command=self._update_max_entries_segment_label, # Command changed
             validate="key",
-            validatecommand=(self.master.register(self._validate_max_entries), '%P')
+            validatecommand=(self.master.register(self._validate_max_entries_segment), '%P') # Validation changed
         )
-        self.max_entries_spinbox.pack(side="left", padx=(0,10))
-        self.max_entries_spinbox.set("20")  # 기본값
+        self.max_entries_per_segment_spinbox.pack(side="left", padx=(0,10))
+        self.max_entries_per_segment_spinbox.set("5")  # 기본값
         
-        self.max_entries_label = ttk.Label(max_entries_frame, text="개 항목", width=8)
-        self.max_entries_label.pack(side="left")
+        self.max_entries_per_segment_label = ttk.Label(max_entries_segment_frame, text="개 항목", width=8) # Renamed
+        self.max_entries_per_segment_label.pack(side="left")
+
+        # New Lorebook settings
+        ttk.Label(extraction_settings_frame, text="샘플링 방식:").grid(row=6, column=0, padx=5, pady=5, sticky="w")
+        self.lorebook_sampling_method_combobox = ttk.Combobox(extraction_settings_frame, values=["uniform", "random"], width=15)
+        self.lorebook_sampling_method_combobox.grid(row=6, column=1, padx=5, pady=5, sticky="w")
+        self.lorebook_sampling_method_combobox.set("uniform")
+
+        ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:").grid(row=7, column=0, padx=5, pady=5, sticky="w")
+        self.lorebook_max_chars_entry = ttk.Entry(extraction_settings_frame, width=10)
+        self.lorebook_max_chars_entry.grid(row=7, column=1, padx=5, pady=5, sticky="w")
+        self.lorebook_max_chars_entry.insert(0, "200")
+
+        ttk.Label(extraction_settings_frame, text="키워드 민감도:").grid(row=8, column=0, padx=5, pady=5, sticky="w")
+        self.lorebook_keyword_sensitivity_combobox = ttk.Combobox(extraction_settings_frame, values=["low", "medium", "high"], width=15)
+        self.lorebook_keyword_sensitivity_combobox.grid(row=8, column=1, padx=5, pady=5, sticky="w")
+        self.lorebook_keyword_sensitivity_combobox.set("medium")
+
+        ttk.Label(extraction_settings_frame, text="로어북 세그먼트 크기:").grid(row=9, column=0, padx=5, pady=5, sticky="w")
+        self.lorebook_chunk_size_entry = ttk.Entry(extraction_settings_frame, width=10)
+        self.lorebook_chunk_size_entry.grid(row=9, column=1, padx=5, pady=5, sticky="w")
+        self.lorebook_chunk_size_entry.insert(0, "8000")
+
+        ttk.Label(extraction_settings_frame, text="우선순위 설정 (JSON):").grid(row=10, column=0, padx=5, pady=5, sticky="nw")
+        self.lorebook_priority_text = scrolledtext.ScrolledText(extraction_settings_frame, width=40, height=5, wrap=tk.WORD)
+        self.lorebook_priority_text.grid(row=10, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        self.lorebook_priority_text.insert('1.0', json.dumps({"character": 5, "worldview": 5, "story_element": 5}, indent=2))
         
         # 도움말 레이블
         ttk.Label(extraction_settings_frame, 
@@ -745,46 +840,71 @@ class BatchTranslatorGUI:
         self.advanced_frame.grid_remove()
 
         # 액션 버튼 프레임 추가
-        pronoun_action_frame = ttk.Frame(pronouns_frame, padding="10")
-        pronoun_action_frame.pack(fill="x", padx=5, pady=5)
+        lorebook_action_frame = ttk.Frame(lorebook_frame, padding="10") # Renamed
+        lorebook_action_frame.pack(fill="x", padx=5, pady=5)
         
         # 설정 저장 버튼
-        self.save_pronoun_settings_button = ttk.Button(
-            pronoun_action_frame, 
-            text="고유명사 설정 저장", 
-            command=self._save_pronoun_settings
+        self.save_lorebook_settings_button = ttk.Button( # Renamed
+            lorebook_action_frame, 
+            text="로어북 설정 저장", # Text changed
+            command=self._save_lorebook_settings # Command changed
         )
-        self.save_pronoun_settings_button.pack(side="left", padx=5)
+        self.save_lorebook_settings_button.pack(side="left", padx=5)
         
         # 설정 초기화 버튼
-        self.reset_pronoun_settings_button = ttk.Button(
-            pronoun_action_frame, 
+        self.reset_lorebook_settings_button = ttk.Button( # Renamed
+            lorebook_action_frame, 
             text="기본값으로 초기화", 
-            command=self._reset_pronoun_settings
+            command=self._reset_lorebook_settings # Command changed
         )
-        self.reset_pronoun_settings_button.pack(side="left", padx=5)
+        self.reset_lorebook_settings_button.pack(side="left", padx=5)
         
         # 실시간 미리보기 버튼
-        self.preview_pronoun_settings_button = ttk.Button(
-            pronoun_action_frame, 
+        self.preview_lorebook_settings_button = ttk.Button( # Renamed
+            lorebook_action_frame, 
             text="설정 미리보기", 
-            command=self._preview_pronoun_settings
+            command=self._preview_lorebook_settings # Command changed
         )
-        self.preview_pronoun_settings_button.pack(side="right", padx=5)
+        self.preview_lorebook_settings_button.pack(side="right", padx=5)
 
         # 상태 표시 레이블
-        self.pronoun_status_label = ttk.Label(
-            pronoun_action_frame, 
+        self.lorebook_status_label = ttk.Label( # Renamed
+            lorebook_action_frame, 
             text="⏸️ 설정 변경 대기 중...", 
             font=("Arial", 9),
             foreground="gray"
         )
-        self.pronoun_status_label.pack(side="bottom", pady=5)
+        self.lorebook_status_label.pack(side="bottom", pady=5)
+
+        # Lorebook Display Area
+        lorebook_display_frame = ttk.LabelFrame(lorebook_frame, text="추출된 로어북 (JSON)", padding="10")
+        lorebook_display_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        self.lorebook_display_text = scrolledtext.ScrolledText(lorebook_display_frame, wrap=tk.WORD, height=10, width=70)
+        self.lorebook_display_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+        lorebook_display_buttons_frame = ttk.Frame(lorebook_display_frame)
+        lorebook_display_buttons_frame.pack(fill="x", pady=5)
+
+        self.load_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="로어북 불러오기", command=self._load_lorebook_to_display)
+        self.load_lorebook_button.pack(side="left", padx=5)
+
+        self.copy_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="JSON 복사", command=self._copy_lorebook_json)
+        self.copy_lorebook_button.pack(side="left", padx=5)
+
+        self.save_displayed_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="JSON 저장", command=self._save_displayed_lorebook_json)
+        self.save_displayed_lorebook_button.pack(side="left", padx=5)
 
         # 설정 변경 감지 이벤트 바인딩
-        self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_pronoun_setting_changed)
-        self.max_entries_spinbox.bind("<KeyRelease>", self._on_pronoun_setting_changed)
-        self.extraction_temp_scale.bind("<ButtonRelease-1>", self._on_pronoun_setting_changed)
+        self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_lorebook_setting_changed) # Changed
+        self.max_entries_per_segment_spinbox.bind("<KeyRelease>", self._on_lorebook_setting_changed) # Changed
+        self.extraction_temp_scale.bind("<ButtonRelease-1>", self._on_lorebook_setting_changed) # Changed
+        # Bindings for new lorebook settings
+        self.lorebook_sampling_method_combobox.bind("<<ComboboxSelected>>", self._on_lorebook_setting_changed)
+        self.lorebook_max_chars_entry.bind("<KeyRelease>", self._on_lorebook_setting_changed)
+        self.lorebook_keyword_sensitivity_combobox.bind("<<ComboboxSelected>>", self._on_lorebook_setting_changed)
+        self.lorebook_chunk_size_entry.bind("<KeyRelease>", self._on_lorebook_setting_changed)
+        self.lorebook_priority_text.bind("<KeyRelease>", self._on_lorebook_setting_changed)
 
     def _create_log_widgets(self):
         self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD, state=tk.DISABLED, height=20)
@@ -883,9 +1003,9 @@ class BatchTranslatorGUI:
             suggested_output = p.parent / f"{p.stem}_translated{p.suffix}"
             self.output_file_entry.delete(0, tk.END)
             self.output_file_entry.insert(0, str(suggested_output))
-            suggested_pronoun_csv = p.parent / f"{p.stem}_seed.csv" 
-            self.pronoun_csv_path_entry.delete(0, tk.END)
-            self.pronoun_csv_path_entry.insert(0, str(suggested_pronoun_csv))
+            suggested_lorebook_json = p.parent / f"{p.stem}{self.app_service.config.get('lorebook_output_json_filename_suffix', '_lorebook.json') if self.app_service else '_lorebook.json'}"
+            self.lorebook_json_path_entry.delete(0, tk.END) # Changed
+            self.lorebook_json_path_entry.insert(0, str(suggested_lorebook_json))
 
     def _browse_output_file(self):
         filepath = filedialog.asksaveasfilename(title="출력 파일 선택", defaultextension=".txt", filetypes=(("텍스트 파일", "*.txt"), ("모든 파일", "*.*")))
@@ -893,20 +1013,30 @@ class BatchTranslatorGUI:
             self.output_file_entry.delete(0, tk.END)
             self.output_file_entry.insert(0, filepath)
 
-    def _browse_pronoun_csv(self):
+    def _browse_lorebook_json(self): # Renamed
         initial_dir = ""
         input_file_path = self.input_file_entry.get()
         if input_file_path and Path(input_file_path).exists():
             initial_dir = str(Path(input_file_path).parent)
         
         filepath = filedialog.askopenfilename(
-            title="고유명사 CSV 파일 선택", 
-            filetypes=(("CSV 파일", "*.csv"), ("모든 파일", "*.*")),
+            title="로어북 JSON 파일 선택",  # Text changed
+            filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*")), # Type changed
             initialdir=initial_dir
             )
         if filepath:
-            self.pronoun_csv_path_entry.delete(0, tk.END)
-            self.pronoun_csv_path_entry.insert(0, filepath)
+            self.lorebook_json_path_entry.delete(0, tk.END) # Changed
+            self.lorebook_json_path_entry.insert(0, filepath)
+
+    def _browse_lorebook_json_for_injection(self):
+        filepath = filedialog.askopenfilename(
+            title="주입용 로어북 JSON 파일 선택",
+            filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*"))
+        )
+        if filepath:
+            self.lorebook_json_path_for_injection_entry.delete(0, tk.END)
+            self.lorebook_json_path_for_injection_entry.insert(0, filepath)
+
 
     def _get_config_from_ui(self) -> Dict[str, Any]:
         prompt_content = self.prompt_text.get("1.0", tk.END).strip()
@@ -940,11 +1070,32 @@ class BatchTranslatorGUI:
             "chunk_size": int(self.chunk_size_entry.get() or "6000"), 
             "max_workers": max_workers_val, 
             "prompts": prompt_content,
-            "pronouns_csv": self.pronoun_csv_path_entry.get().strip() or None,
-            "pronoun_sample_ratio": self.sample_ratio_scale.get(),
-            "max_pronoun_entries": int(self.max_entries_spinbox.get()),
-            "pronoun_extraction_temperature": self.extraction_temp_scale.get(),
+            # Lorebook settings
+            "lorebook_json_path": self.lorebook_json_path_entry.get().strip() or None,
+            "lorebook_sampling_ratio": self.sample_ratio_scale.get(),
+            "lorebook_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()),
+            "lorebook_extraction_temperature": self.extraction_temp_scale.get(),
+            "lorebook_sampling_method": self.lorebook_sampling_method_combobox.get(),
+            "lorebook_max_chars_per_entry": int(self.lorebook_max_chars_entry.get() or "200"),
+            "lorebook_keyword_sensitivity": self.lorebook_keyword_sensitivity_combobox.get(),
+            "lorebook_chunk_size": int(self.lorebook_chunk_size_entry.get() or "8000"),
+                # Dynamic lorebook injection settings
+                "enable_dynamic_lorebook_injection": self.enable_dynamic_lorebook_injection_var.get(),
+                "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"),
+                "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500"),
+                "lorebook_json_path_for_injection": self.lorebook_json_path_for_injection_entry.get().strip() or None,
+            # Content Safety Retry settings
+            "use_content_safety_retry": self.use_content_safety_retry_var.get(),
+            "max_content_safety_split_attempts": int(self.max_split_attempts_entry.get() or "3"),
+            "min_content_safety_chunk_size": int(self.min_chunk_size_entry.get() or "100"),
+
+
         }
+        try:
+            config_data["lorebook_priority_settings"] = json.loads(self.lorebook_priority_text.get("1.0", tk.END).strip() or "{}")
+        except json.JSONDecodeError:
+            messagebox.showwarning("입력 오류", "로어북 우선순위 설정이 유효한 JSON 형식이 아닙니다. 기본값으로 유지됩니다.")
+            config_data["lorebook_priority_settings"] = self.app_service.config_manager.get_default_config().get("lorebook_priority_settings")
         
         return config_data
 
@@ -1120,20 +1271,20 @@ class BatchTranslatorGUI:
         else:
             self._log_message("실행 중인 번역 작업이 없습니다.")
 
-    def _update_pronoun_extraction_progress(self, dto: PronounExtractionProgressDTO):
+    def _update_lorebook_extraction_progress(self, dto: LorebookExtractionProgressDTO): # Renamed and DTO changed
         def _update():
             if not self.master.winfo_exists(): return
-            msg = f"{dto.current_status_message} ({dto.processed_sample_chunks}/{dto.total_sample_chunks})"
-            self.pronoun_progress_label.config(text=msg)
+            msg = f"{dto.current_status_message} ({dto.processed_segments}/{dto.total_segments}, 추출 항목: {dto.extracted_entries_count})" # DTO fields changed
+            self.lorebook_progress_label.config(text=msg) # Changed
         if self.master.winfo_exists():
             self.master.after(0, _update)
 
-    def _extract_pronouns_thread(self):
+    def _extract_lorebook_thread(self): # Renamed
         if not self.app_service:
             messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
             return
 
-        input_file = self.input_file_entry.get()
+        input_file = self.input_file_entry.get() # This should be the source novel file
         if not input_file:
             messagebox.showwarning("경고", "고유명사를 추출할 입력 파일을 먼저 선택해주세요.")
             return
@@ -1153,42 +1304,48 @@ class BatchTranslatorGUI:
              messagebox.showerror("입력 오류", f"설정값 오류: {ve}")
              return
         except Exception as e:
-            messagebox.showerror("오류", f"고유명사 추출 시작 전 설정 오류: {e}")
-            self._log_message(f"고유명사 추출 시작 전 설정 오류: {e}", "ERROR", exc_info=True)
+            messagebox.showerror("오류", f"로어북 추출 시작 전 설정 오류: {e}") # Text changed
+            self._log_message(f"로어북 추출 시작 전 설정 오류: {e}", "ERROR", exc_info=True) # Text changed
             return
 
-        self.pronoun_progress_label.config(text="고유명사 추출 시작 중...")
-        self._log_message(f"고유명사 추출 시작: {input_file}")
+        self.lorebook_progress_label.config(text="로어북 추출 시작 중...") # Changed
+        self._log_message(f"로어북 추출 시작: {input_file}") # Text changed
 
         def _extraction_task_wrapper():
             try:
                 if self.app_service: 
-                    result_csv_path = self.app_service.extract_pronouns(
+                    result_json_path = self.app_service.extract_lorebook( # Method name changed
                         input_file,
-                        self._update_pronoun_extraction_progress
+                        self._update_lorebook_extraction_progress # Callback changed
                     )
-                    self.master.after(0, lambda: messagebox.showinfo("성공", f"고유명사 추출 완료!\n결과 파일: {result_csv_path}"))
-                    self.master.after(0, lambda: self.pronoun_progress_label.config(text=f"추출 완료: {result_csv_path.name}"))
-                    self.master.after(0, lambda: self._update_pronoun_csv_path_entry(str(result_csv_path))) 
-            except (BtgFileHandlerException, BtgApiClientException, BtgServiceException, BtgPronounException) as e_btg:
-                logger.error(f"고유명사 추출 중 BTG 예외 발생: {e_btg}", exc_info=True)
-                self.master.after(0, lambda: messagebox.showerror("추출 오류", f"고유명사 추출 중 오류: {e_btg}"))
-                self.master.after(0, lambda: self.pronoun_progress_label.config(text="오류 발생"))
+                    self.master.after(0, lambda: messagebox.showinfo("성공", f"로어북 추출 완료!\n결과 파일: {result_json_path}")) # Text changed
+                    self.master.after(0, lambda: self.lorebook_progress_label.config(text=f"추출 완료: {result_json_path.name}")) # Changed
+                    self.master.after(0, lambda: self._update_lorebook_json_path_entry(str(result_json_path))) # Changed
+                    # Load result to display
+                    if result_json_path and result_json_path.exists(): # Check if result_json_path is not None
+                        with open(result_json_path, 'r', encoding='utf-8') as f_res:
+                            lore_content = f_res.read()
+                        self.master.after(0, lambda: self._display_lorebook_content(lore_content))
+            # BtgPronounException replaced with BtgBusinessLogicException as LorebookService might throw more general business logic errors
+            except (BtgFileHandlerException, BtgApiClientException, BtgServiceException, BtgBusinessLogicException) as e_btg:
+                logger.error(f"로어북 추출 중 BTG 예외 발생: {e_btg}", exc_info=True) # Text changed
+                self.master.after(0, lambda: messagebox.showerror("추출 오류", f"로어북 추출 중 오류: {e_btg}")) # Text changed
+                self.master.after(0, lambda: self.lorebook_progress_label.config(text="오류 발생")) # Changed
             except Exception as e_unknown: 
-                logger.error(f"고유명사 추출 중 알 수 없는 예외 발생: {e_unknown}", exc_info=True)
-                self.master.after(0, lambda: messagebox.showerror("알 수 없는 오류", f"고유명사 추출 중 예상치 못한 오류: {e_unknown}"))
-                self.master.after(0, lambda: self.pronoun_progress_label.config(text="알 수 없는 오류 발생"))
+                logger.error(f"로어북 추출 중 알 수 없는 예외 발생: {e_unknown}", exc_info=True) # Text changed
+                self.master.after(0, lambda: messagebox.showerror("알 수 없는 오류", f"로어북 추출 중 예상치 못한 오류: {e_unknown}")) # Text changed
+                self.master.after(0, lambda: self.lorebook_progress_label.config(text="알 수 없는 오류 발생")) # Changed
             finally:
-                self._log_message("고유명사 추출 스레드 종료.")
+                self._log_message("로어북 추출 스레드 종료.") # Text changed
 
         thread = threading.Thread(target=_extraction_task_wrapper, daemon=True)
         thread.start()
 
-    def _update_pronoun_csv_path_entry(self, path_str: str):
-        self.pronoun_csv_path_entry.delete(0, tk.END)
-        self.pronoun_csv_path_entry.insert(0, path_str)
+    def _update_lorebook_json_path_entry(self, path_str: str): # Renamed
+        self.lorebook_json_path_entry.delete(0, tk.END) # Changed
+        self.lorebook_json_path_entry.insert(0, path_str)
         if self.app_service:
-            self.app_service.config["pronouns_csv"] = path_str
+            self.app_service.config["lorebook_json_path"] = path_str # Changed
 
     def _on_closing(self):
         if self.app_service and self.app_service.is_translation_running:
@@ -1233,13 +1390,13 @@ class BatchTranslatorGUI:
         ratio = float(value)
         self.sample_ratio_label.config(text=f"{ratio:.1f}%")
 
-    def _validate_max_entries(self, value):
-        """최대 고유명사 수 유효성 검사"""
+    def _validate_max_entries_segment(self, value): # Renamed
+        """세그먼트 당 최대 항목 수 유효성 검사"""
         if value == "":
             return True
         try:
             num = int(value)
-            return 1 <= num <= 100
+            return 1 <= num <= 50 # Adjusted range
         except ValueError:
             return False
 
@@ -1247,12 +1404,12 @@ class BatchTranslatorGUI:
         """최대 고유명사 수 변경 시 호출"""
         try:
             value = int(self.max_entries_spinbox.get())
-            if value == 1:
-                self.max_entries_label.config(text="개 항목")
-            else:
-                self.max_entries_label.config(text="개 항목")
+            # This label might be removed or repurposed if max_entries_spinbox is for per_segment
+            # self.max_entries_label.config(text="개 항목")
         except ValueError:
             pass
+    def _update_max_entries_segment_label(self): # New or adapted
+        pass # Label might not be needed if spinbox is clear
 
     def _update_extraction_temp_label(self, value):
         """추출 온도 레이블 업데이트"""
@@ -1293,8 +1450,8 @@ class BatchTranslatorGUI:
         except Exception:
             pass  # 추정 실패 시 무시
 
-    def _save_pronoun_settings(self):
-        """고유명사 관련 설정만 저장"""
+    def _save_lorebook_settings(self): # Renamed
+        """로어북 관련 설정만 저장"""
         if not self.app_service:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             return
@@ -1304,69 +1461,96 @@ class BatchTranslatorGUI:
             current_config = self.app_service.config.copy()
             
             # 고유명사 관련 설정만 업데이트
-            pronoun_config = self._get_pronoun_config_from_ui()
-            current_config.update(pronoun_config)
+            lorebook_config = self._get_lorebook_config_from_ui() # Changed
+            current_config.update(lorebook_config)
             
             # 설정 저장
             success = self.app_service.save_app_config(current_config)
             
             if success:
-                messagebox.showinfo("성공", "고유명사 설정이 저장되었습니다.")
-                self._log_message("고유명사 설정 저장 완료")
+                messagebox.showinfo("성공", "로어북 설정이 저장되었습니다.") # Text changed
+                self._log_message("로어북 설정 저장 완료") # Text changed
                 
                 # 상태 레이블 업데이트
-                self._update_pronoun_status_label("✅ 설정 저장됨")
+                self._update_lorebook_status_label("✅ 설정 저장됨") # Changed
             else:
                 messagebox.showerror("오류", "설정 저장에 실패했습니다.")
                 
         except Exception as e:
             messagebox.showerror("오류", f"설정 저장 중 오류: {e}")
-            self._log_message(f"고유명사 설정 저장 오류: {e}", "ERROR")
+            self._log_message(f"로어북 설정 저장 오류: {e}", "ERROR") # Text changed
 
-    def _get_pronoun_config_from_ui(self) -> Dict[str, Any]:
-        """UI에서 고유명사 관련 설정만 추출"""
+    def _get_lorebook_config_from_ui(self) -> Dict[str, Any]: # Renamed
+        """UI에서 로어북 관련 설정만 추출"""
         try:
             config = {
-                "pronouns_csv": self.pronoun_csv_path_entry.get().strip() or None,
-                "pronoun_sample_ratio": self.sample_ratio_scale.get(),
-                "max_pronoun_entries": int(self.max_entries_spinbox.get()),
-                "pronoun_extraction_temperature": self.extraction_temp_scale.get(),
+                "lorebook_json_path": self.lorebook_json_path_entry.get().strip() or None, # Changed
+                "lorebook_sampling_ratio": self.sample_ratio_scale.get(),
+                "lorebook_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()), # Changed
+                "lorebook_extraction_temperature": self.extraction_temp_scale.get(),
+                "lorebook_sampling_method": self.lorebook_sampling_method_combobox.get(),
+                "lorebook_max_chars_per_entry": int(self.lorebook_max_chars_entry.get() or "200"),
+                "lorebook_keyword_sensitivity": self.lorebook_keyword_sensitivity_combobox.get(),
+                "lorebook_chunk_size": int(self.lorebook_chunk_size_entry.get() or "8000"),
+                # Dynamic lorebook injection settings
+                "enable_dynamic_lorebook_injection": self.enable_dynamic_lorebook_injection_var.get(),
+                "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"),
+                "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500"),
+                "lorebook_json_path_for_injection": self.lorebook_json_path_for_injection_entry.get().strip() or None,
+
             }
+            try:
+                config["lorebook_priority_settings"] = json.loads(self.lorebook_priority_text.get("1.0", tk.END).strip() or "{}")
+            except json.JSONDecodeError:
+                # Use existing config value if UI is invalid, or default if not available
+                config["lorebook_priority_settings"] = self.app_service.config.get("lorebook_priority_settings", 
+                                                                                self.app_service.config_manager.get_default_config().get("lorebook_priority_settings"))
+                self._log_message("로어북 우선순위 JSON 파싱 오류. 기존/기본값 사용.", "WARNING")
+
             return {k: v for k, v in config.items() if v is not None}
         except Exception as e:
-            raise ValueError(f"고유명사 설정 값 오류: {e}")
+            raise ValueError(f"로어북 설정 값 오류: {e}") # Text changed
 
-    def _reset_pronoun_settings(self):
-        """고유명사 설정을 기본값으로 초기화"""
+    def _reset_lorebook_settings(self): # Renamed
+        """로어북 설정을 기본값으로 초기화"""
         if not self.app_service:
             return
         
         result = messagebox.askyesno(
             "설정 초기화", 
-            "고유명사 설정을 기본값으로 초기화하시겠습니까?"
+            "로어북 설정을 기본값으로 초기화하시겠습니까?" # Text changed
         )
         
         if result:
             try:
                 # 기본값 로드
                 default_config = self.app_service.config_manager.get_default_config()
-                
                 # UI에 기본값 적용
-                self.sample_ratio_scale.set(default_config.get("pronoun_sample_ratio", 25.0))
-                self.max_entries_spinbox.set(str(default_config.get("max_pronoun_entries", 20)))
-                self.extraction_temp_scale.set(default_config.get("pronoun_extraction_temperature", 0.2))
+                self.sample_ratio_scale.set(default_config.get("lorebook_sampling_ratio", 25.0))
+                self.max_entries_per_segment_spinbox.set(str(default_config.get("lorebook_max_entries_per_segment", 5)))
+                self.extraction_temp_scale.set(default_config.get("lorebook_extraction_temperature", 0.2))
+                
+                # Reset new lorebook fields
+                self.lorebook_sampling_method_combobox.set(default_config.get("lorebook_sampling_method", "uniform"))
+                self.lorebook_max_chars_entry.delete(0, tk.END)
+                self.lorebook_max_chars_entry.insert(0, str(default_config.get("lorebook_max_chars_per_entry", 200)))
+                self.lorebook_keyword_sensitivity_combobox.set(default_config.get("lorebook_keyword_sensitivity", "medium"))
+                self.lorebook_chunk_size_entry.delete(0, tk.END)
+                self.lorebook_chunk_size_entry.insert(0, str(default_config.get("lorebook_chunk_size", 8000)))
+                self.lorebook_priority_text.delete('1.0', tk.END)
+                self.lorebook_priority_text.insert('1.0', json.dumps(default_config.get("lorebook_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2))
                 
                 # 레이블 업데이트
                 self._update_sample_ratio_label(str(self.sample_ratio_scale.get()))
                 self._update_extraction_temp_label(str(self.extraction_temp_scale.get()))
                 
-                self._update_pronoun_status_label("🔄 기본값으로 초기화됨")
-                self._log_message("고유명사 설정이 기본값으로 초기화되었습니다.")
+                self._update_lorebook_status_label("🔄 기본값으로 초기화됨") # Changed
+                self._log_message("로어북 설정이 기본값으로 초기화되었습니다.") # Text changed
                 
             except Exception as e:
                 messagebox.showerror("오류", f"기본값 로드 중 오류: {e}")
 
-    def _preview_pronoun_settings(self):
+    def _preview_lorebook_settings(self): # Renamed
         """현재 설정의 예상 효과 미리보기"""
         try:
             input_file = self.input_file_entry.get()
@@ -1376,8 +1560,8 @@ class BatchTranslatorGUI:
             
             # 현재 설정 값들
             sample_ratio = self.sample_ratio_scale.get()
-            max_entries = int(self.max_entries_spinbox.get())
-            extraction_temp = self.extraction_temp_scale.get()
+            max_entries_segment = int(self.max_entries_per_segment_spinbox.get()) # Changed
+            extraction_temp = self.extraction_temp_scale.get() # This is lorebook_extraction_temperature
             
             # 파일 크기 기반 추정
             file_size = Path(input_file).stat().st_size
@@ -1387,38 +1571,84 @@ class BatchTranslatorGUI:
             
             # 미리보기 정보 표시
             preview_msg = (
-                f"📊 고유명사 추출 설정 미리보기\n\n"
+                f"📊 로어북 추출 설정 미리보기\n\n" # Text changed
                 f"📁 입력 파일: {Path(input_file).name}\n"
                 f"📏 파일 크기: {file_size:,} 바이트\n"
                 f"🧩 예상 청크 수: {estimated_chunks:,}개\n"
                 f"🎯 분석할 샘플: {estimated_sample_chunks:,}개 ({sample_ratio:.1f}%)\n"
-                f"📋 최대 저장 항목: {max_entries}개\n"
+                f"📋 세그먼트 당 최대 항목: {max_entries_segment}개\n" # Text changed
                 f"🌡️ 추출 온도: {extraction_temp:.2f}\n\n"
                 f"⏱️ 예상 처리 시간: {estimated_sample_chunks * 2:.0f}~{estimated_sample_chunks * 5:.0f}초"
             )
             
             messagebox.showinfo("설정 미리보기", preview_msg)
-            
         except Exception as e:
             messagebox.showerror("오류", f"미리보기 생성 중 오류: {e}")
 
-    def _update_pronoun_status_label(self, message: str):
-        """고유명사 설정 상태 업데이트"""
-        if hasattr(self, 'pronoun_status_label'):
-            self.pronoun_status_label.config(text=message)
+    def _update_lorebook_status_label(self, message: str): # Renamed
+        """로어북 설정 상태 업데이트"""
+        if hasattr(self, 'lorebook_status_label'): # Changed
+            self.lorebook_status_label.config(text=message) # Changed
             
             # 3초 후 기본 메시지로 복귀
-            self.master.after(3000, lambda: self.pronoun_status_label.config(
+            self.master.after(3000, lambda: self.lorebook_status_label.config( # Changed
                 text="⏸️ 설정 변경 대기 중..."
             ))
 
-    def _on_pronoun_setting_changed(self, event=None):
-        """고유명사 설정이 변경될 때 호출"""
-        self._update_pronoun_status_label("⚠️ 설정이 변경됨 (저장 필요)")
+    def _on_lorebook_setting_changed(self, event=None): # Renamed
+        """로어북 설정이 변경될 때 호출"""
+        self._update_lorebook_status_label("⚠️ 설정이 변경됨 (저장 필요)") # Changed
         
         # 저장 버튼 강조
-        if hasattr(self, 'save_pronoun_settings_button'):
-            self.save_pronoun_settings_button.config(style="Accent.TButton")
+        if hasattr(self, 'save_lorebook_settings_button'): # Changed
+            self.save_lorebook_settings_button.config(style="Accent.TButton") # Changed
+
+    def _display_lorebook_content(self, content: str):
+        self.lorebook_display_text.config(state=tk.NORMAL)
+        self.lorebook_display_text.delete('1.0', tk.END)
+        self.lorebook_display_text.insert('1.0', content)
+        self.lorebook_display_text.config(state=tk.DISABLED)
+
+    def _load_lorebook_to_display(self):
+        filepath = filedialog.askopenfilename(title="로어북 JSON 파일 선택", filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*")))
+        if filepath:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                self._display_lorebook_content(content)
+                self.lorebook_json_path_entry.delete(0, tk.END)
+                self.lorebook_json_path_entry.insert(0, filepath)
+                self._log_message(f"로어북 파일 로드됨: {filepath}")
+            except Exception as e:
+                messagebox.showerror("오류", f"로어북 파일 로드 실패: {e}")
+                self._log_message(f"로어북 파일 로드 실패: {e}", "ERROR")
+
+    def _copy_lorebook_json(self):
+        content = self.lorebook_display_text.get('1.0', tk.END).strip()
+        if content:
+            self.master.clipboard_clear()
+            self.master.clipboard_append(content)
+            messagebox.showinfo("성공", "로어북 JSON 내용이 클립보드에 복사되었습니다.")
+            self._log_message("로어북 JSON 클립보드에 복사됨.")
+        else:
+            messagebox.showwarning("경고", "복사할 내용이 없습니다.")
+
+    def _save_displayed_lorebook_json(self):
+        content = self.lorebook_display_text.get('1.0', tk.END).strip()
+        if not content:
+            messagebox.showwarning("경고", "저장할 내용이 없습니다.")
+            return
+        
+        filepath = filedialog.asksaveasfilename(title="로어북 JSON으로 저장", defaultextension=".json", filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*")))
+        if filepath:
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                messagebox.showinfo("성공", f"로어북이 성공적으로 저장되었습니다: {filepath}")
+                self._log_message(f"표시된 로어북 저장됨: {filepath}")
+            except Exception as e:
+                messagebox.showerror("오류", f"로어북 저장 실패: {e}")
+                self._log_message(f"표시된 로어북 저장 실패: {e}", "ERROR")
 
 class TextHandler(logging.Handler):
     def __init__(self, text_widget: scrolledtext.ScrolledText):

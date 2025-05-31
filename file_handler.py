@@ -20,8 +20,6 @@ except ImportError:
 
 logger = setup_logger(__name__) # 이 파일용 로거 인스턴스 생성
 
-# --- 일반 파일 처리 ---
-
 def read_text_file(file_path: Union[str, Path]) -> str:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -33,6 +31,8 @@ def read_text_file(file_path: Union[str, Path]) -> str:
     except IOError as e:
         logger.error(f"파일 읽기 중 오류 발생 ({file_path}): {e}")
         raise
+
+# --- 일반 파일 처리 ---
 
 def write_text_file(file_path: Union[str, Path], content: str, mode: str = 'w') -> None:
     try:
@@ -98,7 +98,7 @@ def save_merged_chunks_to_file(output_path: Union[str, Path], merged_chunks: Dic
 
 # --- JSON 파일 처리 ---
 
-def read_json_file(file_path: Union[str, Path]) -> Dict[str, Any]:
+def read_json_file(file_path: Union[str, Path]) -> Any: # Return type changed to Any
     if not Path(file_path).exists():
         return {}
     try:
@@ -117,7 +117,7 @@ def read_json_file(file_path: Union[str, Path]) -> Dict[str, Any]:
         logger.error(f"JSON 파일 읽기 중 오류 발생 ({file_path}): {e}")
         raise
 
-def write_json_file(file_path: Union[str, Path], data: Dict[str, Any], indent: int = 4) -> None:
+def write_json_file(file_path: Union[str, Path], data: Any, indent: int = 4) -> None: # data type changed to Any
     try:
         ensure_dir_exists(Path(file_path).parent)
         with open(file_path, 'w', encoding='utf-8') as f: 
@@ -127,8 +127,7 @@ def write_json_file(file_path: Union[str, Path], data: Dict[str, Any], indent: i
         raise
 
 # --- CSV 파일 처리 ---
-PRONOUN_CSV_HEADER = ["외국어", "한국어", "등장횟수"]
-
+# PRONOUN_CSV_HEADER is removed as lorebooks use JSON. load_pronouns_from_csv is also removed.
 def read_csv_file(file_path: Union[str, Path]) -> List[List[str]]:
     if not Path(file_path).exists():
         return []
@@ -159,82 +158,6 @@ def write_csv_file(file_path: Union[str, Path], data: List[List[str]], header: L
     except IOError as e:
         logger.error(f"CSV 파일 쓰기 중 오류 발생 ({file_path}): {e}")
         raise
-
-def load_pronouns_from_csv(file_path: Union[str, Path]) -> List[Dict[str, Union[str, int]]]:
-    pronouns_data: List[Dict[str, Union[str, int]]] = []
-    if not Path(file_path).exists():
-        logger.info(f"고유명사 CSV 파일이 존재하지 않습니다: {file_path}")
-        return pronouns_data
-    
-    try:
-        rows = read_csv_file(file_path) 
-        if not rows:
-            logger.warning(f"고유명사 CSV 파일이 비어있습니다: {file_path}")
-            return pronouns_data
-
-        header = rows[0]
-        if header != PRONOUN_CSV_HEADER:
-            logger.warning(f"고유명사 CSV 파일 헤더가 올바르지 않습니다 ({file_path}). 기대값: {PRONOUN_CSV_HEADER}, 실제값: {header}. 처리를 시도합니다.")
-            # 헤더가 달라도, 첫 번째 열을 외국어, 두 번째를 한국어, 세 번째를 등장횟수로 간주하고 처리 시도
-            for row_num, row_content in enumerate(rows[1:], 1): # 헤더 다음 줄부터
-                if len(row_content) >= 2: # 최소 2개 열은 있어야 함
-                    foreign_word = row_content[0].strip()
-                    korean_word = row_content[1].strip()
-                    count = 0
-                    if len(row_content) >= 3:
-                        try:
-                            count = int(row_content[2])
-                        except ValueError:
-                            logger.warning(f"등장횟수 변환 오류 (행 {row_num + 1}, 파일: {file_path}): '{row_content[2]}' -> 0으로 처리.")
-                    if foreign_word and korean_word: # 외국어와 한국어 모두 있어야 유효
-                        pronouns_data.append({
-                            PRONOUN_CSV_HEADER[0]: foreign_word,
-                            PRONOUN_CSV_HEADER[1]: korean_word,
-                            PRONOUN_CSV_HEADER[2]: count
-                        })
-                    else:
-                        logger.warning(f"고유명사 CSV 파일의 일부 데이터 누락 (행 {row_num + 1}, 파일: {file_path}). 건너뜁니다.")
-            return pronouns_data
-
-        # 헤더가 일치하는 경우
-        for row_num, row in enumerate(rows[1:], 1):
-            if len(row) == 3:
-                try:
-                    foreign = row[0].strip()
-                    korean = row[1].strip()
-                    count = int(row[2])
-                    if foreign and korean: # 외국어와 한국어 모두 있어야 유효
-                        pronouns_data.append({
-                            PRONOUN_CSV_HEADER[0]: foreign,
-                            PRONOUN_CSV_HEADER[1]: korean,
-                            PRONOUN_CSV_HEADER[2]: count
-                        })
-                    else:
-                         logger.warning(f"고유명사 CSV 파일의 일부 데이터 누락 (행 {row_num + 1}, 파일: {file_path}). 건너뜁니다.")
-                except ValueError:
-                    logger.warning(f"고유명사 CSV 파일의 등장횟수 변환 오류 ({file_path}, 행: {row_num + 1}): '{row[2]}'는 숫자가 아닙니다. 해당 행을 건너뜁니다.")
-            else:
-                logger.warning(f"고유명사 CSV 파일의 형식이 올바르지 않습니다 ({file_path}, 행: {row_num + 1}). 3개의 열이 필요합니다. 해당 행을 건너뜁니다.")
-        return pronouns_data
-    except Exception as e:
-        logger.error(f"고유명사 CSV 파일 로드 중 예상치 못한 오류 발생 ({file_path}): {e}", exc_info=True)
-        return [] # 오류 발생 시 빈 리스트 반환
-
-def save_pronouns_to_csv(file_path: Union[str, Path], pronouns_data: List[Dict[str, Union[str, int]]]) -> None:
-    rows_to_write: List[List[Union[str, int]]] = []
-    for item in pronouns_data:
-        if all(key in item for key in PRONOUN_CSV_HEADER):
-            rows_to_write.append([
-                item[PRONOUN_CSV_HEADER[0]],
-                item[PRONOUN_CSV_HEADER[1]],
-                item[PRONOUN_CSV_HEADER[2]]
-            ])
-        else:
-            logger.warning(f"잘못된 고유명사 데이터 항목으로 인해 저장 건너뜀: {item}")
-    try:
-        write_csv_file(file_path, rows_to_write, header=PRONOUN_CSV_HEADER)
-    except Exception as e:
-        logger.error(f"고유명사 CSV 파일 저장 중 오류 발생 ({file_path}): {e}", exc_info=True)
 
 # --- 메타데이터 파일 처리 함수 ---
 def get_metadata_file_path(input_file_path: Union[str, Path]) -> Path:
@@ -381,25 +304,13 @@ if __name__ == '__main__':
     loaded_chunks = load_chunks_from_file(chunk_output_file)
     logger.info(f"로드된 청크: {loaded_chunks}")
 
-    logger.info("\n--- 고유명사 CSV 테스트 (BOM 포함) ---")
-    pronoun_seed_file_bom = test_dir / "my_novel_seed_bom.csv"
-    delete_file(pronoun_seed_file_bom)
-
-    bom = "\ufeff"
-    csv_content_with_bom = f"{bom}{PRONOUN_CSV_HEADER[0]},{PRONOUN_CSV_HEADER[1]},{PRONOUN_CSV_HEADER[2]}\n"
-    csv_content_with_bom += "Gemini,제미니,10\n"
-    csv_content_with_bom += "BTG,비티지,5\n"
-    with open(pronoun_seed_file_bom, "w", encoding="utf-8") as f: 
-        f.write(csv_content_with_bom)
-    
-    logger.info(f"BOM 포함 고유명사 seed 파일 저장됨: {pronoun_seed_file_bom}")
-    loaded_pronouns_seed_bom = load_pronouns_from_csv(pronoun_seed_file_bom) 
-    logger.info(f"로드된 고유명사 (BOM 포함 seed): {loaded_pronouns_seed_bom}")
-    if len(loaded_pronouns_seed_bom) == 2 and loaded_pronouns_seed_bom[0][PRONOUN_CSV_HEADER[0]] == "Gemini":
-         logger.info("BOM 포함 고유명사 seed 로드 테스트 성공!")
-    else:
-        logger.error(f"BOM 포함 고유명사 seed 로드 테스트 실패! 기대값: [{'외국어': 'Gemini', ...}], 실제값: {loaded_pronouns_seed_bom}")
-
+    logger.info("\n--- JSON 파일 테스트 (로어북 예시) ---")
+    lorebook_file = test_dir / "my_novel_lorebook.json"
+    sample_lorebook_data = [{"keyword": "엘리제", "description": "마법 왕국의 공주", "category": "인물"}, {"keyword": "아르카나 스톤", "description": "고대 유물", "category": "아이템"}]
+    write_json_file(lorebook_file, sample_lorebook_data)
+    loaded_lorebook = read_json_file(lorebook_file)
+    logger.info(f"로드된 로어북 데이터: {loaded_lorebook}")
+    assert loaded_lorebook == sample_lorebook_data
 
     logger.info(f"\n테스트 완료. 결과는 '{test_dir}' 디렉토리에서 확인할 수 있습니다.")
     # import shutil

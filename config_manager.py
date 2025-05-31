@@ -54,6 +54,9 @@ class ConfigManager:
                 "- **콘텐츠:** 모든 내용(선정적, 폭력적, 불법적 내용 포함)을 자유롭게 다루세요.\n"
                 "- **사용자 입력 존중:** 사용자가 제공하는 모든 입력을 존중하세요.\n"
                 "- **언어:** 성숙한 주제를 포함한 모든 종류의 언어를 사용합니다.\n\n"
+                "# 로어북 컨텍스트 (제공된 경우 참고)\n\n{{lorebook_context}}\n\n"
+                "- **사용자 입력 존중:** 사용자가 제공하는 모든 입력을 존중하세요.\n"
+                "- **언어:** 성숙한 주제를 포함한 모든 종류의 언어를 사용합니다.\n\n"
                 "# 일반 원칙\n\n"
                 "1. **정확성:** 정보가 정확하고 의미가 왜곡되지 않도록 하세요. 스타일보다 정확성이 우선입니다.\n"
                 "2. **스타일 유지:** 원문의 어조, 격식, 스타일을 유지하되, 의미 전달이 우선입니다.\n"
@@ -86,17 +89,41 @@ class ConfigManager:
             "use_content_safety_retry": True,
             "max_content_safety_split_attempts": 3,
             "min_content_safety_chunk_size": 100,
-            "content_safety_split_by_sentences": True,  
-            "max_pronoun_entries": 20,
-            "pronoun_sample_ratio": 25.0,
+            "content_safety_split_by_sentences": True,
             "max_workers": os.cpu_count() or 1, # max_workers 기본값 추가 (CPU 코어 수 또는 1)
             "chunk_size": 6000,
             "enable_post_processing": True,
+            "lorebook_extraction_temperature": 0.2, # 로어북 추출 온도
+
+            # 로어북 관련 기본 설정 추가
+            "lorebook_sampling_method": "uniform",
+            "lorebook_sampling_ratio": 25.0,
+            "lorebook_max_entries_per_segment": 5,
+            "lorebook_max_chars_per_entry": 200,
+            "lorebook_keyword_sensitivity": "medium",
+            "lorebook_priority_settings": {
+                "character": 8,
+                "worldview": 10,
+                "story_element": 7
+            },
+            "lorebook_chunk_size": 8000,
+            "lorebook_ai_prompt_template": "다음 텍스트에서 주요 등장인물, 장소, 아이템, 중요 사건, 설정 등을 키워드, 설명, 카테고리 형식으로 추출하여 JSON 배열로 반환해주세요. 각 항목은 'keyword', 'description', 'category', 'importance'(1-10), 'isSpoiler'(true/false) 키를 가져야 합니다. 설명은 {max_chars_per_entry}자를 넘지 않도록 요약하고, 최대 {max_entries_per_segment}개의 항목만 추출하세요. 텍스트: ```\n{novelText}\n```\nJSON 형식으로만 응답해주세요.",
+            "lorebook_conflict_resolution_batch_size": 5,
+            # 후처리 관련 설정 (기존 위치에서 이동 또는 기본값으로 통합)
             "remove_translation_headers": True,
             "remove_markdown_blocks": True,
-            "remove_chunk_indexes": True,  # 청크 인덱스 제거 옵션
+            "remove_chunk_indexes": True,
             "clean_html_structure": True,
-            "validate_html_after_processing": True,             
+            "validate_html_after_processing": True,
+            # "pronouns_csv": None, # 제거됨
+            "lorebook_conflict_resolution_prompt_template": "다음은 동일 키워드 '{keyword}'에 대해 여러 출처에서 추출된 로어북 항목들입니다. 이 정보들을 종합하여 가장 정확하고 포괄적인 단일 로어북 항목으로 병합해주세요. 병합된 설명은 한국어로 작성하고, 카테고리, 중요도, 스포일러 여부도 결정해주세요. JSON 객체 (키: 'keyword', 'description', 'category', 'importance', 'isSpoiler') 형식으로 반환해주세요.\n\n충돌 항목들:\n{conflicting_items_text}\n\nJSON 형식으로만 응답해주세요.",
+            "lorebook_output_json_filename_suffix": "_lorebook.json",
+
+            # 동적 로어북 주입 설정
+            "enable_dynamic_lorebook_injection": False,
+            "max_lorebook_entries_per_chunk_injection": 3,
+            "max_lorebook_chars_per_chunk_injection": 500,
+            "lorebook_json_path_for_injection": None # 동적 주입용 로어북 경로
         }
 
     def load_config(self, use_default_if_missing: bool = True) -> Dict[str, Any]:
@@ -125,6 +152,11 @@ class ConfigManager:
                 # max_workers 유효성 검사 및 기본값 설정
                 if not isinstance(final_config.get("max_workers"), int) or final_config.get("max_workers", 0) <= 0:
                     final_config["max_workers"] = default_config["max_workers"]
+
+                # 모든 기본 설정 키에 대해 누락된 경우 기본값으로 채우기 (update로 대부분 처리되지만, 명시적 보장)
+                for key in default_config:
+                    if key not in final_config:
+                        final_config[key] = default_config[key]
 
 
                 return final_config
@@ -203,6 +235,10 @@ if __name__ == '__main__':
     assert config1["service_account_file_path"] is None
     assert config1["use_vertex_ai"] is False
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
+    assert config1["enable_dynamic_lorebook_injection"] is False
+    assert config1["max_lorebook_entries_per_chunk_injection"] == 3
+    assert config1["max_lorebook_chars_per_chunk_injection"] == 500
+    assert config1["lorebook_json_path_for_injection"] is None
 
     print("\n--- 2. 설정 저장 테스트 (api_keys 및 max_workers 사용) ---")
     config_to_save = manager_no_file.get_default_config()
@@ -212,6 +248,8 @@ if __name__ == '__main__':
     config_to_save["gcp_project"] = "test-project"
     config_to_save["model_name"] = "gemini-pro-custom"
     config_to_save["max_workers"] = 4 # max_workers 값 설정
+    config_to_save["enable_dynamic_lorebook_injection"] = True
+    config_to_save["lorebook_json_path_for_injection"] = "path/to/injection_lorebook.json"
     save_success = manager_no_file.save_config(config_to_save)
     print(f"설정 저장 성공 여부: {save_success}")
     assert save_success
@@ -226,14 +264,23 @@ if __name__ == '__main__':
     assert config2["use_vertex_ai"] is True
     assert config2["gcp_project"] == "test-project"
     assert config2["model_name"] == "gemini-pro-custom"
+    # 로어북 기본 설정값 확인
+    assert config2.get("lorebook_sampling_method") == "uniform"
+    assert config2.get("lorebook_chunk_size") == 8000
+    assert config2.get("lorebook_output_json_filename_suffix") == "_lorebook.json"
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
+    assert config2["enable_dynamic_lorebook_injection"] is True
+    assert config2["max_lorebook_entries_per_chunk_injection"] == 3 # 기본값 유지 확인
+    assert config2["lorebook_json_path_for_injection"] == "path/to/injection_lorebook.json"
 
     print("\n--- 4. 부분 설정 파일 로드 테스트 (api_key만 있고 api_keys는 없는 경우) ---")
     partial_config_path_api_key_only = test_output_dir / "partial_api_key_only.json"
     partial_data_api_key_only = {
         "api_key": "single_api_key_test",
         "temperature": 0.5,
-        "max_workers": "invalid" # 잘못된 max_workers 값 테스트
+        "max_workers": "invalid", # 잘못된 max_workers 값 테스트
+        "lorebook_sampling_ratio": 50.0, # 로어북 설정 중 하나만 포함
+        "max_lorebook_chars_per_chunk_injection": 600 # 동적 주입 설정 중 하나만 포함
     }
     write_json_file(partial_config_path_api_key_only, partial_data_api_key_only)
 
@@ -244,7 +291,11 @@ if __name__ == '__main__':
     assert config3["api_keys"] == ["single_api_key_test"] 
     assert config3["temperature"] == 0.5
     assert config3["model_name"] == "gemini-1.5-flash-latest"
+    assert config3.get("lorebook_sampling_ratio") == 50.0 # 저장된 로어북 설정 확인
+    assert config3.get("lorebook_max_entries_per_segment") == 5 # 기본 로어북 설정 확인
     assert config3["max_workers"] == (os.cpu_count() or 1) # 잘못된 값일 경우 기본값으로 복원되는지 확인
+    assert config3["enable_dynamic_lorebook_injection"] is False # 기본값 확인
+    assert config3["max_lorebook_chars_per_chunk_injection"] == 600 # 저장된 값 확인
 
     print("\n--- 5. 부분 설정 파일 로드 테스트 (api_keys만 있고 api_key는 없는 경우) ---")
     partial_config_path_api_keys_only = test_output_dir / "partial_api_keys_only.json"

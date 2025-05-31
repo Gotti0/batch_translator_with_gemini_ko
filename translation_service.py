@@ -16,14 +16,14 @@ try:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from .file_handler import load_pronouns_from_csv # file_handler.py에서 직접 호출하도록 변경
+    from .file_handler import read_json_file # JSON 로딩을 위해 추가
     from .logger_config import setup_logger
-    from .exceptions import BtgTranslationException, BtgPronounException, BtgApiClientException
-    from .file_handler import PRONOUN_CSV_HEADER
+    from .exceptions import BtgTranslationException, BtgApiClientException
     from .chunk_service import ChunkService
     # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다.
     # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다.
     # from google.genai import types as genai_types 
+    from .dtos import LorebookEntryDTO # 로어북 DTO 임포트
 except ImportError:
     from gemini_client import (
         GeminiClient,
@@ -33,88 +33,155 @@ except ImportError:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from file_handler import load_pronouns_from_csv # file_handler.py에서 직접 호출하도록 변경
+    from file_handler import read_json_file # JSON 로딩을 위해 추가
     from logger_config import setup_logger
-    from exceptions import BtgTranslationException, BtgPronounException, BtgApiClientException
-    from file_handler import PRONOUN_CSV_HEADER
+    from exceptions import BtgTranslationException, BtgApiClientException
     from chunk_service import ChunkService
+    from dtos import LorebookEntryDTO # 로어북 DTO 임포트
     # from google.genai import types as genai_types # Fallback import
 
 logger = setup_logger(__name__)
 
-def format_pronouns_for_prompt(pronouns: List[Dict[str, str]], max_entries: int = 20) -> str:
-    if not pronouns:
-        return "고유명사 목록 없음"
-    
-    def get_count(item):
-        try:
-            return int(item.get(PRONOUN_CSV_HEADER[2], 0))
-        except ValueError:
-            return 0
+def _format_lorebook_for_prompt(
+    lorebook_entries: List[LorebookEntryDTO],
+    max_entries: int,
+    max_chars: int
+) -> str:
+    if not lorebook_entries:
+        return "로어북 컨텍스트 없음"
 
-    sorted_pronouns = sorted(pronouns, key=get_count, reverse=True)
-    
-    limited_pronouns = sorted_pronouns[:max_entries]
-    
-    formatted_list = []
-    for p_dict in limited_pronouns:
-        foreign = p_dict.get(PRONOUN_CSV_HEADER[0])
-        korean = p_dict.get(PRONOUN_CSV_HEADER[1])
-        if foreign and korean: 
-             formatted_list.append(f"- {foreign}: {korean}")
-    
-    if not formatted_list:
-        return "유효한 고유명사 항목 없음"
+    selected_entries_str = []
+    current_chars = 0
+    entries_count = 0
+
+    # 중요도 높은 순, 중요도 같으면 키워드 가나다 순으로 정렬
+    # isSpoiler가 True인 항목은 낮은 우선순위를 갖도록 조정 (예: 중요도를 낮춤)
+    def sort_key(entry: LorebookEntryDTO):
+        importance = entry.importance or 0
+        if entry.isSpoiler:
+            importance -= 100 # 스포일러 항목의 중요도를 크게 낮춤
+        return (-importance, entry.keyword.lower())
+
+    sorted_entries = sorted(lorebook_entries, key=sort_key)
+
+    for entry in sorted_entries:
+        if entries_count >= max_entries:
+            break
+
+        spoiler_text = "예" if entry.isSpoiler else "아니오"
+        details_parts = []
+        if entry.category:
+            details_parts.append(f"카테고리: {entry.category}")
+        details_parts.append(f"스포일러: {spoiler_text}")
         
-    return "\n".join(formatted_list)
+        details_str = ", ".join(details_parts)
+        entry_str = f"- {entry.keyword}: {entry.description} ({details_str})"
+        
+        # 현재 항목 추가 시 최대 글자 수 초과하면 중단 (단, 최소 1개는 포함되도록)
+        if current_chars + len(entry_str) > max_chars and entries_count > 0:
+            break
+        
+        selected_entries_str.append(entry_str)
+        current_chars += len(entry_str) + 1 # +1 for newline
+        entries_count += 1
+    
+    if not selected_entries_str:
+        return "로어북 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)"
+        
+    return "\n".join(selected_entries_str)
 
 class TranslationService:
     def __init__(self, gemini_client: GeminiClient, config: Dict[str, Any]):
         self.gemini_client = gemini_client
         self.config = config
-        self.pronouns_map: Dict[str, str] = {}
         self.chunk_service = ChunkService()
-        self._load_pronouns()
+        self.lorebook_entries_for_injection: List[LorebookEntryDTO] = [] # For new lorebook injection
 
-    def _load_pronouns(self):
-        pronoun_csv_path_str = self.config.get("pronouns_csv")
-        if pronoun_csv_path_str and os.path.exists(pronoun_csv_path_str):
-            pronoun_csv_path = Path(pronoun_csv_path_str)
-            try:
-                # file_handler.py의 load_pronouns_from_csv 직접 사용
-                pronoun_data_list = load_pronouns_from_csv(pronoun_csv_path)
-                
-                self.pronouns_map = {
-                    item[PRONOUN_CSV_HEADER[0]].strip(): item[PRONOUN_CSV_HEADER[1]].strip()
-                    for item in pronoun_data_list
-                    if PRONOUN_CSV_HEADER[0] in item and PRONOUN_CSV_HEADER[1] in item and item[PRONOUN_CSV_HEADER[0]].strip()
-                }
-                logger.info(f"{len(self.pronouns_map)}개의 고유명사를 로드했습니다: {pronoun_csv_path}")
-            except BtgPronounException as e: 
-                logger.error(f"고유명사 파일 로드 중 오류 발생 ({pronoun_csv_path}): {e}")
-                self.pronouns_map = {} 
-            except Exception as e:
-                logger.error(f"고유명사 파일 처리 중 예상치 못한 오류 ({pronoun_csv_path}): {e}", exc_info=True)
-                self.pronouns_map = {}
+        if self.config.get("enable_dynamic_lorebook_injection", False):
+            self._load_lorebook_data()
+            logger.info("동적 로어북 주입 활성화됨. 로어북 데이터 로드 시도.")
         else:
-            logger.info("고유명사 CSV 파일이 설정되지 않았거나 존재하지 않습니다. 고유명사 대체 없이 번역합니다.")
-            self.pronouns_map = {}
+            logger.info("동적 로어북 주입 비활성화됨. 로어북 컨텍스트 없이 번역합니다.")
+
+    def _load_lorebook_data(self):
+        lorebook_json_path_str = self.config.get("lorebook_json_path_for_injection")
+        if lorebook_json_path_str and os.path.exists(lorebook_json_path_str):
+            lorebook_json_path = Path(lorebook_json_path_str)
+            try:
+                raw_data = read_json_file(lorebook_json_path)
+                if isinstance(raw_data, list):
+                    for item_dict in raw_data:
+                        if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+                            try:
+                                entry = LorebookEntryDTO(
+                                    keyword=item_dict.get("keyword", ""),
+                                    description=item_dict.get("description", ""),
+                                    category=item_dict.get("category"),
+                                    importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
+                                    sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
+                                    isSpoiler=bool(item_dict.get("isSpoiler", False))
+                                )
+                                if entry.keyword and entry.description: # 필수 필드 확인
+                                    self.lorebook_entries_for_injection.append(entry)
+                                else:
+                                    logger.warning(f"로어북 항목에 필수 필드(keyword 또는 description) 누락: {item_dict}")
+                            except (TypeError, ValueError) as e_dto:
+                                logger.warning(f"로어북 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")
+                        else:
+                            logger.warning(f"잘못된 로어북 항목 형식 (딕셔너리가 아니거나 필수 키 누락): {item_dict}")
+                    logger.info(f"{len(self.lorebook_entries_for_injection)}개의 로어북 항목을 로드했습니다: {lorebook_json_path}")
+                else:
+                    logger.error(f"로어북 JSON 파일이 리스트 형식이 아닙니다: {lorebook_json_path}, 타입: {type(raw_data)}")
+            except Exception as e:
+                logger.error(f"로어북 JSON 파일 처리 중 예상치 못한 오류 ({lorebook_json_path}): {e}", exc_info=True)
+                self.lorebook_entries_for_injection = []
+        else:
+            logger.info("동적 주입용 로어북 JSON 파일이 설정되지 않았거나 존재하지 않습니다.")
+            self.lorebook_entries_for_injection = []
 
     def _construct_prompt(self, chunk_text: str) -> str:
         prompt_template = self.config.get("prompts", "Translate to Korean: {{slot}}")
         if isinstance(prompt_template, (list, tuple)):
             prompt_template = prompt_template[0] if prompt_template else "Translate to Korean: {{slot}}"
 
-        pronoun_data_for_prompt: List[Dict[str,str]] = []
-        if self.pronouns_map: 
-             pronoun_data_for_prompt = [{PRONOUN_CSV_HEADER[0]: f, PRONOUN_CSV_HEADER[1]: k} for f,k in self.pronouns_map.items()]
+        final_prompt = prompt_template 
 
-        max_pronoun_entries = self.config.get("max_pronoun_entries", 20)
-        formatted_pronouns = format_pronouns_for_prompt(pronoun_data_for_prompt, max_pronoun_entries)
+        # 1. Dynamic Lorebook Injection
+        if self.config.get("enable_dynamic_lorebook_injection", False) and \
+           self.lorebook_entries_for_injection and \
+           "{{lorebook_context}}" in final_prompt:
+            
+            # 1.a. Filter lorebook entries relevant to the current chunk_text
+            relevant_entries_for_chunk: List[LorebookEntryDTO] = []
+            chunk_text_lower = chunk_text.lower() # For case-insensitive keyword matching
+            for entry in self.lorebook_entries_for_injection:
+                if entry.keyword.lower() in chunk_text_lower:
+                    relevant_entries_for_chunk.append(entry)
+            
+            logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 로어북 항목 발견.")
+
+            # 1.b. Format the relevant entries for the prompt
+            max_entries = self.config.get("max_lorebook_entries_per_chunk_injection", 3)
+            max_chars = self.config.get("max_lorebook_chars_per_chunk_injection", 500)
+            
+            formatted_lorebook_context = _format_lorebook_for_prompt(
+                relevant_entries_for_chunk, max_entries, max_chars # Pass only relevant entries
+            )
+            
+            # Check if actual content was formatted (not just "없음" messages)
+            if formatted_lorebook_context != "로어북 컨텍스트 없음" and \
+               formatted_lorebook_context != "로어북 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)":
+                logger.info(f"API 요청에 동적 로어북 컨텍스트 주입됨. 내용 일부: {formatted_lorebook_context[:100]}...")
+            else:
+                logger.debug(f"동적 로어북 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_lorebook_context}")
+            final_prompt = final_prompt.replace("{{lorebook_context}}", formatted_lorebook_context)
+        else:
+            if "{{lorebook_context}}" in final_prompt:
+                 final_prompt = final_prompt.replace("{{lorebook_context}}", "로어북 컨텍스트 없음 (주입 비활성화 또는 해당 항목 없음)")
+                 logger.debug("동적 로어북 주입 비활성화 또는 플레이스홀더 부재로 '컨텍스트 없음' 메시지 사용.")
         
-        final_prompt = prompt_template.replace("{{slot}}", chunk_text)
-        if "{{pronouns}}" in final_prompt:
-            final_prompt = final_prompt.replace("{{pronouns}}", formatted_pronouns)
+        # 3. Main content slot - This should be done *after* all other placeholders are processed.
+        final_prompt = final_prompt.replace("{{slot}}", chunk_text)
         
         return final_prompt
 
@@ -382,25 +449,26 @@ if __name__ == '__main__':
 
     sample_config_base = {
         "model_name": "gemini-1.5-flash", "temperature": 0.7, "top_p": 0.9,
-        "prompts": "다음 텍스트를 한국어로 번역해주세요. 고유명사 목록: {{pronouns}}\n\n번역할 텍스트:\n{{slot}}",
-        "max_pronoun_entries": 10,
+        "prompts": "다음 텍스트를 한국어로 번역해주세요. 로어북 컨텍스트: {{lorebook_context}}\n\n번역할 텍스트:\n{{slot}}",
+        "enable_dynamic_lorebook_injection": True, # 테스트를 위해 활성화
+        "lorebook_json_path_for_injection": "test_lorebook.json", # 테스트용 로어북 경로
+        "max_lorebook_entries_per_chunk_injection": 3,
+        "max_lorebook_chars_per_chunk_injection": 200,
     }
 
-    # 1. 일반 번역 테스트
-    print("\n--- 1. 일반 번역 테스트 ---")
+    # 1. 로어북 주입 테스트
+    print("\n--- 1. 로어북 주입 번역 테스트 ---")
     config1 = sample_config_base.copy()
-    config1["pronouns_csv"] = "test_pronouns.csv" 
     
-    test_pronoun_data = [
-        {PRONOUN_CSV_HEADER[0]: "Alice", PRONOUN_CSV_HEADER[1]: "앨리스", PRONOUN_CSV_HEADER[2]: "10"},
-        {PRONOUN_CSV_HEADER[0]: "Bob", PRONOUN_CSV_HEADER[1]: "밥", PRONOUN_CSV_HEADER[2]: "5"}
+    # 테스트용 로어북 파일 생성
+    test_lorebook_data = [
+        {"keyword": "Alice", "description": "주인공 앨리스", "category": "인물", "importance": 10, "isSpoiler": False},
+        {"keyword": "Bob", "description": "앨리스의 친구 밥", "category": "인물", "importance": 8, "isSpoiler": False}
     ]
-    from file_handler import write_csv_file, delete_file 
-    test_pronoun_file = Path("test_pronouns.csv")
-    if test_pronoun_file.exists(): delete_file(test_pronoun_file)
-    rows_to_write = [[d[PRONOUN_CSV_HEADER[0]], d[PRONOUN_CSV_HEADER[1]], d[PRONOUN_CSV_HEADER[2]]] for d in test_pronoun_data]
-    write_csv_file(test_pronoun_file, rows_to_write, header=PRONOUN_CSV_HEADER)
-
+    from file_handler import write_json_file, delete_file # write_csv_file -> write_json_file
+    test_lorebook_file = Path("test_lorebook.json")
+    if test_lorebook_file.exists(): delete_file(test_lorebook_file)
+    write_json_file(test_lorebook_file, test_lorebook_data)
 
     gemini_client_instance = MockGeminiClient(auth_credentials="dummy_api_key")
     translation_service1 = TranslationService(gemini_client_instance, config1)
@@ -412,13 +480,12 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"테스트 1 오류: {e}")
     finally:
-        if test_pronoun_file.exists(): delete_file(test_pronoun_file)
+        if test_lorebook_file.exists(): delete_file(test_lorebook_file)
 
-
-    # 2. 고유명사 없는 경우 테스트
-    print("\n--- 2. 고유명사 없는 경우 테스트 ---")
+    # 2. 로어북 비활성화 테스트
+    print("\n--- 2. 로어북 비활성화 테스트 ---")
     config2 = sample_config_base.copy()
-    config2["pronouns_csv"] = None 
+    config2["enable_dynamic_lorebook_injection"] = False
     translation_service2 = TranslationService(gemini_client_instance, config2)
     text_to_translate2 = "This is a test sentence."
     try:

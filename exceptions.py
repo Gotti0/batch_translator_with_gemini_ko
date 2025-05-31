@@ -56,10 +56,6 @@ class BtgChunkingException(BtgBusinessLogicException):
     """텍스트 청킹(분할) 로직 중 발생하는 오류에 대한 예외입니다."""
     pass
 
-class BtgPronounException(BtgBusinessLogicException):
-    """고유명사 추출 또는 처리 로직 중 발생하는 오류에 대한 예외입니다."""
-    pass
-
 # --- 애플리케이션 계층 예외 ---
 
 class BtgServiceException(BtgException):
@@ -114,4 +110,3 @@ if __name__ == '__main__':
         print(f"API 호출 결과: {result_api}")
     except BtgException as e: # 모든 Btg 관련 예외를 잡을 수 있음
         print(f"예상치 못한 BTG 예외 발생: {e}")
-

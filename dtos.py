@@ -42,14 +42,38 @@ class TranslationJobProgressDTO:
 
 
 # --- 고유명사 추출 작업 상태 DTO ---
+# LorebookExtractionProgressDTO로 대체됨
+# @dataclass
+# class PronounExtractionProgressDTO:
+#     """
+#     고유명사 추출 작업의 진행 상황을 나타내는 DTO입니다.
+#     """
+#     total_sample_chunks: int
+#     processed_sample_chunks: int
+#     current_status_message: str
+
 @dataclass
-class PronounExtractionProgressDTO:
+class LorebookEntryDTO:
     """
-    고유명사 추출 작업의 진행 상황을 나타내는 DTO입니다.
+    로어북의 각 항목을 나타냅니다.
     """
-    total_sample_chunks: int
-    processed_sample_chunks: int
+    keyword: str
+    description: str
+    category: Optional[str] = None # 예: "인물", "장소", "아이템", "설정"
+    importance: Optional[int] = None # 1-10
+    sourceSegmentTextPreview: Optional[str] = None # 추출된 원본 세그먼트 미리보기
+    isSpoiler: Optional[bool] = False
+    # 추가 필드 가능
+
+@dataclass
+class LorebookExtractionProgressDTO: # 기존 PronounExtractionProgressDTO 와 유사하게
+    """
+    로어북 추출 작업의 진행 상황을 나타내는 DTO입니다.
+    """
+    total_segments: int
+    processed_segments: int
     current_status_message: str
+    extracted_entries_count: int = 0
 
 # --- 설정 관련 DTO (필요시) ---
 @dataclass
@@ -73,13 +97,6 @@ class TranslationRequestDTO:
     input_file_path: Union[str, Path]
     output_file_path: Union[str, Path]
 
-@dataclass
-class PronounExtractionRequestDTO:
-    """
-    고유명사 추출 요청을 위한 DTO입니다.
-    """
-    input_file_path: Union[str, Path]
-
 
 if __name__ == '__main__':
     # DTO 사용 예시
@@ -98,12 +115,22 @@ if __name__ == '__main__':
     )
     print(f"번역 진행: {progress1}")
 
-    pronoun_progress = PronounExtractionProgressDTO(
-        total_sample_chunks=50,
-        processed_sample_chunks=10,
-        current_status_message="표본 청크 11/50 분석 중..."
+    lorebook_entry_example = LorebookEntryDTO(
+        keyword="아르카나 스톤",
+        description="고대 유물, 소유자에게 막대한 힘을 부여함",
+        category="아이템",
+        importance=9,
+        isSpoiler=True
     )
-    print(f"고유명사 추출 진행: {pronoun_progress}")
+    print(f"로어북 항목 예시: {lorebook_entry_example}")
+
+    lorebook_progress = LorebookExtractionProgressDTO(
+        total_segments=100,
+        processed_segments=30,
+        current_status_message="세그먼트 31/100 분석 중...",
+        extracted_entries_count=15
+    )
+    print(f"로어북 추출 진행: {lorebook_progress}")
 
     config_display = AppConfigDisplayDTO(
         model_name="gemini-2.0-flash", 
@@ -119,4 +146,3 @@ if __name__ == '__main__':
         output_file_path="output/translated_text.txt"
     )
     print(f"번역 요청: {trans_request}")
-

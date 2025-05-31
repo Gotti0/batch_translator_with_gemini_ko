@@ -68,7 +68,7 @@ Tqdm = tqdm
 
 try:
     from app_service import AppService
-    from dtos import TranslationJobProgressDTO, PronounExtractionProgressDTO
+    from dtos import TranslationJobProgressDTO, LorebookExtractionProgressDTO # DTO 변경
     from exceptions import BtgException
     from logger_config import setup_logger
     from file_handler import (
@@ -122,15 +122,15 @@ def cli_translation_status_callback(message: str):
     Tqdm.write(f"번역 상태: {message}", file=sys.stdout)
 
 
-def cli_pronoun_extraction_progress_callback(dto: PronounExtractionProgressDTO):
+def cli_lorebook_extraction_progress_callback(dto: LorebookExtractionProgressDTO): # 함수명 및 DTO 변경
     global tqdm_instances
-    task_id = "pronoun_extraction"
+    task_id = "lorebook_extraction" # task_id 변경
 
     with tqdm_lock:
-        if task_id not in tqdm_instances or tqdm_instances[task_id].total != dto.total_sample_chunks:
+        if task_id not in tqdm_instances or tqdm_instances[task_id].total != dto.total_segments: # DTO 필드명 변경 (total_sample_chunks -> total_segments)
             if task_id in tqdm_instances: tqdm_instances[task_id].close()
-            if dto.total_sample_chunks > 0:
-                tqdm_instances[task_id] = Tqdm(total=dto.total_sample_chunks, desc="고유명사 추출 (표본)", unit="표본", leave=False, file=sys.stdout)
+            if dto.total_segments > 0: # DTO 필드명 변경
+                tqdm_instances[task_id] = Tqdm(total=dto.total_segments, desc="로어북 추출 (표본)", unit="세그먼트", leave=False, file=sys.stdout) # 설명 변경
             else:
                 if task_id in tqdm_instances: del tqdm_instances[task_id]
                 return
@@ -138,15 +138,17 @@ def cli_pronoun_extraction_progress_callback(dto: PronounExtractionProgressDTO):
         tqdm_instance = tqdm_instances.get(task_id)
         if not tqdm_instance: return
 
-        if dto.processed_sample_chunks > tqdm_instance.n:
-            update_amount = dto.processed_sample_chunks - tqdm_instance.n
+        if dto.processed_segments > tqdm_instance.n: # DTO 필드명 변경 (processed_sample_chunks -> processed_segments)
+            update_amount = dto.processed_segments - tqdm_instance.n # DTO 필드명 변경
             if update_amount > 0:
                 tqdm_instance.update(update_amount)
 
         if dto.current_status_message:
-            tqdm_instance.set_postfix(status=dto.current_status_message, refresh=True)
+            postfix_info = {"status": dto.current_status_message}
+            if dto.extracted_entries_count > 0: postfix_info["추출항목"] = dto.extracted_entries_count
+            tqdm_instance.set_postfix(postfix_info, refresh=True)
 
-        if dto.processed_sample_chunks == dto.total_sample_chunks and dto.total_sample_chunks > 0:
+        if dto.processed_segments == dto.total_segments and dto.total_segments > 0: # DTO 필드명 변경
             tqdm_instance.close()
             if task_id in tqdm_instances: del tqdm_instances[task_id]
 
@@ -169,8 +171,8 @@ def parse_arguments():
     parser.add_argument("--gcp-project", type=str, default=None, help="Vertex AI 사용 시 GCP 프로젝트 ID")
     parser.add_argument("--gcp-location", type=str, default=None, help="Vertex AI 사용 시 GCP 리전")
 
-    parser.add_argument("--pronouns_csv", type=Path, default=None, help="사용자 정의 고유명사 CSV 파일 경로")
-    parser.add_argument("--extract_pronouns_only", action="store_true", help="번역 대신 고유명사 추출만 수행합니다.")
+    parser.add_argument("--lorebook_seed_file", type=Path, default=None, help="로어북 생성 시 참고할 기존 로어북 JSON 파일 경로 (선택 사항)") # 인수명 변경 및 설명 수정
+    parser.add_argument("--extract_lorebook_only", action="store_true", help="번역 대신 로어북 추출만 수행합니다.") # 인수명 변경
 
     resume_group = parser.add_mutually_exclusive_group()
     resume_group.add_argument("--resume", action="store_true", help="이전 번역 작업을 이어받아 계속합니다.")
@@ -178,6 +180,13 @@ def parse_arguments():
 
     parser.add_argument("--log_level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO', help="로그 레벨 설정 (기본값: INFO)")
     parser.add_argument("--log_file", type=Path, default=None, help="로그를 저장할 파일 경로 (기본값: btg_cli.log)")
+
+    # 동적 로어북 주입 설정
+    dyn_lorebook_group = parser.add_argument_group('Dynamic Lorebook Injection Settings')
+    dyn_lorebook_group.add_argument("--enable-dynamic-lorebook-injection", action="store_true", help="동적 로어북 주입 기능을 활성화합니다.")
+    dyn_lorebook_group.add_argument("--max-lorebook-entries-injection", type=int, help="번역 청크당 주입할 최대 로어북 항목 수 (예: 3)")
+    dyn_lorebook_group.add_argument("--max-lorebook-chars-injection", type=int, help="번역 청크당 주입할 로어북의 최대 총 문자 수 (예: 500)")
+    dyn_lorebook_group.add_argument("--lorebook-json-path-injection", type=Path, help="동적 주입에 사용할 로어북 JSON 파일 경로")
 
     return parser.parse_args()
 
@@ -250,29 +259,46 @@ def main():
         if args.gcp_location:
             app_service.config["gcp_location"] = args.gcp_location
             cli_auth_applied = True
+        
+        # 동적 로어북 주입 설정 CLI 인자 처리
+        if args.enable_dynamic_lorebook_injection:
+            app_service.config["enable_dynamic_lorebook_injection"] = True
+            cli_auth_applied = True # config 변경 플래그로 사용
+        if args.max_lorebook_entries_injection is not None:
+            app_service.config["max_lorebook_entries_per_chunk_injection"] = args.max_lorebook_entries_injection
+            cli_auth_applied = True
+        if args.max_lorebook_chars_injection is not None:
+            app_service.config["max_lorebook_chars_per_chunk_injection"] = args.max_lorebook_chars_injection
+            cli_auth_applied = True
+        if args.lorebook_json_path_injection:
+            app_service.config["lorebook_json_path_for_injection"] = str(args.lorebook_json_path_injection.resolve())
+            cli_auth_applied = True
 
         if cli_auth_applied:
             cli_logger.info("CLI 인수로 제공된 인증/Vertex 정보를 반영하기 위해 설정을 다시 로드합니다.")
             app_service.load_app_config()
 
-        if args.pronouns_csv:
-            cli_logger.info(f"사용자 지정 고유명사 파일 사용: {args.pronouns_csv}")
-            app_service.config["pronouns_csv"] = str(args.pronouns_csv)
+        if args.lorebook_seed_file: # 인수명 변경
+            cli_logger.info(f"로어북 생성 시 참고할 파일: {args.lorebook_seed_file}")
+            # 이 파일은 AppService.extract_lorebook 메서드에 전달되거나,
+            # ConfigManager를 통해 설정에 저장되어 LorebookService에서 사용될 수 있습니다.
+            # 여기서는 AppService.config에 직접 저장하는 대신, extract_lorebook 호출 시 전달하는 것을 가정합니다.
+            # app_service.config["lorebook_seed_file"] = str(args.lorebook_seed_file) # 필요시 AppService에서 처리
             app_service.load_app_config()
 
 
-        if args.extract_pronouns_only:
-            cli_logger.info("고유명사 추출 모드로 실행합니다.")
+        if args.extract_lorebook_only: # 인수명 변경
+            cli_logger.info("로어북 추출 모드로 실행합니다.") # 메시지 변경
             if not args.input_file.exists():
                 cli_logger.error(f"입력 파일을 찾을 수 없습니다: {args.input_file}")
                 sys.exit(1)
 
-            result_csv_path = app_service.extract_pronouns(
+            result_lorebook_path = app_service.extract_lorebook( # app_service 메서드명 변경 가정
                 args.input_file,
-                progress_callback=cli_pronoun_extraction_progress_callback,
-                tqdm_file_stream=sys.stdout
+                progress_callback=cli_lorebook_extraction_progress_callback, # 콜백 함수명 변경
+                seed_lorebook_path=args.lorebook_seed_file # 추가 인자 전달 (선택)
             )
-            Tqdm.write(f"\n고유명사 추출 완료. 결과 파일: {result_csv_path}", file=sys.stdout)
+            Tqdm.write(f"\n로어북 추출 완료. 결과 파일: {result_lorebook_path}", file=sys.stdout) # 메시지 변경
 
         else: # 번역 모드
             output_file = args.output_file
