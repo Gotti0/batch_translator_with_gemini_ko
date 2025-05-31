@@ -43,10 +43,8 @@ class ConfigManager:
             "gcp_project": None,
             "gcp_location": None,
             "auth_credentials": "", 
-            "default_novel_language": "auto", # 로어북 추출 시 기본 소설 언어 (자동 감지)
-            "default_novel_language_fallback": "ja", # 자동 감지 실패 시 사용할 기본 소설 언어
-            "source_language_for_translation": "auto", # 번역 출발 언어 (자동 감지)
-            "source_language_for_translation_fallback": "ja", # 자동 감지 실패 시 사용할 번역 출발 언어
+            "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
+            "novel_language_fallback": "ja", # 자동 감지 실패 시 사용할 폴백 언어
             "model_name": "gemini-1.5-flash-latest",
             "temperature": 0.7,
             "top_p": 0.9,
@@ -238,8 +236,8 @@ if __name__ == '__main__':
     assert config1["api_keys"] == [] 
     assert config1["service_account_file_path"] is None
     assert config1["use_vertex_ai"] is False
-    assert config1["default_novel_language"] == "ko"
-    assert config1["source_language_for_translation"] == "ko"
+    assert config1["novel_language"] == "auto" # Changed from ko to auto to match new default
+    assert config1["novel_language_fallback"] == "ja"
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
     assert config1["enable_dynamic_lorebook_injection"] is False
     assert config1["max_lorebook_entries_per_chunk_injection"] == 3
@@ -253,8 +251,8 @@ if __name__ == '__main__':
     config_to_save["use_vertex_ai"] = True
     config_to_save["gcp_project"] = "test-project"
     config_to_save["model_name"] = "gemini-pro-custom"
-    config_to_save["default_novel_language"] = "en"
-    config_to_save["source_language_for_translation"] = "en"
+    config_to_save["novel_language"] = "en"
+    config_to_save["novel_language_fallback"] = "en_gb"
     config_to_save["max_workers"] = 4 # max_workers 값 설정
     config_to_save["enable_dynamic_lorebook_injection"] = True
     config_to_save["lorebook_json_path_for_injection"] = "path/to/injection_lorebook.json"
@@ -272,8 +270,8 @@ if __name__ == '__main__':
     assert config2["use_vertex_ai"] is True
     assert config2["gcp_project"] == "test-project"
     assert config2["model_name"] == "gemini-pro-custom"
-    assert config2["default_novel_language"] == "en"
-    assert config2["source_language_for_translation"] == "en"
+    assert config2["novel_language"] == "en"
+    assert config2["novel_language_fallback"] == "en_gb"
     # 로어북 기본 설정값 확인
     assert config2.get("lorebook_sampling_method") == "uniform"
     assert config2.get("lorebook_chunk_size") == 8000

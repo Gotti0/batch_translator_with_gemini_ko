@@ -252,9 +252,9 @@ class AppService:
 
             # 로어북 추출 시 사용할 언어 코드 결정
             # 1. 명시적으로 전달된 novel_language_code
-            # 2. 설정 파일의 default_novel_language
+            # 2. 설정 파일의 novel_language (통합됨)
             # 3. None (LorebookService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
-            lang_code_for_extraction = novel_language_code or self.config.get("default_novel_language")
+            lang_code_for_extraction = novel_language_code or self.config.get("novel_language") # 통합된 설정 사용
             result_path = self.lorebook_service.extract_and_save_lorebook( # Method changed
                 file_content, # Pass content directly
                 input_file_path, 

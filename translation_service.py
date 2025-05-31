@@ -148,9 +148,9 @@ class TranslationService:
         final_prompt = prompt_template
 
         # Determine the source language for the current chunk to filter lorebook entries
-        config_source_lang = self.config.get("source_language_for_translation")
+        config_source_lang = self.config.get("novel_language") # 통합된 설정 사용
         # Fallback language from config, with a hardcoded default if the config key itself is missing
-        config_fallback_lang = self.config.get("source_language_for_translation_fallback", "ja") 
+        config_fallback_lang = self.config.get("novel_language_fallback", "ja") # 통합된 폴백 설정 사용
 
         current_source_lang_for_translation: str # Type hint for clarity
 

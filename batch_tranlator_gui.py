@@ -105,8 +105,8 @@ except ImportError as e:
                 "lorebook_priority_settings": {"character": 5, "worldview": 5, "story_element": 5},
                 "lorebook_chunk_size": 8000,
                 "lorebook_extraction_temperature": 0.2, # For lorebook extraction
-                "default_novel_language": "ko", # Default language for novel (lorebook extraction)
-                "source_language_for_translation": "ko", # Source language for translation
+                "novel_language": "auto", 
+                "novel_language_fallback": "ja",
                 "lorebook_output_json_filename_suffix": "_lorebook.json"
             }
         def load_app_config(self) -> Dict[str, Any]:
@@ -433,13 +433,15 @@ class BatchTranslatorGUI:
             self.max_workers_entry.insert(0, str(max_workers_val))
 
             # Language settings
-            default_novel_lang_val = config.get("default_novel_language", "ko")
-            self.default_novel_language_entry.delete(0, tk.END)
-            self.default_novel_language_entry.insert(0, default_novel_lang_val)
+            novel_lang_val = config.get("novel_language", "auto")
+            self.novel_language_entry.delete(0, tk.END)
+            self.novel_language_entry.insert(0, novel_lang_val)
+            logger.debug(f"Config에서 가져온 novel_language: {novel_lang_val}")
 
-            source_lang_translation_val = config.get("source_language_for_translation", "ko")
-            self.source_language_for_translation_entry.delete(0, tk.END)
-            self.source_language_for_translation_entry.insert(0, source_lang_translation_val)
+            novel_lang_fallback_val = config.get("novel_language_fallback", "ja")
+            self.novel_language_fallback_entry.delete(0, tk.END)
+            self.novel_language_fallback_entry.insert(0, novel_lang_fallback_val)
+            logger.debug(f"Config에서 가져온 novel_language_fallback: {novel_lang_fallback_val}")
 
 
             prompts_val = config.get("prompts", "") 
@@ -614,15 +616,17 @@ class BatchTranslatorGUI:
         language_settings_frame = ttk.LabelFrame(settings_frame, text="언어 설정", padding="10")
         language_settings_frame.pack(fill="x", padx=5, pady=5)
 
-        ttk.Label(language_settings_frame, text="기본 소설 언어 (로어북 추출용):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.default_novel_language_entry = ttk.Entry(language_settings_frame, width=10)
-        self.default_novel_language_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
-        self.default_novel_language_entry.insert(0, "ko") # Default value
+        ttk.Label(language_settings_frame, text="소설/번역 출발 언어:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.novel_language_entry = ttk.Entry(language_settings_frame, width=10)
+        self.novel_language_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        self.novel_language_entry.insert(0, "auto") 
+        ttk.Label(language_settings_frame, text="(예: ko, ja, en, auto)").grid(row=0, column=2, padx=5, pady=5, sticky="w")
 
-        ttk.Label(language_settings_frame, text="번역 출발 언어:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.source_language_for_translation_entry = ttk.Entry(language_settings_frame, width=10)
-        self.source_language_for_translation_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        self.source_language_for_translation_entry.insert(0, "ko") # Default value
+        ttk.Label(language_settings_frame, text="언어 자동감지 실패 시 폴백:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.novel_language_fallback_entry = ttk.Entry(language_settings_frame, width=10)
+        self.novel_language_fallback_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        self.novel_language_fallback_entry.insert(0, "ja")
+        ttk.Label(language_settings_frame, text="(예: ko, ja, en)").grid(row=1, column=2, padx=5, pady=5, sticky="w")
         
         # 번역 프롬프트
         prompt_frame = ttk.LabelFrame(settings_frame, text="번역 프롬프트", padding="10")
@@ -1101,8 +1105,8 @@ class BatchTranslatorGUI:
             "chunk_size": int(self.chunk_size_entry.get() or "6000"), 
             "max_workers": max_workers_val, 
             "prompts": prompt_content,
-            "default_novel_language": self.default_novel_language_entry.get().strip() or "",
-            "source_language_for_translation": self.source_language_for_translation_entry.get().strip() or "",
+            "novel_language": self.novel_language_entry.get().strip() or "auto",
+            "novel_language_fallback": self.novel_language_fallback_entry.get().strip() or "ja",
             # Lorebook settings
             "lorebook_json_path": self.lorebook_json_path_entry.get().strip() or None,
             "lorebook_sampling_ratio": self.sample_ratio_scale.get(),

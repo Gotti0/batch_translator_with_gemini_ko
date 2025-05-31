@@ -417,15 +417,15 @@ class LorebookService:
 
         if novel_language_code == "auto":
             if novel_text_content and novel_text_content.strip():
-                # API 호출을 통한 자동 감지 제거
-                actual_source_language_for_entries = self.config.get("default_novel_language_fallback", "ko")
+                # Use the unified fallback language
+                actual_source_language_for_entries = self.config.get("novel_language_fallback", "ja")
                 logger.info(f"'{novel_language_code}' 설정: 언어 자동 감지 API 호출을 건너뛰고, "
                             f"폴백 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
             else:
-                actual_source_language_for_entries = self.config.get("default_novel_language_fallback", "ko")
+                actual_source_language_for_entries = self.config.get("novel_language_fallback", "ja")
                 logger.info("입력 텍스트가 비어있어 언어 자동 감지를 건너뛰고, "
                             f"폴백 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
-        else: # novel_language_code is a specific code (e.g., "ko", "en") or the default from config
+        else: # novel_language_code is a specific code (e.g., "ko", "en") or None (use config's novel_language)
             actual_source_language_for_entries = novel_language_code
             logger.info(f"명시적/기본 소설 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
 
