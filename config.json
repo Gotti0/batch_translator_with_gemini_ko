@@ -43,7 +43,7 @@
     "lorebook_output_json_filename_suffix": "_lorebook.json",
     "enable_dynamic_lorebook_injection": true,
     "max_lorebook_entries_per_chunk_injection": 3,
-    "max_lorebook_chars_per_chunk_injection": 500, 
+    "max_lorebook_chars_per_chunk_injection": 500,
     "lorebook_json_path": "mock_lorebook.json",
     "pronouns_csv": "C:\\Users\\Hyunwoo_Room\\Downloads\\여자친구 이야기\\여자친구_이야기_2권_seed.csv",
     "max_pronoun_entries": 20,

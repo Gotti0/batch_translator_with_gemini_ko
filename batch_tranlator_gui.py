@@ -465,6 +465,12 @@ class BatchTranslatorGUI:
         self.rpm_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.rpm_entry.pack(side="left")
 
+        # Helper method to update toggle button text
+        def update_toggle_text(button, var, base_text):
+            if var.get():
+                button.config(text=f"▲ {base_text} 숨기기")
+            else:
+                button.config(text=f"▼ {base_text} 보기")
         # Language Settings Frame
         language_settings_frame = ttk.LabelFrame(settings_frame, text="언어 설정", padding="10")
         language_settings_frame.pack(fill="x", padx=5, pady=5)
@@ -489,46 +495,72 @@ class BatchTranslatorGUI:
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
         
         # 콘텐츠 안전 재시도 설정
-        content_safety_frame = ttk.LabelFrame(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
-        content_safety_frame.pack(fill="x", padx=5, pady=5)
+        content_safety_outer_frame = ttk.LabelFrame(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
+        content_safety_outer_frame.pack(fill="x", padx=5, pady=5)
+
+        self.content_safety_expanded_var = tk.BooleanVar(value=True)
+        self.content_safety_toggle_button = ttk.Checkbutton(
+            content_safety_outer_frame,
+            variable=self.content_safety_expanded_var,
+            command=self._toggle_content_safety_details
+        )
+        self.content_safety_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
         
+        self.content_safety_details_frame = ttk.Frame(content_safety_outer_frame)
+        self.content_safety_details_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+
         self.use_content_safety_retry_var = tk.BooleanVar()
         self.use_content_safety_retry_check = ttk.Checkbutton(
-            content_safety_frame,
+            self.content_safety_details_frame, # Parent changed
             text="검열 오류시 청크 분할 재시도 사용",
             variable=self.use_content_safety_retry_var
         )
         self.use_content_safety_retry_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
         
-        ttk.Label(content_safety_frame, text="최대 분할 시도:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.max_split_attempts_entry = ttk.Entry(content_safety_frame, width=5)
+        ttk.Label(self.content_safety_details_frame, text="최대 분할 시도:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        self.max_split_attempts_entry = ttk.Entry(self.content_safety_details_frame, width=5) # Parent changed
         self.max_split_attempts_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         self.max_split_attempts_entry.insert(0, "3")
         
-        ttk.Label(content_safety_frame, text="최소 청크 크기:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        self.min_chunk_size_entry = ttk.Entry(content_safety_frame, width=10)
+        ttk.Label(self.content_safety_details_frame, text="최소 청크 크기:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        self.min_chunk_size_entry = ttk.Entry(self.content_safety_details_frame, width=10) # Parent changed
         self.min_chunk_size_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         self.min_chunk_size_entry.insert(0, "100")
 
+        self._toggle_content_safety_details() # Set initial state and text
+
         # 동적 로어북 주입 설정
-        dynamic_lorebook_frame = ttk.LabelFrame(settings_frame, text="동적 로어북 주입 설정", padding="10")
-        dynamic_lorebook_frame.pack(fill="x", padx=5, pady=5)
+        dynamic_lorebook_outer_frame = ttk.LabelFrame(settings_frame, text="동적 로어북 주입 설정", padding="10")
+        dynamic_lorebook_outer_frame.pack(fill="x", padx=5, pady=5)
+
+        self.dynamic_lorebook_expanded_var = tk.BooleanVar(value=True)
+        self.dynamic_lorebook_toggle_button = ttk.Checkbutton(
+            dynamic_lorebook_outer_frame,
+            variable=self.dynamic_lorebook_expanded_var,
+            command=self._toggle_dynamic_lorebook_details
+        )
+        self.dynamic_lorebook_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+
+        self.dynamic_lorebook_details_frame = ttk.Frame(dynamic_lorebook_outer_frame)
+        self.dynamic_lorebook_details_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
 
         self.enable_dynamic_lorebook_injection_var = tk.BooleanVar()
         self.enable_dynamic_lorebook_injection_check = ttk.Checkbutton(
-            dynamic_lorebook_frame,
+            self.dynamic_lorebook_details_frame, # Parent changed
             text="동적 로어북 주입 활성화",
             variable=self.enable_dynamic_lorebook_injection_var
         )
         self.enable_dynamic_lorebook_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
 
-        ttk.Label(dynamic_lorebook_frame, text="청크당 최대 주입 항목 수:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.max_lorebook_entries_injection_entry = ttk.Entry(dynamic_lorebook_frame, width=5)
+        ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 항목 수:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        self.max_lorebook_entries_injection_entry = ttk.Entry(self.dynamic_lorebook_details_frame, width=5) # Parent changed
         self.max_lorebook_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
 
-        ttk.Label(dynamic_lorebook_frame, text="청크당 최대 주입 문자 수:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        self.max_lorebook_chars_injection_entry = ttk.Entry(dynamic_lorebook_frame, width=10)
+        ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 문자 수:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        self.max_lorebook_chars_injection_entry = ttk.Entry(self.dynamic_lorebook_details_frame, width=10) # Parent changed
         self.max_lorebook_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+
+        self._toggle_dynamic_lorebook_details() # Set initial state and text
 
         # 주입용 로어북 JSON 경로 입력 필드는 "로어북 관리" 탭의 경로를 사용하므로 여기서는 제거합니다.
         # 액션 버튼들
@@ -556,6 +588,22 @@ class BatchTranslatorGUI:
         
         self.progress_label = ttk.Label(progress_frame, text="대기 중...")
         self.progress_label.pack(pady=2)
+
+    def _toggle_content_safety_details(self):
+        if self.content_safety_expanded_var.get():
+            self.content_safety_details_frame.grid()
+            self.content_safety_toggle_button.config(text="▲ 세부 설정 숨기기")
+        else:
+            self.content_safety_details_frame.grid_remove()
+            self.content_safety_toggle_button.config(text="▼ 세부 설정 보기")
+
+    def _toggle_dynamic_lorebook_details(self):
+        if self.dynamic_lorebook_expanded_var.get():
+            self.dynamic_lorebook_details_frame.grid()
+            self.dynamic_lorebook_toggle_button.config(text="▲ 세부 설정 숨기기")
+        else:
+            self.dynamic_lorebook_details_frame.grid_remove()
+            self.dynamic_lorebook_toggle_button.config(text="▼ 세부 설정 보기")
 
     def _browse_service_account_file(self):
         filepath = filedialog.askopenfilename(
