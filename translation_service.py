@@ -220,6 +220,7 @@ class TranslationService:
                 injected_keywords = [entry.keyword for entry in relevant_entries_for_chunk if entry.keyword.lower() in chunk_text_lower]
                 if injected_keywords:
                     logger.info(f"  🔑 주입된 로어북 키워드: {', '.join(injected_keywords)}")
+                    logger.info(f"  🔑 주입된 로어북 키워드: {', '.join(injected_keywords)}")
             else:
                 logger.debug(f"동적 로어북 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_lorebook_context}")
             final_prompt = final_prompt.replace("{{lorebook_context}}", formatted_lorebook_context)
