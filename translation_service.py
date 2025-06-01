@@ -75,7 +75,11 @@ def _format_lorebook_for_prompt(
         details_parts.append(f"스포일러: {spoiler_text}")
         
         details_str = ", ".join(details_parts)
-        entry_str = f"- {entry.keyword}: {entry.description} ({details_str})"
+        # 로어북 항목의 원본 언어 정보를 프롬프트에 포함
+        lang_info = f" (lang: {entry.source_language})" if entry.source_language else ""
+        entry_str = f"- {entry.keyword}{lang_info}: {entry.description} ({details_str})"
+        
+        
         
         # 현재 항목 추가 시 최대 글자 수 초과하면 중단 (단, 최소 1개는 포함되도록)
         if current_chars + len(entry_str) > max_chars and entries_count > 0:
@@ -152,51 +156,51 @@ class TranslationService:
         # Fallback language from config, with a hardcoded default if the config key itself is missing
         config_fallback_lang = self.config.get("novel_language_fallback", "ja") # 통합된 폴백 설정 사용
 
-        current_source_lang_for_translation: str # Type hint for clarity
+        # "auto" 모드일 때, LLM이 언어를 감지하고 로어북을 필터링하도록 프롬프트가 구성됩니다.
+        # Python 단에서 current_source_lang_for_translation을 확정하지 않습니다.
+        # 로깅이나 특정 조건부 로직을 위해선 여전히 필요할 수 있으나, 로어북 필터링은 LLM으로 넘어갑니다.
+        current_source_lang_for_lorebook_filtering: Optional[str] = None
 
         if config_source_lang == "auto":
-            if chunk_text and chunk_text.strip():
-                logger.info(f"번역 출발 언어 자동 감지 시도 (설정: 'auto', 청크 일부: '{chunk_text[:30].strip()}...')...")
-                try:
-                    detected_lang = self.gemini_client.detect_language(chunk_text)
-                    if detected_lang:
-                        current_source_lang_for_translation = detected_lang
-                        logger.info(f"청크 언어 자동 감지 성공: '{current_source_lang_for_translation}'")
-                    else:
-                        current_source_lang_for_translation = config_fallback_lang
-                        logger.warning(f"청크 언어 자동 감지 실패 (API가 None 반환). 폴백 언어 '{current_source_lang_for_translation}' 사용.")
-                except Exception as e_detect:
-                    current_source_lang_for_translation = config_fallback_lang
-                    logger.error(f"청크 언어 자동 감지 중 오류 발생: {e_detect}. 폴백 언어 '{current_source_lang_for_translation}' 사용.")
-            else:
-                current_source_lang_for_translation = config_fallback_lang
-                logger.info(f"청크 텍스트가 비어있어 언어 자동 감지를 건너뛰고 폴백 언어 '{current_source_lang_for_translation}' 사용.")
+            logger.info(f"번역 출발 언어 설정: 'auto'. LLM이 프롬프트 내에서 언어를 감지하고 로어북을 적용하도록 합니다.")
+            # current_source_lang_for_lorebook_filtering는 None으로 유지하거나 "auto"로 설정.
+            # 로어북 필터링은 LLM의 역할이 됩니다.
         elif config_source_lang and isinstance(config_source_lang, str) and config_source_lang.strip(): # Specific language code provided
-            current_source_lang_for_translation = config_source_lang
-            logger.info(f"명시적 번역 출발 언어 '{current_source_lang_for_translation}' 사용.")
+            current_source_lang_for_lorebook_filtering = config_source_lang
+            logger.info(f"명시적 번역 출발 언어 '{current_source_lang_for_lorebook_filtering}' 사용. 로어북도 이 언어 기준으로 필터링됩니다.")
         else: # config_source_lang is None, empty string, or not "auto"
-            current_source_lang_for_translation = config_fallback_lang
-            logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_translation}' 사용.")
+            current_source_lang_for_lorebook_filtering = config_fallback_lang
+            logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_lorebook_filtering}'를 로어북 필터링에 사용.")
 
         # 1. Dynamic Lorebook Injection
         if self.config.get("enable_dynamic_lorebook_injection", False) and \
            self.lorebook_entries_for_injection and \
            "{{lorebook_context}}" in final_prompt:
 
-            logger.debug(f"번역 프롬프트 구성 중: 번역 출발 언어로 '{current_source_lang_for_translation}' 사용.")
-            # 1.a. Filter lorebook entries relevant to the current chunk_text
             relevant_entries_for_chunk: List[LorebookEntryDTO] = []
             chunk_text_lower = chunk_text.lower() # For case-insensitive keyword matching
-            for entry in self.lorebook_entries_for_injection:
-                # 로어북 항목의 언어와 현재 번역 출발 언어가 일치하는지 확인
-                if entry.source_language and \
-                   current_source_lang_for_translation and \
-                   entry.source_language.lower() != current_source_lang_for_translation.lower():
-                    logger.debug(f"로어북 항목 '{entry.keyword}' 건너뜀: 언어 불일치 (로어북: {entry.source_language}, 번역 출발: {current_source_lang_for_translation}).")
-                    continue
 
-                if entry.keyword.lower() in chunk_text_lower: # 중요: 로어북 키워드는 번역 출발 언어와 일치해야 함
-                    relevant_entries_for_chunk.append(entry)
+            if config_source_lang == "auto":
+                # "auto" 모드: LLM이 언어를 감지하고 로어북을 필터링하도록 지시.
+                # Python에서는 키워드 기반으로만 필터링하거나, 모든 로어북 항목을 전달.
+                # 여기서는 키워드 기반 필터링만 수행하고, LLM이 언어 필터링을 하도록 프롬프트에 명시.
+                logger.info("자동 언어 감지 모드: 로어북은 키워드 일치로 필터링 후 LLM에 전달. LLM이 언어 기반 추가 필터링 수행.")
+                for entry in self.lorebook_entries_for_injection:
+                    if entry.keyword.lower() in chunk_text_lower:
+                        relevant_entries_for_chunk.append(entry)
+            else:
+                # 명시적 언어 설정 모드: Python에서 언어 및 키워드 기반으로 필터링.
+                logger.info(f"명시적 언어 모드 ('{current_source_lang_for_lorebook_filtering}'): 로어북을 언어 및 키워드 기준으로 필터링.")
+                for entry in self.lorebook_entries_for_injection:
+                    # 로어북 항목의 언어와 현재 번역 출발 언어가 일치하는지 확인
+                    if entry.source_language and \
+                       current_source_lang_for_lorebook_filtering and \
+                       entry.source_language.lower() != current_source_lang_for_lorebook_filtering.lower():
+                        logger.debug(f"로어북 항목 '{entry.keyword}' 건너뜀: 언어 불일치 (로어북: {entry.source_language}, 번역 출발: {current_source_lang_for_lorebook_filtering}).")
+                        continue
+
+                    if entry.keyword.lower() in chunk_text_lower:
+                        relevant_entries_for_chunk.append(entry)
             
             logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 로어북 항목 발견.")
 
@@ -212,6 +216,10 @@ class TranslationService:
             if formatted_lorebook_context != "로어북 컨텍스트 없음" and \
                formatted_lorebook_context != "로어북 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)":
                 logger.info(f"API 요청에 동적 로어북 컨텍스트 주입됨. 내용 일부: {formatted_lorebook_context[:100]}...")
+                # 주입된 로어북 키워드 로깅
+                injected_keywords = [entry.keyword for entry in relevant_entries_for_chunk if entry.keyword.lower() in chunk_text_lower]
+                if injected_keywords:
+                    logger.info(f"  🔑 주입된 로어북 키워드: {', '.join(injected_keywords)}")
             else:
                 logger.debug(f"동적 로어북 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_lorebook_context}")
             final_prompt = final_prompt.replace("{{lorebook_context}}", formatted_lorebook_context)
@@ -427,65 +435,93 @@ class TranslationService:
 
 if __name__ == '__main__':
     # MockGeminiClient에서 types를 사용하므로, 이 블록 내에서 임포트합니다.
-    from google.genai import types # <--- 여기에 types 임포트 추가
-
+    from google.genai import types as genai_types # Ensure types is imported for hints
+    
     print("--- TranslationService 테스트 ---")
-    class MockGeminiClient:
-        def __init__(self, auth_credentials, project=None, location=None):
-            self.auth_credentials = auth_credentials
-            self.api_keys_list = []
-            self.current_api_key = None
-            self.client = self # 자기 자신을 client로 설정 (실제 Client 객체 대신)
+    class MockGeminiClient(GeminiClient):
+        def __init__(self, auth_credentials, project=None, location=None, requests_per_minute: Optional[int] = None):
+            try:
+                super().__init__(auth_credentials=auth_credentials, project=project, location=location, requests_per_minute=requests_per_minute)
+            except Exception as e:
+                print(f"Warning: MockGeminiClient super().__init__ failed: {e}. This might be okay for some mock scenarios.")
+                # If super init fails (e.g. dummy API key validation),
+                # the mock might still function if it overrides all necessary methods
+                # and doesn't rely on base class state initialized by __init__.
+                # For Pylance, inheritance is the main fix.
+
+            self.mock_auth_credentials = auth_credentials
+            self.current_model_name_for_test: Optional[str] = None
+            self.mock_api_keys_list: List[str] = []
+            self.mock_current_api_key: Optional[str] = None
 
             if isinstance(auth_credentials, list):
-                self.api_keys_list = auth_credentials
-                if self.api_keys_list: self.current_api_key = self.api_keys_list[0]
-            elif isinstance(auth_credentials, str) and not auth_credentials.startswith('{'):
-                self.api_keys_list = [auth_credentials]
-                self.current_api_key = auth_credentials
-            print(f"MockGeminiClient initialized. API Keys: {self.api_keys_list}, Current Key: {self.current_api_key}")
+                self.mock_api_keys_list = auth_credentials
+                if self.mock_api_keys_list: self.mock_current_api_key = self.mock_api_keys_list[0]
+            elif isinstance(auth_credentials, str) and not auth_credentials.startswith('{'): # Assuming API key string
+                self.mock_api_keys_list = [auth_credentials]
+                self.mock_current_api_key = auth_credentials
+            print(f"MockGeminiClient initialized. Mock API Keys: {self.mock_api_keys_list}, Mock Current Key: {self.mock_current_api_key}")
 
-        def generative_model(self, model_name, system_instruction=None): 
-            print(f"  MockGeminiClient: generative_model() 호출됨. 모델: {model_name}, 시스템 명령어: {'있음' if system_instruction else '없음'}")
+        def generate_text(
+            self,
+            prompt: Union[str, List[Union[str, genai_types.Part]]],
+            model_name: str,
+            generation_config_dict: Optional[Dict[str, Any]] = None,
+            safety_settings_list_of_dicts: Optional[List[Dict[str, Any]]] = None,
+            system_instruction_text: Optional[str] = None,
+            max_retries: int = 5,
+            initial_backoff: float = 2.0,
+            max_backoff: float = 60.0,
+            stream: bool = False
+        ) -> Optional[Union[str, Any]]:
             self.current_model_name_for_test = model_name
-            return self 
 
-        def generate_content(self, contents, generation_config, safety_settings, stream): 
             prompt_text_for_mock = ""
-            if isinstance(contents, list) and contents and isinstance(contents[0], types.Part): # types 사용
-                prompt_text_for_mock = "".join(p.text for p in contents if hasattr(p, "text"))
-            elif isinstance(contents, str): 
-                prompt_text_for_mock = contents
+            if isinstance(prompt, str):
+                prompt_text_for_mock = prompt
+            elif isinstance(prompt, list):
+                temp_parts = []
+                for item in prompt:
+                    if isinstance(item, str):
+                        temp_parts.append(item)
+                    elif hasattr(item, 'text'): # Duck typing for Part-like objects
+                        temp_parts.append(item.text)
+                    else:
+                        temp_parts.append(str(item))
+                prompt_text_for_mock = "".join(temp_parts)
 
+            print(f"  MockGeminiClient.generate_text 호출됨 (모델: {model_name}). Mock 현재 키: {self.mock_current_api_key[:5] if self.mock_current_api_key else 'N/A'}")
 
-            print(f"  MockGeminiClient.generate_content 호출됨 (모델: {getattr(self, 'current_model_name_for_test', 'N/A')}). 현재 키: {self.current_api_key[:5] if self.current_api_key else 'N/A'}")
             if "안전 문제" in prompt_text_for_mock:
                 raise GeminiContentSafetyException("Mock 콘텐츠 안전 문제")
-            if "사용량 제한" in prompt_text_for_mock:
-                if self.current_api_key == "rate_limit_key":
-                    raise GeminiRateLimitException("Mock API 사용량 제한")
+            if "사용량 제한" in prompt_text_for_mock: # Simplified logic for mock
+                raise GeminiRateLimitException("Mock API 사용량 제한")
             if "잘못된 요청" in prompt_text_for_mock:
                 raise GeminiInvalidRequestException("Mock 잘못된 요청")
-            if "잘못된 키" in prompt_text_for_mock and self.current_api_key == "invalid_key":
-                 raise GeminiInvalidRequestException("Invalid API key (mock)")
-            
-            mock_part = types.Part(text=f"[번역됨] {prompt_text_for_mock.split('번역할 텍스트:')[-1].strip()[:50]}...") # types 사용
-            mock_candidate = types.Candidate(content=types.Content(parts=[mock_part]), finish_reason=types.FinishReason.STOP) # types 사용
-            
-            class MockResponse:
-                def __init__(self, candidates):
-                    self.candidates = candidates
-                    self.prompt_feedback = None 
-                @property
-                def text(self):
-                    if self.candidates and self.candidates[0].content and self.candidates[0].content.parts:
-                        return "".join(p.text for p in self.candidates[0].content.parts if hasattr(p, "text"))
-                    return None
 
-            return MockResponse(candidates=[mock_candidate])
+            text_to_be_translated = prompt_text_for_mock
+            if "번역할 텍스트:\n" in prompt_text_for_mock:
+                text_to_be_translated = prompt_text_for_mock.split("번역할 텍스트:\n")[-1].strip()
+            elif "Translate to Korean:" in prompt_text_for_mock:
+                 text_to_be_translated = prompt_text_for_mock.split("Translate to Korean:")[-1].strip()
 
+            mock_translation = f"[번역됨] {text_to_be_translated[:50]}..."
 
-        def list_models(self): return [] 
+            is_json_response_expected = generation_config_dict and \
+                                        generation_config_dict.get("response_mime_type") == "application/json"
+
+            if is_json_response_expected:
+                return {"translated_text": mock_translation, "mock_json": True}
+            else:
+                return mock_translation
+
+        def list_models(self) -> List[Dict[str, Any]]:
+            print("  MockGeminiClient.list_models 호출됨")
+            # Return a structure similar to what GeminiClient.list_models would return
+            return [
+                {"name": "models/mock-gemini-flash", "short_name": "mock-gemini-flash", "display_name": "Mock Gemini Flash", "description": "A mock flash model.", "input_token_limit": 1000, "output_token_limit": 1000},
+                {"name": "models/mock-gemini-pro", "short_name": "mock-gemini-pro", "display_name": "Mock Gemini Pro", "description": "A mock pro model.", "input_token_limit": 2000, "output_token_limit": 2000},
+            ]
 
     sample_config_base = {
         "model_name": "gemini-1.5-flash", "temperature": 0.7, "top_p": 0.9,

@@ -50,12 +50,24 @@ class LorebookService:
     def _get_extraction_prompt(self, segment_text: str) -> str:
         """로어북 항목 추출을 위한 프롬프트를 생성합니다."""
         base_template = self.config.get(
-            "lorebook_ai_prompt_template",
-            "다음 텍스트에서 주요 등장인물, 장소, 아이템, 중요 사건, 설정 등을 키워드, 설명, 카테고리 형식으로 추출하여 JSON 배열로 반환해주세요.\n"
-            "각 항목은 'keyword', 'description', 'category', 'importance'(1-10), 'isSpoiler'(true/false) 키를 가져야 합니다.\n"
-            "설명은 {max_chars_per_entry}자를 넘지 않도록 요약하고, 최대 {max_entries_per_segment}개의 항목만 추출하세요.\n"
-            "키워드 추출 시 민감도는 {keyword_sensitivity} 수준으로 설정하고, 다음 우선순위에 따라 항목을 선택하세요: {priority_settings}.\n"
-            "텍스트: ```\n{novelText}\n```\nJSON 형식으로만 응답해주세요."
+            "lorebook_ai_prompt_template", # config.json 에서 이 프롬프트 템플릿을 수정해야 합니다.
+            ("First, identify the BCP-47 language code of the following text.\n"
+             "Then, using that identified language as the source language for the keywords, extract major characters, places, items, important events, settings, etc., from the text.\n"
+             "Each item in the 'entities' array should have 'keyword', 'description', 'category', 'importance'(1-10), 'isSpoiler'(true/false) keys.\n"
+             "Summarize descriptions to not exceed {max_chars_per_entry} characters, and extract a maximum of {max_entries_per_segment} items.\n"
+             "For keyword extraction, set sensitivity to {keyword_sensitivity} and prioritize items based on: {priority_settings}.\n"
+             "Text: ```\n{novelText}\n```\n"
+             "Respond with a single JSON object containing two keys:\n"
+             "1. 'detected_language_code': The BCP-47 language code you identified (string).\n"
+             "2. 'entities': The JSON array of extracted lorebook entries.\n"
+             "Example response:\n"
+             "{\n"
+             "  \"detected_language_code\": \"ja\",\n"
+             "  \"entities\": [\n"
+             "    {\"keyword\": \"主人公\", \"description\": \"物語の主要なキャラクター\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n"
+             "  ]\n"
+             "}\n"
+             "Ensure your entire response is a single valid JSON object.")
         )
 
         prompt = base_template.replace("{novelText}", segment_text)
@@ -138,7 +150,7 @@ class LorebookService:
         self,
         segment_text: str,
         source_language_of_segment: Optional[str] = None, # 세그먼트의 언어 코드
-        retry_count: int = 0, max_retries: int = 3
+        retry_count: int = 0, max_retries: int = 2 # 재시도 횟수 줄임
     ) -> List[LorebookEntryDTO]:
         """
         단일 텍스트 세그먼트에서 Gemini API를 사용하여 로어북 항목들을 추출합니다.
@@ -172,9 +184,18 @@ class LorebookService:
                 return []
 
             if isinstance(response_data, list):
-                # API가 이미 파싱된 리스트를 반환한 경우
-                logger.debug("GeminiClient가 파싱된 리스트를 반환했습니다.")
-                return self._parse_raw_lorebook_items_to_dto(response_data, segment_text[:100], source_language_of_segment)
+                # 프롬프트는 JSON 객체를 요청했으므로, 리스트는 예상치 못한 응답
+                logger.warning(f"로어북 추출 API로부터 예상치 못한 리스트 응답을 받았습니다: {response_data}")
+            elif isinstance(response_data, dict): # GeminiClient가 JSON 객체를 파싱하여 반환한 경우
+                logger.debug("GeminiClient가 파싱된 딕셔너리(JSON 객체)를 반환했습니다.")
+                detected_lang = response_data.get("detected_language_code")
+                raw_entities = response_data.get("entities")
+
+                if detected_lang and isinstance(raw_entities, list):
+                    logger.info(f"LLM이 감지한 언어: {detected_lang}")
+                    return self._parse_raw_lorebook_items_to_dto(raw_entities, segment_text[:100], detected_lang)
+                else:
+                    logger.warning(f"API 응답 JSON 객체에 'detected_language_code' 또는 'entities' 필드가 누락/잘못되었습니다: {response_data}")
             elif isinstance(response_data, str):
                 logger.warning("GeminiClient가 JSON 문자열을 반환했습니다 (파싱 실패 또는 JSON 응답 아님). LorebookService에서 파싱 시도.")
                 json_str = response_data.strip()
@@ -182,33 +203,19 @@ class LorebookService:
                 json_str = re.sub(r'\s*```$', '', json_str, flags=re.IGNORECASE)
                 json_str = json_str.strip()
                 try:
-                    parsed_list = json.loads(json_str)
-                    if isinstance(parsed_list, list):
-                        return self._parse_raw_lorebook_items_to_dto(parsed_list, segment_text[:100], source_language_of_segment)
+                    parsed_dict = json.loads(json_str)
+                    if isinstance(parsed_dict, dict):
+                        detected_lang = parsed_dict.get("detected_language_code")
+                        raw_entities = parsed_dict.get("entities")
+                        if detected_lang and isinstance(raw_entities, list):
+                            logger.info(f"LLM이 감지한 언어 (문자열 파싱): {detected_lang}")
+                            return self._parse_raw_lorebook_items_to_dto(raw_entities, segment_text[:100], detected_lang)
+                        else:
+                            logger.warning(f"파싱된 JSON 객체에 'detected_language_code' 또는 'entities' 필드가 누락/잘못되었습니다: {parsed_dict}")
                     else:
-                        logger.warning(f"파싱된 JSON 데이터가 리스트가 아닙니다: {type(parsed_list)}. 응답: {json_str[:100]}")
-                        # 단일 객체로 응답한 경우 리스트로 감싸서 처리 시도
-                        if isinstance(parsed_list, dict):
-                            logger.info("단일 JSON 객체 응답을 리스트로 변환하여 처리합니다.")
-                            return self._parse_raw_lorebook_items_to_dto([parsed_list], segment_text[:100], source_language_of_segment)
-                        return [] # 그 외 경우는 빈 리스트
+                        logger.warning(f"파싱된 JSON 데이터가 객체가 아닙니다: {type(parsed_dict)}. 응답: {json_str[:100]}")
                 except json.JSONDecodeError as je:
                     logger.warning(f"JSON 파싱 오류 (문자열 응답): {je}. 응답: {json_str[:200]}")
-                    # 정규식으로 JSON 배열 추출 시도 (최후의 수단)
-                    json_match = re.search(r'\[.*?\]', json_str, re.DOTALL)
-                    if json_match:
-                        try:
-                            refined_json_str = json_match.group(0)
-                            parsed_list_refined = json.loads(refined_json_str)
-                            if isinstance(parsed_list_refined, list):
-                                return self._parse_raw_lorebook_items_to_dto(parsed_list_refined, segment_text[:100], source_language_of_segment)
-                        except json.JSONDecodeError as je2:
-                            logger.error(f"정제된 JSON 파싱 실패: {je2}. 응답: {json_match.group(0)[:200]}")
-                            # 재시도 로직으로 넘어감
-            elif isinstance(response_data, dict): # GeminiClient가 단일 JSON 객체를 파싱하여 반환한 경우
-                logger.debug("GeminiClient가 파싱된 딕셔너리를 반환했습니다. 리스트로 변환하여 DTO 파싱 시도.")
-                # 프롬프트는 JSON 배열을 요청하므로, 단일 객체는 예상 밖일 수 있으나 처리 시도
-                return self._parse_raw_lorebook_items_to_dto([response_data], segment_text[:100], source_language_of_segment)
             else: # None 또는 다른 예기치 않은 타입
                 logger.warning(f"GeminiClient로부터 예상치 않은 타입의 응답을 받았습니다: {type(response_data)}. 세그먼트: {segment_text[:50]}...")
                 return []
@@ -411,23 +418,12 @@ class LorebookService:
         """
         all_extracted_entries_from_segments: List[LorebookEntryDTO] = []
         seed_entries: List[LorebookEntryDTO] = []
-
-        # Determine the actual language code to be stored with lorebook entries
-        actual_source_language_for_entries: Optional[str] = None
-
-        if novel_language_code == "auto":
-            if novel_text_content and novel_text_content.strip():
-                # Use the unified fallback language
-                actual_source_language_for_entries = self.config.get("novel_language_fallback", "ja")
-                logger.info(f"'{novel_language_code}' 설정: 언어 자동 감지 API 호출을 건너뛰고, "
-                            f"폴백 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
-            else:
-                actual_source_language_for_entries = self.config.get("novel_language_fallback", "ja")
-                logger.info("입력 텍스트가 비어있어 언어 자동 감지를 건너뛰고, "
-                            f"폴백 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
-        else: # novel_language_code is a specific code (e.g., "ko", "en") or None (use config's novel_language)
-            actual_source_language_for_entries = novel_language_code
-            logger.info(f"명시적/기본 소설 언어 '{actual_source_language_for_entries}'를 로어북 항목의 출처 언어로 사용합니다.")
+        
+        # novel_language_code는 이제 LLM이 감지한 언어를 사용하기 위한 기본값/힌트로 사용될 수 있지만,
+        # LLM의 응답에 있는 detected_language_code가 우선됩니다.
+        # source_language_of_segment로 전달될 값은 novel_language_code가 "auto"가 아닐 경우 그 값을 사용하고,
+        # "auto"일 경우 None으로 전달하여 LLM이 감지하도록 유도합니다.
+        lang_for_segment_extraction_hint = novel_language_code if novel_language_code != "auto" else None
 
         if seed_lorebook_path:
             seed_path_obj = Path(seed_lorebook_path)
@@ -446,7 +442,7 @@ class LorebookService:
                                         importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                         sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
                                         isSpoiler=bool(item_dict.get("isSpoiler", False)),
-                                        source_language=item_dict.get("source_language", actual_source_language_for_entries) # 시드 파일 내 언어 우선, 없으면 감지/설정된 언어
+                                        source_language=item_dict.get("source_language", lang_for_segment_extraction_hint) # 시드 파일 내 언어 우선
                                     )
                                     if entry.keyword and entry.description:
                                         seed_entries.append(entry)
@@ -511,7 +507,7 @@ class LorebookService:
                 ))
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_segment = {executor.submit(self._extract_lorebook_entries_from_segment_via_api, segment, actual_source_language_for_entries): segment
+                future_to_segment = {executor.submit(self._extract_lorebook_entries_from_segment_via_api, segment, lang_for_segment_extraction_hint): segment
                            for segment in sample_segments}
                 
                 for future in as_completed(future_to_segment):
