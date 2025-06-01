@@ -334,11 +334,9 @@ class BatchTranslatorGUI:
             self.enable_dynamic_lorebook_injection_var.set(config.get("enable_dynamic_lorebook_injection", False))
             self.max_lorebook_entries_injection_entry.delete(0, tk.END)
             self.max_lorebook_entries_injection_entry.insert(0, str(config.get("max_lorebook_entries_per_chunk_injection", 3)))
-            self.max_lorebook_chars_injection_entry.delete(0, tk.END)
-            self.max_lorebook_chars_injection_entry.insert(0, str(config.get("max_lorebook_chars_per_chunk_injection", 500)))
-            lorebook_injection_path_val = config.get("lorebook_json_path_for_injection")
-            self.lorebook_json_path_for_injection_entry.delete(0, tk.END)
-            self.lorebook_json_path_for_injection_entry.insert(0, lorebook_injection_path_val if lorebook_injection_path_val is not None else "")
+            self.max_lorebook_chars_injection_entry.delete(0, tk.END) # 이 UI 요소는 유지
+            self.max_lorebook_chars_injection_entry.insert(0, str(config.get("max_lorebook_chars_per_chunk_injection", 500))) # 이 UI 요소는 유지
+            # lorebook_json_path_for_injection_entry 관련 UI 로드 코드는 제거 (아래 _create_settings_widgets 에서 해당 UI 요소 제거됨)
 
             extraction_temp = config.get("lorebook_extraction_temperature", 0.2)
             self.extraction_temp_scale.set(extraction_temp)
@@ -532,12 +530,7 @@ class BatchTranslatorGUI:
         self.max_lorebook_chars_injection_entry = ttk.Entry(dynamic_lorebook_frame, width=10)
         self.max_lorebook_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
 
-        ttk.Label(dynamic_lorebook_frame, text="주입용 로어북 JSON 경로:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
-        self.lorebook_json_path_for_injection_entry = ttk.Entry(dynamic_lorebook_frame, width=50)
-        self.lorebook_json_path_for_injection_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
-        self.browse_lorebook_injection_button = ttk.Button(dynamic_lorebook_frame, text="찾아보기", command=self._browse_lorebook_json_for_injection)
-        self.browse_lorebook_injection_button.grid(row=3, column=2, padx=5, pady=5)
-        
+        # 주입용 로어북 JSON 경로 입력 필드는 "로어북 관리" 탭의 경로를 사용하므로 여기서는 제거합니다.
         # 액션 버튼들
         action_frame = ttk.Frame(settings_frame, padding="10")
         action_frame.pack(fill="x", padx=5, pady=5)
@@ -921,16 +914,6 @@ class BatchTranslatorGUI:
             self.lorebook_json_path_entry.delete(0, tk.END) # Changed
             self.lorebook_json_path_entry.insert(0, filepath)
 
-    def _browse_lorebook_json_for_injection(self):
-        filepath = filedialog.askopenfilename(
-            title="주입용 로어북 JSON 파일 선택",
-            filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*"))
-        )
-        if filepath:
-            self.lorebook_json_path_for_injection_entry.delete(0, tk.END)
-            self.lorebook_json_path_for_injection_entry.insert(0, filepath)
-
-
     def _get_config_from_ui(self) -> Dict[str, Any]:
         prompt_content = self.prompt_text.get("1.0", tk.END).strip()
         use_vertex = self.use_vertex_ai_var.get()
@@ -986,9 +969,9 @@ class BatchTranslatorGUI:
             "lorebook_chunk_size": int(self.lorebook_chunk_size_entry.get() or "8000"),
                 # Dynamic lorebook injection settings
                 "enable_dynamic_lorebook_injection": self.enable_dynamic_lorebook_injection_var.get(),
-                "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"),
+                "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"), # 이 설정은 유지
                 "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500"),
-                "lorebook_json_path_for_injection": self.lorebook_json_path_for_injection_entry.get().strip() or None,
+                # lorebook_json_path_for_injection 은 lorebook_json_path 로 통합되었으므로 여기서 제거
             # Content Safety Retry settings 
             # type: ignore
             "use_content_safety_retry": self.use_content_safety_retry_var.get(),
@@ -1414,8 +1397,7 @@ class BatchTranslatorGUI:
                 # Dynamic lorebook injection settings
                 "enable_dynamic_lorebook_injection": self.enable_dynamic_lorebook_injection_var.get(),
                 "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"),
-                "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500"),
-                "lorebook_json_path_for_injection": self.lorebook_json_path_for_injection_entry.get().strip() or None,
+                "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500")
 
             }
             try:

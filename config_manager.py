@@ -125,8 +125,7 @@ class ConfigManager:
             # 동적 로어북 주입 설정
             "enable_dynamic_lorebook_injection": False,
             "max_lorebook_entries_per_chunk_injection": 3,
-            "max_lorebook_chars_per_chunk_injection": 500,
-            "lorebook_json_path_for_injection": None # 동적 주입용 로어북 경로
+            "max_lorebook_chars_per_chunk_injection": 500
         }
 
     def load_config(self, use_default_if_missing: bool = True) -> Dict[str, Any]:
@@ -244,7 +243,6 @@ if __name__ == '__main__':
     assert config1["enable_dynamic_lorebook_injection"] is False
     assert config1["max_lorebook_entries_per_chunk_injection"] == 3
     assert config1["max_lorebook_chars_per_chunk_injection"] == 500
-    assert config1["lorebook_json_path_for_injection"] is None
 
     print("\n--- 2. 설정 저장 테스트 (api_keys 및 max_workers 사용) ---")
     config_to_save = manager_no_file.get_default_config()
@@ -258,7 +256,7 @@ if __name__ == '__main__':
     config_to_save["max_workers"] = 4 # max_workers 값 설정
     config_to_save["requests_per_minute"] = 30 
     config_to_save["enable_dynamic_lorebook_injection"] = True
-    config_to_save["lorebook_json_path_for_injection"] = "path/to/injection_lorebook.json"
+    config_to_save["lorebook_json_path"] = "path/to/active_lorebook.json" # 통합된 경로 사용 예시
     save_success = manager_no_file.save_config(config_to_save)
     print(f"설정 저장 성공 여부: {save_success}")
     assert save_success
@@ -283,7 +281,7 @@ if __name__ == '__main__':
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
     assert config2["enable_dynamic_lorebook_injection"] is True
     assert config2["max_lorebook_entries_per_chunk_injection"] == 3 # 기본값 유지 확인
-    assert config2["lorebook_json_path_for_injection"] == "path/to/injection_lorebook.json"
+    assert config2["lorebook_json_path"] == "path/to/active_lorebook.json" # 통합된 경로 확인
 
     print("\n--- 4. 부분 설정 파일 로드 테스트 (api_key만 있고 api_keys는 없는 경우) ---")
     partial_config_path_api_key_only = test_output_dir / "partial_api_key_only.json"

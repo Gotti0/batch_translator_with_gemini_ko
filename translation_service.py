@@ -108,7 +108,8 @@ class TranslationService:
             logger.info("동적 로어북 주입 비활성화됨. 로어북 컨텍스트 없이 번역합니다.")
 
     def _load_lorebook_data(self):
-        lorebook_json_path_str = self.config.get("lorebook_json_path_for_injection")
+        # 통합된 로어북 경로 사용
+        lorebook_json_path_str = self.config.get("lorebook_json_path")
         if lorebook_json_path_str and os.path.exists(lorebook_json_path_str):
             lorebook_json_path = Path(lorebook_json_path_str)
             try:
@@ -141,7 +142,7 @@ class TranslationService:
                 logger.error(f"로어북 JSON 파일 처리 중 예상치 못한 오류 ({lorebook_json_path}): {e}", exc_info=True)
                 self.lorebook_entries_for_injection = []
         else:
-            logger.info("동적 주입용 로어북 JSON 파일이 설정되지 않았거나 존재하지 않습니다.")
+            logger.info(f"로어북 JSON 파일({lorebook_json_path_str})이 설정되지 않았거나 존재하지 않습니다. 동적 주입을 위해 로어북을 사용하지 않습니다.")
             self.lorebook_entries_for_injection = []
 
     def _construct_prompt(self, chunk_text: str) -> str:
@@ -527,7 +528,7 @@ if __name__ == '__main__':
         "model_name": "gemini-1.5-flash", "temperature": 0.7, "top_p": 0.9,
         "prompts": "다음 텍스트를 한국어로 번역해주세요. 로어북 컨텍스트: {{lorebook_context}}\n\n번역할 텍스트:\n{{slot}}",
         "enable_dynamic_lorebook_injection": True, # 테스트를 위해 활성화
-        "lorebook_json_path_for_injection": "test_lorebook.json", # 테스트용 로어북 경로
+        "lorebook_json_path": "test_lorebook.json", # 통합된 로어북 경로
         "max_lorebook_entries_per_chunk_injection": 3,
         "max_lorebook_chars_per_chunk_injection": 200,
     }

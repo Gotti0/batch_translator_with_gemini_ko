@@ -189,7 +189,6 @@ def parse_arguments():
     dyn_lorebook_group.add_argument("--enable-dynamic-lorebook-injection", action="store_true", help="동적 로어북 주입 기능을 활성화합니다.")
     dyn_lorebook_group.add_argument("--max-lorebook-entries-injection", type=int, help="번역 청크당 주입할 최대 로어북 항목 수 (예: 3)")
     dyn_lorebook_group.add_argument("--max-lorebook-chars-injection", type=int, help="번역 청크당 주입할 로어북의 최대 총 문자 수 (예: 500)")
-    dyn_lorebook_group.add_argument("--lorebook-json-path-injection", type=Path, help="동적 주입에 사용할 로어북 JSON 파일 경로")
     # 설정 오버라이드
     config_override_group = parser.add_argument_group('Configuration Overrides')
     config_override_group.add_argument("--novel-language-override", type=str, help="설정 파일의 'novel_language' 값을 덮어씁니다. (--novel-language와 동일)")
@@ -277,9 +276,8 @@ def main():
         if args.max_lorebook_chars_injection is not None:
             app_service.config["max_lorebook_chars_per_chunk_injection"] = args.max_lorebook_chars_injection
             cli_auth_applied = True
-        if args.lorebook_json_path_injection:
-            app_service.config["lorebook_json_path_for_injection"] = str(args.lorebook_json_path_injection.resolve())
-            cli_auth_applied = True
+        # lorebook_json_path_injection 인자는 제거되었으므로, 관련 CLI 로직도 제거합니다.
+        # 동적 주입 시에는 config.json의 "lorebook_json_path"를 사용합니다.
 
         # CLI 인자 --novel-language와 --novel-language-override 둘 다 novel_language 설정을 변경
         novel_lang_arg = args.novel_language or args.novel_language_override
