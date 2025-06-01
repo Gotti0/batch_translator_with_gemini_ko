@@ -105,9 +105,9 @@ class ConfigManager:
             "lorebook_max_chars_per_entry": 200,
             "lorebook_keyword_sensitivity": "medium",
             "lorebook_priority_settings": {
-                "character": 8,
-                "worldview": 10,
-                "story_element": 7
+                "character": 5,
+                "worldview": 5,
+                "story_element": 5
             },
             "lorebook_chunk_size": 8000,
             "lorebook_ai_prompt_template": "First, identify the BCP-47 language code of the following text.\nThen, using that identified language as the source language for the keywords, extract major characters, places, items, important events, settings, etc., from the text.\nEach item in the 'entities' array should have 'keyword', 'description', 'category', 'importance'(1-10), 'isSpoiler'(true/false) keys.\nSummarize descriptions to not exceed {max_chars_per_entry} characters, and extract a maximum of {max_entries_per_segment} items.\nFor keyword extraction, set sensitivity to {keyword_sensitivity} and prioritize items based on: {priority_settings}.\nText: ```\n{novelText}\n```\nRespond with a single JSON object containing two keys:\n1. 'detected_language_code': The BCP-47 language code you identified (string).\n2. 'entities': The JSON array of extracted lorebook entries.\nExample response:\n{\n  \"detected_language_code\": \"ja\",\n  \"entities\": [\n    {\"keyword\": \"主人公\", \"description\": \"物語の主要なキャラクター\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n  ]\n}\nEnsure your entire response is a single valid JSON object.",
