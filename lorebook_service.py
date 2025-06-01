@@ -162,7 +162,7 @@ class LorebookService:
             max_retries (int): 최대 재시도 횟수.
         """
         prompt = self._get_extraction_prompt(segment_text)
-        model_name = self.config.get("model_name", "gemini-1.5-flash-latest")
+        model_name = self.config.get("model_name", "gemini-2.0-flash")
         
         generation_config = {
             "temperature": self.config.get("lorebook_extraction_temperature", self.config.get("temperature", 0.2)),
@@ -329,7 +329,7 @@ class LorebookService:
                 logger.debug(f"키워드 '{entries_for_keyword[0].keyword}'에 대해 {len(entries_for_keyword)}개의 잠재적 충돌 항목 발견.")
                 
                 conflict_prompt = self._get_conflict_resolution_prompt(entries_for_keyword[0].keyword, entries_for_keyword)
-                model_name = self.config.get("model_name", "gemini-1.5-flash-latest")
+                model_name = self.config.get("model_name", "gemini-2.0-flash")
                 generation_config = {
                     "temperature": self.config.get("lorebook_conflict_resolution_temperature", self.config.get("temperature", 0.3)),
                     "top_p": self.config.get("top_p", 0.9),

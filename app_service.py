@@ -100,39 +100,71 @@ class AppService:
             logger.debug(f"[AppService.load_app_config] 서비스 계정 파일 경로 (sa_file_path_str): '{sa_file_path_str}'")
 
             if use_vertex:
-                logger.info("Vertex AI 사용 모드입니다.")
+                logger.info("Vertex AI 사용 모드로 설정되었습니다.")
+                # Vertex AI 모드에서는 auth_credentials_for_gemini_client가 SA JSON 문자열, SA Dict, 또는 None (ADC용)이 될 수 있습니다.
                 if sa_file_path_str:
                     sa_file_path = Path(sa_file_path_str)
                     if sa_file_path.is_file():
                         try:
                             auth_credentials_for_gemini_client = read_text_file(sa_file_path)
-                            logger.info(f"Vertex AI 서비스 계정 파일 로드 성공: {sa_file_path}")
+                            logger.info(f"Vertex AI 서비스 계정 파일 ('{sa_file_path}')에서 인증 정보를 로드했습니다.")
                         except Exception as e:
                             logger.error(f"Vertex AI 서비스 계정 파일 읽기 실패 ({sa_file_path}): {e}")
                             auth_credentials_for_gemini_client = None
                     else:
                         logger.warning(f"Vertex AI 서비스 계정 파일 경로가 유효하지 않거나 파일이 아닙니다: {sa_file_path_str}")
-                        auth_credentials_for_gemini_client = self.config.get("auth_credentials")
-                        if auth_credentials_for_gemini_client:
-                             logger.info("서비스 계정 파일 경로가 유효하지 않아 'auth_credentials' 값을 직접 사용 시도합니다.")
+                        # sa_file_path_str이 제공되었지만 유효하지 않은 경우, auth_credentials를 확인합니다.
+                        auth_conf_val = self.config.get("auth_credentials")
+                        if isinstance(auth_conf_val, (str, dict)) and auth_conf_val: # SA JSON 문자열 또는 SA dict
+                            auth_credentials_for_gemini_client = auth_conf_val
+                            logger.info("서비스 계정 파일 경로가 유효하지 않아 'auth_credentials' 값을 직접 사용합니다.")
+                        else:
+                            auth_credentials_for_gemini_client = None # ADC를 기대하거나, 오류로 간주
+                            logger.info("서비스 계정 파일 경로가 유효하지 않고 'auth_credentials'도 없어 ADC를 기대합니다.")
                 elif self.config.get("auth_credentials"):
-                    auth_credentials_for_gemini_client = self.config.get("auth_credentials")
-                    logger.info("Vertex AI 사용으로 설정되었으나 서비스 계정 파일 경로가 없어, 'auth_credentials' 값을 직접 사용 시도합니다.")
+                    auth_conf_val = self.config.get("auth_credentials")
+                    if isinstance(auth_conf_val, (str, dict)) and auth_conf_val: # SA JSON 문자열 또는 SA dict
+                        auth_credentials_for_gemini_client = auth_conf_val
+                        logger.info("Vertex AI: 서비스 계정 파일 경로가 없어, 'auth_credentials' 값을 직접 사용합니다.")
+                    else:
+                        auth_credentials_for_gemini_client = None # ADC를 기대
+                        logger.info("Vertex AI: 'auth_credentials'가 유효하지 않아 ADC를 기대합니다.")
+                else: # sa_file_path_str도 없고, auth_credentials도 없는 경우 ADC 기대
+                    auth_credentials_for_gemini_client = None
+                    logger.info("Vertex AI: 서비스 계정 정보가 제공되지 않아 ADC(Application Default Credentials)를 사용합니다.")
             else:
                 logger.info("Gemini Developer API 사용 모드입니다.")
-                api_keys_list = self.config.get("api_keys", [])
-                if api_keys_list:
-                    auth_credentials_for_gemini_client = api_keys_list
-                    logger.info(f"{len(api_keys_list)}개의 API 키 목록을 사용합니다.")
-                elif self.config.get("api_key"):
-                    auth_credentials_for_gemini_client = [self.config.get("api_key")]
-                    logger.info("단일 API 키를 사용합니다 (api_keys 목록이 비어 있음).")
-                elif self.config.get("auth_credentials"):
-                    auth_credentials_for_gemini_client = [self.config.get("auth_credentials")]
-                    logger.info("auth_credentials 값을 API 키로 사용 시도합니다 (api_key, api_keys 모두 없음).")
-                else:
+                auth_credentials_for_gemini_client = None # 기본값 None으로 시작
+
+                api_keys_list_val = self.config.get("api_keys", [])
+                if isinstance(api_keys_list_val, list):
+                    valid_api_keys = [key for key in api_keys_list_val if isinstance(key, str) and key.strip()]
+                    if valid_api_keys:
+                        auth_credentials_for_gemini_client = valid_api_keys
+                        logger.info(f"{len(valid_api_keys)}개의 API 키 목록 ('api_keys')을 사용합니다.")
+                
+                if auth_credentials_for_gemini_client is None:
+                    api_key_val = self.config.get("api_key")
+                    if isinstance(api_key_val, str) and api_key_val.strip():
+                        auth_credentials_for_gemini_client = api_key_val # GeminiClient는 str을 단일 API 키로 처리
+                        logger.info("단일 API 키 ('api_key')를 사용합니다.")
+
+                if auth_credentials_for_gemini_client is None:
+                    auth_credentials_conf_val = self.config.get("auth_credentials")
+                    if isinstance(auth_credentials_conf_val, str) and auth_credentials_conf_val.strip():
+                        auth_credentials_for_gemini_client = auth_credentials_conf_val # 단일 API 키 또는 SA JSON 문자열
+                        logger.info("auth_credentials 값을 단일 인증 문자열(API 키 또는 SA JSON)로 사용합니다.")
+                    elif isinstance(auth_credentials_conf_val, list): # auth_credentials가 키 목록일 경우
+                        valid_keys_from_auth_cred = [k for k in auth_credentials_conf_val if isinstance(k, str) and k.strip()]
+                        if valid_keys_from_auth_cred:
+                            auth_credentials_for_gemini_client = valid_keys_from_auth_cred
+                            logger.info(f"auth_credentials에서 {len(valid_keys_from_auth_cred)}개의 API 키 목록을 사용합니다.")
+                    elif isinstance(auth_credentials_conf_val, dict): # SA 정보 (dict)
+                        auth_credentials_for_gemini_client = auth_credentials_conf_val
+                        logger.info("auth_credentials 값을 서비스 계정 정보(dict)로 사용합니다.")
+
+                if auth_credentials_for_gemini_client is None:
                     logger.warning("Gemini Developer API 모드이지만 사용할 API 키가 설정에 없습니다.")
-                    auth_credentials_for_gemini_client = None
 
             should_initialize_client = False
             if auth_credentials_for_gemini_client:
@@ -319,7 +351,7 @@ class AppService:
             use_content_safety_retry = self.config.get("use_content_safety_retry", True)
             max_split_attempts = self.config.get("max_content_safety_split_attempts", 3)
             min_chunk_size = self.config.get("min_content_safety_chunk_size", 100)
-            model_name = self.config.get("model_name", "gemini-1.5-flash-latest")
+            model_name = self.config.get("model_name", "gemini-2.0-flash")
             
             logger.debug(f"  ⚙️ 번역 설정: 모델={model_name}, 안전재시도={use_content_safety_retry}")
             if use_content_safety_retry:
@@ -785,8 +817,9 @@ class AppService:
 
 if __name__ == '__main__':
     import logging
+    from logging import DEBUG # type: ignore
 
-    logger.setLevel(logging.DEBUG) 
+    logger.setLevel(DEBUG)
 
     test_output_dir = Path("test_app_service_output")
     test_output_dir.mkdir(exist_ok=True)
@@ -798,7 +831,7 @@ if __name__ == '__main__':
         "use_vertex_ai": False, 
         "gcp_project": None, 
         "gcp_location": None, 
-        "model_name": "gemini-1.5-flash-latest",
+        "model_name": "gemini-2.0-flash",
         "temperature": 0.7,
         "top_p": 0.9,
         "prompts": "Translate to Korean: {{slot}}",

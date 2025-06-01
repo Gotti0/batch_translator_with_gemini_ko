@@ -14,8 +14,7 @@ from typing import Optional, Dict, Any, List, Callable, Union
 from dataclasses import dataclass
 import json
 import time
-import io
-from tqdm import tqdm
+import io # tqdm import removed, io is kept as it's used by TqdmToTkinter
 import logging
 
 # 4계층 아키텍처의 AppService 및 DTOs, Exceptions 임포트
@@ -26,191 +25,32 @@ try:
     from logger_config import setup_logger
     from file_handler import get_metadata_file_path, load_metadata, _hash_config_for_metadata, delete_file # PRONOUN_CSV_HEADER removed
 except ImportError as e:
-    print(f"초기 임포트 오류: {e}. 스크립트가 프로젝트 루트에서 실행되고 있는지, "
-          f"PYTHONPATH가 올바르게 설정되었는지 확인하세요.")
-    # Fallback imports for mock objects if main imports fail
-    def setup_logger(name, level=logging.DEBUG):
-        mock_logger = logging.getLogger(name)
-        mock_logger.setLevel(level)
-        if not mock_logger.hasHandlers():
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            mock_logger.addHandler(handler)
-        return mock_logger
+    # Critical error: GUI cannot function without these core components.
+    # Print to stderr and a simple dialog if tkinter is available enough for that.
+    error_message = (
+        f"초기 임포트 오류: {e}.\n"
+        "스크립트가 프로젝트 루트에서 실행되고 있는지, "
+        "PYTHONPATH가 올바르게 설정되었는지 확인하세요.\n"
+        "필수 모듈을 임포트할 수 없어 GUI를 시작할 수 없습니다."
+    )
+    print(error_message, file=sys.stderr)
+    try:
+        # Attempt a simple messagebox if tkinter's core is loaded enough
+        import tkinter as tk # Keep this import local to the except block
+        from tkinter import messagebox # Keep this import local
+        # Need to create a dummy root for messagebox if no root window exists yet
+        dummy_root = tk.Tk()
+        dummy_root.withdraw() # Hide the dummy root window
+        messagebox.showerror("치명적 임포트 오류", error_message)
+        dummy_root.destroy()
+    except Exception:
+        pass # If even this fails, the console message is the best we can do.
+    sys.exit(1) # Exit if essential imports fail
 
-    @dataclass
-    class TranslationJobProgressDTO:
-        total_chunks: int = 0; processed_chunks: int = 0; successful_chunks: int = 0; failed_chunks: int = 0
-        current_status_message: str = "대기 중"; current_chunk_processing: Optional[int] = None; last_error_message: Optional[str] = None
-    @dataclass
-    class LorebookExtractionProgressDTO: # Changed from PronounExtractionProgressDTO
-        total_segments: int = 0; processed_segments: int = 0; current_status_message: str = "대기 중"; extracted_entries_count: int = 0
-    @dataclass
-    class ModelInfoDTO: name: str; display_name: str; description: Optional[str] = None; version: Optional[str] = None
-    class BtgBaseException(Exception): pass
-    class BtgConfigException(BtgBaseException): pass
-    class BtgServiceException(BtgBaseException): pass
-    class BtgFileHandlerException(BtgBaseException): pass
-    class BtgApiClientException(BtgBaseException): pass
-    class BtgBusinessLogicException(BtgBaseException): pass # Added for fallback
-    BtgException = BtgBaseException
+GUI_LOGGER_NAME = __name__ + "_gui" # Define once for consistent use
+logger = setup_logger(GUI_LOGGER_NAME) # Use the defined name
+    
 
-    def get_metadata_file_path(p): return Path(str(p) + "_metadata.json")
-    def load_metadata(p): return {}
-    def _hash_config_for_metadata(c): return "mock_hash"
-    def delete_file(p): pass
-
-
-
-
-    class AppService: # Mock AppService
-        def __init__(self, config_file_path: Optional[Union[str, Path]] = None):
-            self.config_file_path = config_file_path
-            self.config: Dict[str, Any] = self._get_mock_default_config()
-            self.is_translation_running = False
-            self.stop_requested = False
-            self._translation_lock = threading.Lock()
-            self._progress_lock = threading.Lock()
-            self.processed_chunks_count = 0
-            self.successful_chunks_count = 0
-            self.failed_chunks_count = 0
-            self.lorebook_service = self # Renamed from pronoun_service
-            self.translation_service = self
-            self.gemini_client = True 
-            self.config_manager = self 
-            print(f"Mock AppService initialized. Config path: {config_file_path}")
-            self.load_app_config() 
-
-        def _get_mock_default_config(self) -> Dict[str, Any]:
-            return {
-                "api_key": "",
-                "api_keys": ["mock_api_key_1", "mock_api_key_2"],
-                "service_account_file_path": None,
-                "use_vertex_ai": False,
-                "gcp_project": "mock-project-id",
-                "gcp_location": "mock-location",
-                "model_name": "gemini-2.0-flash", 
-                "temperature": 0.7, "top_p": 0.9, "chunk_size": 100,
-                "prompts": "Translate to Korean: {{slot}}",
-                "lorebook_json_path": "mock_lorebook.json", # Changed from pronouns_csv
-                "max_workers": os.cpu_count() or 1, 
-                "requests_per_minute": 60,
-                "auth_credentials": "",
-                # Mock Lorebook settings
-                "lorebook_sampling_method": "uniform",
-                "lorebook_sampling_ratio": 25.0,
-                "lorebook_max_entries_per_segment": 5,
-                "lorebook_max_chars_per_entry": 200,
-                "lorebook_keyword_sensitivity": "medium",
-                "lorebook_priority_settings": {"character": 5, "worldview": 5, "story_element": 5},
-                "lorebook_chunk_size": 8000,
-                "lorebook_extraction_temperature": 0.2, # For lorebook extraction
-                "novel_language": "auto", 
-                "novel_language_fallback": "ja",
-                "lorebook_output_json_filename_suffix": "_lorebook.json"
-            }
-        def load_app_config(self) -> Dict[str, Any]:
-            print("Mock AppService: load_app_config called.")
-            if self.config_file_path and Path(self.config_file_path).exists():
-                try:
-                    with open(self.config_file_path, 'r', encoding='utf-8') as f:
-                        loaded_data = json.load(f)
-                        default_conf = self._get_mock_default_config()
-                        default_conf.update(loaded_data) 
-                        self.config = default_conf 
-                        if not self.config.get("api_keys") and self.config.get("api_key"):
-                            self.config["api_keys"] = [self.config["api_key"]]
-                        print(f"Mock AppService: Loaded config from {self.config_file_path}")
-                except Exception as e:
-                    print(f"Mock AppService: Error loading config file {self.config_file_path}: {e}")
-                    self.config = self._get_mock_default_config() 
-            else: self.config = self._get_mock_default_config() 
-            return self.config.copy() 
-        
-        def save_app_config(self, config_data: Dict[str, Any]) -> bool:
-            print(f"Mock AppService: save_app_config called with data: {config_data}")
-            self.config = config_data 
-            if self.config_file_path:
-                try:
-                    with open(self.config_file_path, 'w', encoding='utf-8') as f:
-                        json.dump(config_data, f, indent=4)
-                    print(f"Mock AppService: Saved config to {self.config_file_path}")
-                    self.load_app_config()
-                    return True
-                except Exception as e:
-                    print(f"Mock AppService: Error saving config to {self.config_file_path}: {e}")
-                    return False
-            return True
-        def get_available_models(self) -> List[Dict[str, Any]]:
-            print("Mock AppService: get_available_models called.")
-            time.sleep(0.1) 
-            return [
-                {"name": "models/gemini-2.0-flash", "display_name": "Gemini 2.0 Flash", "short_name": "gemini-2.0-flash", "description": "Mock Flash model"},
-                {"name": "models/gemini-pro", "display_name": "Gemini Pro", "short_name": "gemini-pro", "description": "Mock Pro model"},
-                {"name": "models/text-embedding-004", "display_name": "Text Embedding 004", "short_name": "text-embedding-004"}
-            ]
-        def extract_lorebook(self, 
-                             input_file_path: Union[str, Path], 
-                             progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None, 
-                             novel_language_code: Optional[str] = None, # Added
-                             seed_lorebook_path: Optional[Union[str, Path]] = None, # Added
-                             tqdm_file_stream=None # tqdm_file_stream is not directly used by AppService.extract_lorebook
-                            ) -> Path:
-            print(f"Mock AppService: extract_lorebook called for {input_file_path}, lang: {novel_language_code}, seed: {seed_lorebook_path}")
-            total_segments_mock = 5
-            iterable_segments = range(total_segments_mock) # tqdm handled by CLI or GUI directly if needed
-            for i in iterable_segments:
-                if hasattr(self, 'stop_requested') and self.stop_requested: break
-                time.sleep(0.05)
-                if progress_callback:
-                    msg = f"표본 세그먼트 {i+1}/{total_segments_mock} 처리 중" if i < total_segments_mock -1 else "로어북 추출 완료"
-                    progress_callback(LorebookExtractionProgressDTO(total_segments=total_segments_mock, processed_segments=i+1, current_status_message=msg, extracted_entries_count=i*2))
-            output_suffix = self.config.get("lorebook_output_json_filename_suffix", "_lorebook.json")
-            return Path(input_file_path).with_name(f"{Path(input_file_path).stem}{output_suffix}")
-
-        def start_translation(self, input_file_path: Union[str, Path], output_file_path: Union[str, Path],
-                              progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
-                              status_callback: Optional[Callable[[str], None]] = None,
-                              tqdm_file_stream: Optional[Any] = None):
-            print(f"Mock AppService: start_translation called for {input_file_path} to {output_file_path}")
-            print(f"Mock AppService: Using max_workers: {self.config.get('max_workers')}") 
-            with self._translation_lock: self.is_translation_running = True; self.stop_requested = False; self.processed_chunks_count = 0; self.successful_chunks_count = 0; self.failed_chunks_count = 0
-            if status_callback: status_callback("번역 시작됨 (Mock)")
-            total_mock_chunks = 10
-            if progress_callback:
-                progress_callback(TranslationJobProgressDTO(total_mock_chunks,0,0,0,"분할 완료 (Mock)", current_chunk_processing=1 if total_mock_chunks > 0 else None))
-            chunk_indices = range(total_mock_chunks)
-            if tqdm_file_stream:
-                chunk_indices = tqdm(chunk_indices, total=total_mock_chunks, desc="청크 번역(Mock)", file=tqdm_file_stream, unit="청크", leave=False)
-            for i in chunk_indices:
-                if self.stop_requested:
-                    print("Mock AppService: Translation stopped by user.")
-                    if status_callback: status_callback("번역 중단됨 (사용자 요청)")
-                    break
-                time.sleep(0.2)
-                self.processed_chunks_count += 1;
-                if i % 4 == 0 and i > 0 :
-                    self.failed_chunks_count +=1
-                    if progress_callback:
-                        progress_callback(TranslationJobProgressDTO(total_mock_chunks, self.processed_chunks_count, self.successful_chunks_count, self.failed_chunks_count, f"청크 {i+1}/{total_mock_chunks} 실패 (Mock)", i+1, "Mock API 오류"))
-                    continue
-                self.successful_chunks_count += 1
-                if progress_callback:
-                    progress_callback(TranslationJobProgressDTO(total_mock_chunks, self.processed_chunks_count, self.successful_chunks_count, self.failed_chunks_count, f"청크 {self.processed_chunks_count}/{total_mock_chunks} 번역 중 (Mock)", self.processed_chunks_count))
-            final_status = "번역 완료 (Mock)"
-            if self.stop_requested: final_status = "번역 중단됨 (Mock)"
-            elif self.failed_chunks_count > 0: final_status = f"번역 완료 (실패 {self.failed_chunks_count}개) (Mock)"
-            if status_callback: status_callback(final_status)
-            if progress_callback:
-                progress_callback(TranslationJobProgressDTO(total_mock_chunks, self.processed_chunks_count, self.successful_chunks_count, self.failed_chunks_count, final_status))
-            with self._translation_lock: self.is_translation_running = False
-        def request_stop_translation(self):
-            print("Mock AppService: request_stop_translation called.")
-            if self.is_translation_running:
-                with self._translation_lock: self.stop_requested = True
-
-logger = setup_logger(__name__ + "_gui")
 
 class TqdmToTkinter(io.StringIO):
     def __init__(self, widget: scrolledtext.ScrolledText):
@@ -367,12 +207,14 @@ class BatchTranslatorGUI:
             config = self.app_service.config 
             logger.info(f"초기 UI 로드 시작. AppService.config 사용: {json.dumps(config, indent=2, ensure_ascii=False)}")
 
-            self.api_keys_text.config(state=tk.NORMAL)
-            self.api_keys_text.delete('1.0', tk.END)
-            api_keys_list = config.get("api_keys", [])
-            logger.debug(f"Config에서 가져온 api_keys: {api_keys_list}")
-            if api_keys_list:
-                self.api_keys_text.insert('1.0', "\n".join(api_keys_list))
+            if hasattr(self, 'api_keys_text'): # Check if widget exists
+                self.api_keys_text.config(state=tk.NORMAL)
+                self.api_keys_text.delete('1.0', tk.END)
+                api_keys_list = config.get("api_keys", [])
+                logger.debug(f"Config에서 가져온 api_keys: {api_keys_list}")
+                if api_keys_list:
+                    self.api_keys_text.insert('1.0', "\n".join(api_keys_list))
+            
             
             self.service_account_file_entry.delete(0, tk.END)
             sa_file_path = config.get("service_account_file_path")
@@ -395,7 +237,7 @@ class BatchTranslatorGUI:
 
             self._toggle_vertex_fields() 
             
-            model_name_from_config = config.get("model_name", "gemini-1.5-flash-latest")
+            model_name_from_config = config.get("model_name", "gemini-2.0-flash")
             logger.debug(f"Config에서 가져온 model_name: {model_name_from_config}")
             self.model_name_combobox.set(model_name_from_config) 
             self._update_model_list_ui() 
@@ -484,7 +326,9 @@ class BatchTranslatorGUI:
             self.lorebook_priority_text.delete('1.0', tk.END)
             self.lorebook_priority_text.insert('1.0', json.dumps(config.get("lorebook_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2))
             self.lorebook_chunk_size_entry.delete(0, tk.END)
-            self.lorebook_chunk_size_entry.insert(0, str(config.get("lorebook_chunk_size", 8000)))
+            if hasattr(self, 'lorebook_chunk_size_entry'): # Check if widget exists
+                self.lorebook_chunk_size_entry.insert(0, str(config.get("lorebook_chunk_size", 8000)))
+
             
             # Dynamic Lorebook Injection Settings
             self.enable_dynamic_lorebook_injection_var.set(config.get("enable_dynamic_lorebook_injection", False))
@@ -957,8 +801,9 @@ class BatchTranslatorGUI:
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
         
         gui_log_handler = TextHandler(self.log_text)
-        logging.getLogger(__name__ + "_gui").addHandler(gui_log_handler)
-        logging.getLogger(__name__ + "_gui").setLevel(logging.INFO) 
+        # Use the global logger instance
+        logger.addHandler(gui_log_handler)
+        logger.setLevel(logging.INFO) # logging.INFO should be recognized
 
         self.tqdm_stream = TqdmToTkinter(self.log_text)
 
@@ -966,12 +811,13 @@ class BatchTranslatorGUI:
         gui_specific_logger = logging.getLogger(__name__ + "_gui")
         if level.upper() == "INFO": gui_specific_logger.info(message, exc_info=exc_info)
         elif level.upper() == "WARNING": gui_specific_logger.warning(message, exc_info=exc_info)
-        elif level.upper() == "ERROR": gui_specific_logger.error(message, exc_info=exc_info)
-        elif level.upper() == "DEBUG": gui_specific_logger.debug(message, exc_info=exc_info)
-        else: gui_specific_logger.info(message, exc_info=exc_info)
+        elif level.upper() == "ERROR": gui_specific_logger.error(message, exc_info=exc_info) # type: ignore
+        elif level.upper() == "DEBUG": gui_specific_logger.debug(message, exc_info=exc_info) # type: ignore
+        else: gui_specific_logger.info(message, exc_info=exc_info) # type: ignore
 
     def _update_model_list_ui(self):
-        if not self.app_service:
+        app_service = self.app_service
+        if not app_service:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             self._log_message("모델 목록 업데이트 시도 실패: AppService 없음", "ERROR")
             return
@@ -983,27 +829,27 @@ class BatchTranslatorGUI:
             self._log_message("모델 목록 새로고침 중...")
             
             # 1단계: 클라이언트가 없으면 자동으로 설정 저장 및 초기화
-            if not self.app_service.gemini_client:
+            if not app_service.gemini_client:
                 self._log_message("클라이언트가 초기화되지 않아 설정을 자동 저장하여 초기화합니다...")
                 try:
                     current_ui_config = self._get_config_from_ui()
-                    self.app_service.save_app_config(current_ui_config)
+                    app_service.save_app_config(current_ui_config)
                     self._log_message("설정 자동 저장 및 클라이언트 초기화 완료.")
                 except Exception as e:
                     self._log_message(f"설정 자동 저장 실패: {e}", "ERROR")
                     messagebox.showerror("설정 오류", f"API 설정 저장 중 오류가 발생했습니다: {e}")
                     self._reset_model_combobox(current_user_input_model)
                     return
-
+            
             # 2단계: 클라이언트 재확인 (자동 초기화 후에도 실패할 수 있음)
-            if not self.app_service.gemini_client:
+            if not app_service.gemini_client:
                 self._log_message("클라이언트 초기화 후에도 사용할 수 없습니다. API 키 또는 Vertex AI 설정을 확인하세요.", "WARNING")
                 messagebox.showwarning("인증 필요", "API 키가 유효하지 않거나 Vertex AI 설정을 확인해주세요.")
                 self._reset_model_combobox(current_user_input_model)
                 return
-
+            
             # 3단계: 모델 목록 조회 (한 번만 호출)
-            models_data = self.app_service.get_available_models()
+            models_data = app_service.get_available_models()
             
             # 4단계: UI 모델 목록 구성
             model_display_names_for_ui = []
@@ -1046,7 +892,8 @@ class BatchTranslatorGUI:
             self.input_file_entry.delete(0, tk.END)
             self.input_file_entry.insert(0, filepath)
             p = Path(filepath)
-            suggested_output = p.parent / f"{p.stem}_translated{p.suffix}"
+            app_service_instance = self.app_service
+            suggested_output = p.parent / f"{p.stem}_translated{p.suffix}" # type: ignore
             self.output_file_entry.delete(0, tk.END)
             self.output_file_entry.insert(0, str(suggested_output))
             suggested_lorebook_json = p.parent / f"{p.stem}{self.app_service.config.get('lorebook_output_json_filename_suffix', '_lorebook.json') if self.app_service else '_lorebook.json'}"
@@ -1142,7 +989,8 @@ class BatchTranslatorGUI:
                 "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"),
                 "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500"),
                 "lorebook_json_path_for_injection": self.lorebook_json_path_for_injection_entry.get().strip() or None,
-            # Content Safety Retry settings
+            # Content Safety Retry settings 
+            # type: ignore
             "use_content_safety_retry": self.use_content_safety_retry_var.get(),
             "max_content_safety_split_attempts": int(self.max_split_attempts_entry.get() or "3"),
             "min_content_safety_chunk_size": int(self.min_chunk_size_entry.get() or "100"),
@@ -1153,20 +1001,23 @@ class BatchTranslatorGUI:
             config_data["lorebook_priority_settings"] = json.loads(self.lorebook_priority_text.get("1.0", tk.END).strip() or "{}")
         except json.JSONDecodeError:
             messagebox.showwarning("입력 오류", "로어북 우선순위 설정이 유효한 JSON 형식이 아닙니다. 기본값으로 유지됩니다.")
-            config_data["lorebook_priority_settings"] = self.app_service.config_manager.get_default_config().get("lorebook_priority_settings")
+            if self.app_service and self.app_service.config_manager:
+                config_data["lorebook_priority_settings"] = self.app_service.config_manager.get_default_config().get("lorebook_priority_settings")
+            else: # Fallback if app_service or config_manager is None
+                config_data["lorebook_priority_settings"] = {"character": 5, "worldview": 5, "story_element": 5} # Hardcoded default
         
         return config_data
 
     def _save_settings(self):
-        if not self.app_service:
+        app_service = self.app_service
+        if not app_service:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             return
         try:
-            # 기존 전체 설정을 유지하고 UI 변경사항만 업데이트
-            current_config = self.app_service.config.copy()
+            current_config = app_service.config.copy()
             ui_config = self._get_config_from_ui()
             current_config.update(ui_config)
-            self.app_service.save_app_config(current_config)
+            app_service.save_app_config(current_config)
             messagebox.showinfo("성공", "설정이 성공적으로 저장되었습니다.")
             self._log_message("설정 저장됨.")
             self._load_initial_config_to_ui() 
@@ -1181,12 +1032,13 @@ class BatchTranslatorGUI:
             self._log_message(f"설정 저장 중 예상치 못한 오류: {e}", "ERROR", exc_info=True)
 
     def _load_settings_ui(self):
-        if not self.app_service:
+        app_service = self.app_service
+        if not app_service:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             return
         try:
-            self.app_service.load_app_config() 
-            self._load_initial_config_to_ui() 
+            app_service.load_app_config()
+            self._load_initial_config_to_ui()
             messagebox.showinfo("성공", "설정을 성공적으로 불러왔습니다.")
             self._log_message("설정 불러옴.")
         except BtgConfigException as e:
@@ -1224,7 +1076,8 @@ class BatchTranslatorGUI:
             self.master.after(0, _update)
 
     def _start_translation_thread_with_resume_check(self):
-        if not self.app_service:
+        app_service = self.app_service
+        if not app_service:
             messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
             return
 
@@ -1243,7 +1096,7 @@ class BatchTranslatorGUI:
             return
 
         temp_current_config_from_ui = self._get_config_from_ui()
-        config_for_hash_check = self.app_service.config.copy() 
+        config_for_hash_check = app_service.config.copy()
         config_for_hash_check.update(temp_current_config_from_ui)
 
         metadata_file_path = get_metadata_file_path(input_file_path_obj)
@@ -1281,15 +1134,16 @@ class BatchTranslatorGUI:
         self._start_translation_thread(start_new_translation=start_new_translation_flag)
 
     def _start_translation_thread(self, start_new_translation: bool = False): 
-        if not self.app_service: return 
+        app_service = self.app_service
+        if not app_service: return
 
         input_file = self.input_file_entry.get()
         output_file = self.output_file_entry.get()
         
         try:
             current_ui_config = self._get_config_from_ui()
-            self.app_service.config.update(current_ui_config) 
-            self.app_service.load_app_config() 
+            app_service.config.update(current_ui_config)
+            app_service.load_app_config()
 
 
             if not self.app_service.gemini_client:
@@ -1312,7 +1166,7 @@ class BatchTranslatorGUI:
         self.progress_label.config(text="번역 준비 중...")
 
         thread = threading.Thread(
-            target=self.app_service.start_translation, 
+            target=app_service.start_translation,
             args=(input_file, output_file,
                   self._update_translation_progress,
                   self._update_translation_status,
@@ -1322,9 +1176,10 @@ class BatchTranslatorGUI:
         thread.start()
 
     def _request_stop_translation(self):
-        if not self.app_service: return
-        if self.app_service.is_translation_running:
-            self.app_service.request_stop_translation()
+        app_service = self.app_service
+        if not app_service: return
+        if app_service.is_translation_running:
+            app_service.request_stop_translation()
             self._log_message("번역 중지 요청됨.")
         else:
             self._log_message("실행 중인 번역 작업이 없습니다.")
@@ -1338,7 +1193,8 @@ class BatchTranslatorGUI:
             self.master.after(0, _update)
 
     def _extract_lorebook_thread(self): # Renamed
-        if not self.app_service:
+        app_service = self.app_service
+        if not app_service:
             messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
             return
 
@@ -1352,10 +1208,10 @@ class BatchTranslatorGUI:
 
         try:
             current_ui_config = self._get_config_from_ui()
-            self.app_service.config.update(current_ui_config)
-            self.app_service.load_app_config() 
+            app_service.config.update(current_ui_config)
+            app_service.load_app_config()
 
-            if not self.app_service.gemini_client: 
+            if not app_service.gemini_client:
                  if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. 계속 진행하시겠습니까?"):
                     return
         except ValueError as ve:
@@ -1373,8 +1229,8 @@ class BatchTranslatorGUI:
         novel_lang_for_extraction = None
         def _extraction_task_wrapper():
             try:
-                if self.app_service: 
-                    result_json_path = self.app_service.extract_lorebook( # Method name changed
+                if app_service:
+                    result_json_path = app_service.extract_lorebook( # Method name changed
                         input_file,
                         progress_callback=self._update_lorebook_extraction_progress, # Callback changed
                         novel_language_code=novel_lang_for_extraction # Pass the language
@@ -1406,18 +1262,20 @@ class BatchTranslatorGUI:
         self.lorebook_json_path_entry.delete(0, tk.END) # Changed
         self.lorebook_json_path_entry.insert(0, path_str)
         if self.app_service:
-            self.app_service.config["lorebook_json_path"] = path_str # Changed
+            self.app_service.config["lorebook_json_path"] = path_str # type: ignore
 
     def _on_closing(self):
-        if self.app_service and self.app_service.is_translation_running:
+        app_service = self.app_service
+        if app_service and app_service.is_translation_running:
             if messagebox.askokcancel("종료 확인", "번역 작업이 진행 중입니다. 정말로 종료하시겠습니까?"):
-                self.app_service.request_stop_translation()
+                app_service.request_stop_translation()
                 logger.info("사용자 종료 요청으로 번역 중단 시도.")
                 self.master.destroy()
         else:
             self.master.destroy()
 
     def _on_api_key_changed(self, event=None):
+        # type: ignore
         """API 키가 변경되었을 때 클라이언트 초기화 상태 리셋"""
         if hasattr(self, 'app_service') and self.app_service:
             # 다음 모델 새로고침 시 자동으로 재초기화되도록 플래그 설정
@@ -1430,7 +1288,8 @@ class BatchTranslatorGUI:
 
     def _set_optimal_model_selection(self, current_user_input_model: str, model_display_names_for_ui: List[str]):
         """최적의 모델 선택 로직"""
-        config_model_name = self.app_service.config.get("model_name", "")
+        app_service = self.app_service
+        config_model_name = app_service.config.get("model_name", "") if app_service else "" # type: ignore
         config_model_short_name = config_model_name.split('/')[-1] if '/' in config_model_name else config_model_name
 
         # 우선순위에 따른 모델 선택
@@ -1461,14 +1320,7 @@ class BatchTranslatorGUI:
         except ValueError:
             return False
 
-    def _update_max_entries_label(self):
-        """최대 고유명사 수 변경 시 호출"""
-        try:
-            value = int(self.max_entries_spinbox.get())
-            # This label might be removed or repurposed if max_entries_spinbox is for per_segment
-            # self.max_entries_label.config(text="개 항목")
-        except ValueError:
-            pass
+    
     def _update_max_entries_segment_label(self): # New or adapted
         pass # Label might not be needed if spinbox is clear
 
@@ -1505,26 +1357,28 @@ class BatchTranslatorGUI:
             estimate_text = f"예상 분석 청크: {estimated_sample_chunks}/{estimated_chunks}"
             
             # 기존 라벨이 있다면 업데이트, 없다면 생성
-            if hasattr(self, 'sampling_estimate_label'):
-                self.sampling_estimate_label.config(text=estimate_text)
+            # if hasattr(self, 'sampling_estimate_label'):
+            #     self.sampling_estimate_label.config(text=estimate_text)
+            
             
         except Exception:
             pass  # 추정 실패 시 무시
 
     def _save_lorebook_settings(self): # Renamed
         """로어북 관련 설정만 저장"""
-        if not self.app_service:
+        app_service = self.app_service
+        if not app_service:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             return
         
         try:
             # 현재 전체 설정 가져오기
-            current_config = self.app_service.config.copy()
+            current_config = app_service.config.copy()
             
             # 고유명사 관련 설정만 업데이트
             lorebook_config = self._get_lorebook_config_from_ui() # Changed
             current_config.update(lorebook_config)
-            
+            # type: ignore
             # 설정 저장
             success = self.app_service.save_app_config(current_config)
             
@@ -1543,6 +1397,10 @@ class BatchTranslatorGUI:
 
     def _get_lorebook_config_from_ui(self) -> Dict[str, Any]: # Renamed
         """UI에서 로어북 관련 설정만 추출"""
+        app_service = self.app_service
+        if not app_service:
+            logger.error("AppService not initialized in _get_lorebook_config_from_ui")
+            return {}
         try:
             config = {
                 "lorebook_json_path": self.lorebook_json_path_entry.get().strip() or None, # Changed
@@ -1564,8 +1422,12 @@ class BatchTranslatorGUI:
                 config["lorebook_priority_settings"] = json.loads(self.lorebook_priority_text.get("1.0", tk.END).strip() or "{}")
             except json.JSONDecodeError:
                 # Use existing config value if UI is invalid, or default if not available
-                config["lorebook_priority_settings"] = self.app_service.config.get("lorebook_priority_settings", 
-                                                                                self.app_service.config_manager.get_default_config().get("lorebook_priority_settings"))
+                default_priority = {"character": 5, "worldview": 5, "story_element": 5} # Hardcoded default
+                if app_service and app_service.config_manager:
+                    config["lorebook_priority_settings"] = app_service.config.get("lorebook_priority_settings", 
+                                                                                app_service.config_manager.get_default_config().get("lorebook_priority_settings", default_priority))
+                else:
+                    config["lorebook_priority_settings"] = default_priority
                 self._log_message("로어북 우선순위 JSON 파싱 오류. 기존/기본값 사용.", "WARNING")
 
             return {k: v for k, v in config.items() if v is not None}
@@ -1574,8 +1436,10 @@ class BatchTranslatorGUI:
 
     def _reset_lorebook_settings(self): # Renamed
         """로어북 설정을 기본값으로 초기화"""
-        if not self.app_service:
-            return
+        app_service = self.app_service
+        if not app_service or not app_service.config_manager:
+            messagebox.showerror("오류", "AppService 또는 ConfigManager가 초기화되지 않았습니다.")
+            return # type: ignore
         
         result = messagebox.askyesno(
             "설정 초기화", 
@@ -1585,7 +1449,7 @@ class BatchTranslatorGUI:
         if result:
             try:
                 # 기본값 로드
-                default_config = self.app_service.config_manager.get_default_config()
+                default_config = app_service.config_manager.get_default_config()
                 # UI에 기본값 적용
                 self.sample_ratio_scale.set(default_config.get("lorebook_sampling_ratio", 25.0))
                 self.max_entries_per_segment_spinbox.set(str(default_config.get("lorebook_max_entries_per_segment", 5)))
@@ -1712,8 +1576,8 @@ class BatchTranslatorGUI:
                 self._log_message(f"표시된 로어북 저장 실패: {e}", "ERROR")
 
 class TextHandler(logging.Handler):
-    def __init__(self, text_widget: scrolledtext.ScrolledText):
-        super().__init__()
+    def __init__(self, text_widget: scrolledtext.ScrolledText): # type: ignore
+        super().__init__() # Corrected indentation
         self.text_widget = text_widget
         self.text_widget.tag_config("INFO", foreground="black")
         self.text_widget.tag_config("DEBUG", foreground="gray")
@@ -1722,7 +1586,7 @@ class TextHandler(logging.Handler):
         self.text_widget.tag_config("CRITICAL", foreground="red", background="yellow", font=('Helvetica', 9, 'bold'))
         self.text_widget.tag_config("TQDM", foreground="blue") 
 
-    def emit(self, record: logging.LogRecord):
+    def emit(self, record: logging.LogRecord): # Corrected indentation relative to class
         msg = self.format(record)
         level_tag = record.levelname
         

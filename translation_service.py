@@ -246,7 +246,7 @@ class TranslationService:
             
             translated_text = self.gemini_client.generate_text(
                 prompt=prompt,
-                model_name=self.config.get("model_name", "gemini-1.5-flash-latest"),
+                model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict={
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)

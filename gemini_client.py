@@ -19,7 +19,7 @@ from google.api_core import exceptions as api_core_exceptions
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) # type: ignore
 
 class GeminiApiException(Exception):
     """Gemini API 호출 관련 기본 예외 클래스"""
@@ -408,7 +408,7 @@ class GeminiClient:
             
             if self.auth_mode == "API_KEY":
                 current_key_for_log = self.current_api_key # self.current_api_key should be set
-                logger.info(f"API 키 '{current_key_for_log[:5]}...'로 작업 시도.")
+                logger.info(f"API 키 '{current_key_for_log[:5]}...'로 작업 시도.") # type: ignore
                 # _normalize_model_name에서 API 키가 모델명에 포함되도록 수정했으므로, 여기서 추가 작업 불필요
             elif self.auth_mode == "VERTEX_AI":
                  logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")
@@ -423,7 +423,7 @@ class GeminiClient:
                     self._apply_rpm_delay() # RPM 지연 적용
                     logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
 
-                    # 수정된 코드
+                    text_content_from_api: Optional[str] = None
                     if stream:
                         response = self.client.models.generate_content_stream(
                             model=effective_model_name,
@@ -432,6 +432,19 @@ class GeminiClient:
                                 **generation_config_dict
                             ) if generation_config_dict else None
                         )
+                        aggregated_parts = []
+                        for chunk_response in response:
+                            if self._is_content_safety_error(response=chunk_response):
+                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림의 일부 응답 차단")
+                            if hasattr(chunk_response, 'text') and chunk_response.text:
+                                aggregated_parts.append(chunk_response.text)
+                            elif hasattr(chunk_response, 'candidates') and chunk_response.candidates:
+                                for candidate in chunk_response.candidates:
+                                    # Streaming candidates might not always have finish_reason == STOP for intermediate parts
+                                    # We primarily care about the content parts.
+                                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
+                                        aggregated_parts.append("".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text))
+                        text_content_from_api = "".join(aggregated_parts)
                     else:
                         response = self.client.models.generate_content(
                             model=effective_model_name,
@@ -440,24 +453,18 @@ class GeminiClient:
                                 **generation_config_dict
                             ) if generation_config_dict else None
                         )
-
-
-                    if self._is_content_safety_error(response=response):
-                        # ... (안전 오류 처리) ...
-                        raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
-
-                    text_content_from_api: Optional[str] = None
-                    if hasattr(response, 'text') and response.text is not None:
-                        text_content_from_api = response.text
-                    elif hasattr(response, 'candidates') and response.candidates:
-                        # ... (candidates 처리) ...
-                        for candidate in response.candidates:
-                            if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
-                                if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
-                                    text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
-                                    break # 첫 번째 유효한 후보 사용
-                        if text_content_from_api is None: # 정상 종료했으나 내용이 없는 경우
-                            text_content_from_api = "" 
+                        if self._is_content_safety_error(response=response):
+                            raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
+                        if hasattr(response, 'text') and response.text is not None:
+                            text_content_from_api = response.text
+                        elif hasattr(response, 'candidates') and response.candidates:
+                            for candidate in response.candidates:
+                                if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
+                                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
+                                        text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
+                                        break 
+                            if text_content_from_api is None:
+                                text_content_from_api = ""
 
                     if text_content_from_api is not None:
                         # generation_config_dict가 None일 수 있으므로 확인
@@ -593,7 +600,11 @@ class GeminiClient:
 
                 for m in self.client.models.list(): 
                     full_model_name = m.name
-                    short_model_name = full_model_name.split('/')[-1] if '/' in full_model_name else full_model_name
+                    short_model_name = ""
+                    if isinstance(full_model_name, str):
+                        short_model_name = full_model_name.split('/')[-1] if '/' in full_model_name else full_model_name
+                    else: # Should not happen based on type hints from SDK
+                        short_model_name = str(full_model_name) # Fallback, log warning if necessary
                     
                     models_info.append({
                         "name": full_model_name,
@@ -631,9 +642,6 @@ class GeminiClient:
                 else: 
                     logger.error(f"모델 목록 조회 실패 (키 회전 불가 또는 Vertex 모드): {error_message}")
                     raise GeminiApiException(f"모델 목록 조회 실패: {error_message}") from e
-            except Exception as e: 
-                logger.error(f"모델 목록 조회 중 예상치 못한 오류 발생: {type(e).__name__} - {e}", exc_info=True)
-                raise GeminiApiException(f"모델 목록 조회 중 알 수 없는 오류: {e}") from e
         
         raise GeminiApiException("모델 목록 조회에 실패했습니다 (알 수 없는 내부 오류).")
 
@@ -641,7 +649,7 @@ class GeminiClient:
 if __name__ == '__main__':
     # ... (테스트 코드는 이전과 유사하게 유지하되, Client 및 generate_content 호출 방식 변경에 맞춰 수정 필요) ...
     print("Gemini 클라이언트 (신 SDK 패턴) 테스트 시작...")
-    logging.basicConfig(level=logging.INFO) 
+    logging.basicConfig(level=logging.INFO)  # type: ignore
 
     api_key_single_valid = os.environ.get("TEST_GEMINI_API_KEY_SINGLE_VALID")
     sa_json_string_valid = os.environ.get("TEST_VERTEX_SA_JSON_STRING_VALID")
@@ -656,10 +664,10 @@ if __name__ == '__main__':
             client_dev_single = GeminiClient() # auth_credentials 없이 환경 변수 사용
             print(f"  [성공] Gemini Developer API 클라이언트 생성 (환경변수 GOOGLE_API_KEY 사용)")
             
-            models_dev = client_dev_single.list_models()
+            models_dev = client_dev_single.list_models() # type: ignore
             if models_dev:
-                print(f"  [정보] DEV API 모델 수: {len(models_dev)}. 첫 모델: {models_dev[0].get('display_name', models_dev[0].get('short_name')) if models_dev else '없음'}")
-                test_model_name = "gemini-1.5-flash-latest" # 신 SDK에서는 'models/' 접두사 없이 사용 가능할 수 있음
+                print(f"  [정보] DEV API 모델 수: {len(models_dev)}. 첫 모델: {models_dev[0].get('display_name', models_dev[0].get('short_name'))}")
+                test_model_name = "gemini-2.0-flash" # 신 SDK에서는 'models/' 접두사 없이 사용 가능할 수 있음
                 
                 print(f"  [테스트] 텍스트 생성 (모델: {test_model_name})...")
                 # API 키는 Client가 환경 변수에서 가져오거나, 모델 이름에 포함시켜야 함.

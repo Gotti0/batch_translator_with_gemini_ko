@@ -46,7 +46,7 @@ class ConfigManager:
             "requests_per_minute": 60, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
             "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
             "novel_language_fallback": "ja", # 자동 감지 실패 시 사용할 폴백 언어
-            "model_name": "gemini-1.5-flash-latest",
+            "model_name": "gemini-2.0-flash",
             "temperature": 0.7,
             "top_p": 0.9,
             "prompts": (
@@ -232,7 +232,7 @@ if __name__ == '__main__':
     manager_no_file = ConfigManager(default_config_path)
     config1 = manager_no_file.load_config()
     print(f"로드된 설정 (파일 없음): {json.dumps(config1, indent=2, ensure_ascii=False)}")
-    assert config1["model_name"] == "gemini-1.5-flash-latest"
+    assert config1["model_name"] == "gemini-2.0-flash"
     assert config1["api_key"] == ""
     assert config1["api_keys"] == [] 
     assert config1["service_account_file_path"] is None
@@ -303,7 +303,7 @@ if __name__ == '__main__':
     assert config3["api_key"] == "single_api_key_test"
     assert config3["api_keys"] == ["single_api_key_test"] 
     assert config3["temperature"] == 0.5
-    assert config3["model_name"] == "gemini-1.5-flash-latest"
+    assert config3["model_name"] == "gemini-2.0-flash"
     assert config3.get("lorebook_sampling_ratio") == 50.0 # 저장된 로어북 설정 확인
     assert config3.get("lorebook_max_entries_per_segment") == 5 # 기본 로어북 설정 확인
     assert config3["max_workers"] == (os.cpu_count() or 1) # 잘못된 값일 경우 기본값으로 복원되는지 확인
@@ -326,7 +326,7 @@ if __name__ == '__main__':
     assert config4["api_keys"] == ["list_key1", "list_key2"]
     assert config4["api_key"] == "list_key1" 
     assert config4["chunk_size"] == 7000
-    assert config4["model_name"] == "gemini-1.5-flash-latest"
+    assert config4["model_name"] == "gemini-2.0-flash"
     assert config4["max_workers"] == (os.cpu_count() or 1) # 0 이하의 값일 경우 기본값으로 복원
 
     print("\n테스트 완료.")

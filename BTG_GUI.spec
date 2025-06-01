@@ -5,7 +5,7 @@ a = Analysis(
     ['batch_tranlator_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[('config.json', '.')],
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
