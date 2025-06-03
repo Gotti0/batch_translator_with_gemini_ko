@@ -39,3 +39,4 @@ myenv/
 *.swp
 *~
 .DS_Store
+btg_app.log
