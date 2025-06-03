@@ -50,6 +50,67 @@ except ImportError as e:
 GUI_LOGGER_NAME = __name__ + "_gui" # Define once for consistent use
 logger = setup_logger(GUI_LOGGER_NAME) # Use the defined name
     
+class Tooltip:
+    """
+    위젯 위에 마우스를 올렸을 때 툴팁을 표시하는 클래스입니다.
+    wm_overrideredirect(True)를 사용하지 않아 macOS 호환성을 높입니다.
+    """
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        self.id = None
+        self.x = self.y = 0
+        self.widget.bind("<Enter>", self.enter)
+        self.widget.bind("<Leave>", self.leave)
+        self.widget.bind("<ButtonPress>", self.leave) # 클릭 시에도 툴팁 숨김
+
+    def enter(self, event=None):
+        self.schedule()
+
+    def leave(self, event=None):
+        self.unschedule()
+        self.hidetip()
+
+    def schedule(self):
+        self.unschedule()
+        # 툴팁 표시 전 약간의 지연 (0.5초)
+        self.id = self.widget.after(500, self.showtip)
+
+    def unschedule(self):
+        id = self.id
+        self.id = None
+        if id:
+            self.widget.after_cancel(id)
+
+    def showtip(self, event=None):
+        # 위젯의 현재 위치를 기준으로 툴팁 위치 계산
+        x = y = 0
+        x, y, _, _ = self.widget.bbox("insert") # 위젯의 바운딩 박스 (내부 좌표)
+        x += self.widget.winfo_rootx() + 25     # 위젯의 화면상 x 좌표 + 오프셋
+        y += self.widget.winfo_rooty() + 20     # 위젯의 화면상 y 좌표 + 오프셋
+
+        # 이전 툴팁 창이 있다면 파괴
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+            
+        self.tooltip_window = tk.Toplevel(self.widget)
+        # self.tooltip_window.wm_overrideredirect(True) # 이 줄을 제거하거나 False로 설정
+        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+        # 플랫폼에 따라 창 제목 표시줄을 숨기려는 시도 (선택적)
+        # self.tooltip_window.wm_attributes("-toolwindow", 1) # Windows에서 효과적일 수 있음
+
+        label = tk.Label(self.tooltip_window, text=self.text, justify='left',
+                         background="#ffffe0", relief='solid', borderwidth=1,
+                         font=("tahoma", "8", "normal"))
+        label.pack(ipadx=1, ipady=1) # ipady 추가로 약간의 세로 여백
+
+    def hidetip(self):
+        tw = self.tooltip_window
+        self.tooltip_window = None
+        if tw:
+            tw.destroy()
 
 
 class TqdmToTkinter(io.StringIO):
@@ -372,10 +433,12 @@ class BatchTranslatorGUI:
         
         self.api_keys_label = ttk.Label(api_frame, text="API 키 목록 (Gemini Developer, 한 줄에 하나씩):")
         self.api_keys_label.grid(row=0, column=0, padx=5, pady=5, sticky="nw")
+        Tooltip(self.api_keys_label, "Gemini Developer API를 사용할 경우 API 키를 입력합니다.\n여러 개일 경우 한 줄에 하나씩 입력하세요.")
         
         self.api_keys_text = scrolledtext.ScrolledText(api_frame, width=58, height=3, wrap=tk.WORD)
         self.api_keys_text.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
         # API 키 텍스트가 변경될 때마다 이벤트 핸들러 연결
+        Tooltip(self.api_keys_text, "사용할 Gemini API 키 목록입니다.")
         self.api_keys_text.bind('<KeyRelease>', self._on_api_key_changed)
 
         
@@ -385,29 +448,41 @@ class BatchTranslatorGUI:
                                                    variable=self.use_vertex_ai_var, 
                                                    command=self._toggle_vertex_fields)
         self.use_vertex_ai_check.grid(row=1, column=0, columnspan=3, padx=5, pady=2, sticky="w")
+        Tooltip(self.use_vertex_ai_check, "Google Cloud Vertex AI API를 사용하려면 선택하세요.\n서비스 계정 JSON 파일 또는 ADC 인증이 필요합니다.")
 
         self.service_account_file_label = ttk.Label(api_frame, text="서비스 계정 JSON 파일 (Vertex AI):")
         self.service_account_file_label.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(self.service_account_file_label, "Vertex AI 인증에 사용할 서비스 계정 JSON 파일의 경로입니다.")
         self.service_account_file_entry = ttk.Entry(api_frame, width=50)
         self.service_account_file_entry.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.service_account_file_entry, "Vertex AI 서비스 계정 파일 경로를 입력하거나 '찾아보기'로 선택하세요.")
         self.browse_sa_file_button = ttk.Button(api_frame, text="찾아보기", command=self._browse_service_account_file)
         self.browse_sa_file_button.grid(row=2, column=2, padx=5, pady=5)
+        Tooltip(self.browse_sa_file_button, "서비스 계정 JSON 파일을 찾습니다.")
 
         self.gcp_project_label = ttk.Label(api_frame, text="GCP 프로젝트 ID (Vertex AI):")
         self.gcp_project_label.grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(self.gcp_project_label, "Vertex AI 사용 시 필요한 Google Cloud Project ID입니다.")
         self.gcp_project_entry = ttk.Entry(api_frame, width=30)
         self.gcp_project_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.gcp_project_entry, "GCP 프로젝트 ID를 입력하세요.")
 
         self.gcp_location_label = ttk.Label(api_frame, text="GCP 위치 (Vertex AI):")
         self.gcp_location_label.grid(row=4, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(self.gcp_location_label, "Vertex AI 모델이 배포된 GCP 리전입니다 (예: asia-northeast3).")
         self.gcp_location_entry = ttk.Entry(api_frame, width=30)
         self.gcp_location_entry.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.gcp_location_entry, "GCP 리전을 입력하세요.")
 
-        ttk.Label(api_frame, text="모델 이름:").grid(row=5, column=0, padx=5, pady=5, sticky="w")
+        model_name_label = ttk.Label(api_frame, text="모델 이름:")
+        model_name_label.grid(row=5, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(model_name_label, "번역에 사용할 AI 모델의 이름입니다.")
         self.model_name_combobox = ttk.Combobox(api_frame, width=57) 
         self.model_name_combobox.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.model_name_combobox, "사용 가능한 모델 목록에서 선택하거나 직접 입력하세요.\n'새로고침' 버튼으로 목록을 업데이트할 수 있습니다.")
         self.refresh_models_button = ttk.Button(api_frame, text="새로고침", command=self._update_model_list_ui)
         self.refresh_models_button.grid(row=5, column=2, padx=5, pady=5)
+        Tooltip(self.refresh_models_button, "사용 가능한 모델 목록을 API에서 새로 가져옵니다.")
 
         # 생성 파라미터
         gen_param_frame = ttk.LabelFrame(settings_frame, text="생성 파라미터", padding="10")
@@ -415,17 +490,21 @@ class BatchTranslatorGUI:
         
         # Temperature 설정
         ttk.Label(gen_param_frame, text="Temperature:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(gen_param_frame, text="Temperature:"), "모델 응답의 무작위성 조절 (낮을수록 결정적, 높을수록 다양).")
         self.temperature_scale = ttk.Scale(gen_param_frame, from_=0.0, to=2.0, orient="horizontal", length=200,
                                          command=lambda v: self.temperature_label.config(text=f"{float(v):.2f}"))
         self.temperature_scale.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.temperature_scale, "Temperature 값을 조절합니다 (0.0 ~ 2.0).")
         self.temperature_label = ttk.Label(gen_param_frame, text="0.00")
         self.temperature_label.grid(row=0, column=2, padx=5, pady=5)
         
         # Top P 설정
         ttk.Label(gen_param_frame, text="Top P:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(gen_param_frame, text="Top P:"), "모델이 다음 단어를 선택할 때 고려하는 확률 분포의 누적합 (낮을수록 집중적, 높을수록 다양).")
         self.top_p_scale = ttk.Scale(gen_param_frame, from_=0.0, to=1.0, orient="horizontal", length=200,
                                    command=lambda v: self.top_p_label.config(text=f"{float(v):.2f}"))
         self.top_p_scale.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.top_p_scale, "Top P 값을 조절합니다 (0.0 ~ 1.0).")
         self.top_p_label = ttk.Label(gen_param_frame, text="0.00")
         self.top_p_label.grid(row=1, column=2, padx=5, pady=5)
         
@@ -435,35 +514,47 @@ class BatchTranslatorGUI:
         
         # 입력 파일
         ttk.Label(file_chunk_frame, text="입력 파일:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(file_chunk_frame, text="입력 파일:"), "번역할 원본 텍스트 파일입니다.")
         self.input_file_entry = ttk.Entry(file_chunk_frame, width=50)
         self.input_file_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.input_file_entry, "번역할 파일 경로를 입력하거나 '찾아보기'로 선택하세요.")
         self.browse_input_button = ttk.Button(file_chunk_frame, text="찾아보기", command=self._browse_input_file)
         self.browse_input_button.grid(row=0, column=2, padx=5, pady=5)
+        Tooltip(self.browse_input_button, "번역할 입력 파일을 찾습니다.")
         
         # 출력 파일
         ttk.Label(file_chunk_frame, text="출력 파일:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(file_chunk_frame, text="출력 파일:"), "번역된 결과를 저장할 파일입니다.")
         self.output_file_entry = ttk.Entry(file_chunk_frame, width=50)
         self.output_file_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.output_file_entry, "번역 결과를 저장할 파일 경로를 입력하거나 '찾아보기'로 선택하세요.")
         self.browse_output_button = ttk.Button(file_chunk_frame, text="찾아보기", command=self._browse_output_file)
         self.browse_output_button.grid(row=1, column=2, padx=5, pady=5)
+        Tooltip(self.browse_output_button, "번역 결과를 저장할 출력 파일을 선택합니다.")
         
         # 청크 크기 및 작업자 수
         chunk_worker_frame = ttk.Frame(file_chunk_frame)
         chunk_worker_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
         
         ttk.Label(chunk_worker_frame, text="청크 크기:").pack(side="left", padx=(0,5))
+        Tooltip(ttk.Label(chunk_worker_frame, text="청크 크기:"), "API 요청당 처리할 텍스트의 최대 문자 수입니다.")
         self.chunk_size_entry = ttk.Entry(chunk_worker_frame, width=10)
         self.chunk_size_entry.pack(side="left", padx=(0,15))
+        Tooltip(self.chunk_size_entry, "청크 크기를 입력하세요 (예: 6000).")
         
         ttk.Label(chunk_worker_frame, text="최대 작업자 수:").pack(side="left", padx=(10,5))
+        Tooltip(ttk.Label(chunk_worker_frame, text="최대 작업자 수:"), "동시에 실행할 번역 스레드의 최대 개수입니다.")
         self.max_workers_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.max_workers_entry.pack(side="left")
         self.max_workers_entry.insert(0, str(os.cpu_count() or 1))
+        Tooltip(self.max_workers_entry, "최대 작업자 수를 입력하세요 (예: 4).")
         
         # RPM 설정
         ttk.Label(chunk_worker_frame, text="분당 요청 수 (RPM):").pack(side="left", padx=(10,5))
+        Tooltip(ttk.Label(chunk_worker_frame, text="분당 요청 수 (RPM):"), "API에 분당 보낼 수 있는 최대 요청 수입니다. 0은 제한 없음을 의미합니다.")
         self.rpm_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.rpm_entry.pack(side="left")
+        Tooltip(self.rpm_entry, "분당 요청 수를 입력하세요 (예: 60).")
 
         # Helper method to update toggle button text
         def update_toggle_text(button, var, base_text):
@@ -475,22 +566,28 @@ class BatchTranslatorGUI:
         language_settings_frame = ttk.LabelFrame(settings_frame, text="언어 설정", padding="10")
         language_settings_frame.pack(fill="x", padx=5, pady=5)
 
-        ttk.Label(language_settings_frame, text="소설/번역 출발 언어:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        novel_lang_label = ttk.Label(language_settings_frame, text="소설/번역 출발 언어:")
+        novel_lang_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(novel_lang_label, "번역할 원본 텍스트의 언어 코드입니다 (예: ko, ja, en).\n'auto'로 설정 시 언어를 자동으로 감지합니다.")
         self.novel_language_entry = ttk.Entry(language_settings_frame, width=10)
         self.novel_language_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
         self.novel_language_entry.insert(0, "auto") 
+        Tooltip(self.novel_language_entry, "언어 코드를 입력하세요 (BCP-47 형식).")
         ttk.Label(language_settings_frame, text="(예: ko, ja, en, auto)").grid(row=0, column=2, padx=5, pady=5, sticky="w")
 
-        ttk.Label(language_settings_frame, text="언어 자동감지 실패 시 폴백:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        novel_lang_fallback_label = ttk.Label(language_settings_frame, text="언어 자동감지 실패 시 폴백:")
+        novel_lang_fallback_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(novel_lang_fallback_label, "출발 언어 자동 감지 실패 시 사용할 기본 언어 코드입니다.")
         self.novel_language_fallback_entry = ttk.Entry(language_settings_frame, width=10)
         self.novel_language_fallback_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         self.novel_language_fallback_entry.insert(0, "ja")
+        Tooltip(self.novel_language_fallback_entry, "폴백 언어 코드를 입력하세요.")
         ttk.Label(language_settings_frame, text="(예: ko, ja, en)").grid(row=1, column=2, padx=5, pady=5, sticky="w")
         
         # 번역 프롬프트
         prompt_frame = ttk.LabelFrame(settings_frame, text="번역 프롬프트", padding="10")
         prompt_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
+        Tooltip(prompt_frame, "번역 모델에 전달할 프롬프트입니다.\n{{slot}}은 번역할 텍스트 청크로 대체됩니다.\n{{lorebook_context}}는 로어북 내용으로 대체됩니다.")
         self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=8, width=70)
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
         
@@ -504,6 +601,7 @@ class BatchTranslatorGUI:
             variable=self.content_safety_expanded_var,
             command=self._toggle_content_safety_details
         )
+        Tooltip(self.content_safety_toggle_button, "콘텐츠 안전 재시도 관련 세부 설정을 보거나 숨깁니다.")
         self.content_safety_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
         
         self.content_safety_details_frame = ttk.Frame(content_safety_outer_frame)
@@ -515,17 +613,22 @@ class BatchTranslatorGUI:
             text="검열 오류시 청크 분할 재시도 사용",
             variable=self.use_content_safety_retry_var
         )
+        Tooltip(self.use_content_safety_retry_check, "API에서 콘텐츠 안전 문제로 응답이 차단될 경우,\n텍스트를 더 작은 조각으로 나누어 재시도합니다.")
         self.use_content_safety_retry_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
         
         ttk.Label(self.content_safety_details_frame, text="최대 분할 시도:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(ttk.Label(self.content_safety_details_frame, text="최대 분할 시도:"), "콘텐츠 안전 문제 발생 시 청크를 나누어 재시도할 최대 횟수입니다.")
         self.max_split_attempts_entry = ttk.Entry(self.content_safety_details_frame, width=5) # Parent changed
         self.max_split_attempts_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         self.max_split_attempts_entry.insert(0, "3")
+        Tooltip(self.max_split_attempts_entry, "최대 분할 시도 횟수를 입력하세요.")
         
         ttk.Label(self.content_safety_details_frame, text="최소 청크 크기:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(ttk.Label(self.content_safety_details_frame, text="최소 청크 크기:"), "분할 재시도 시 청크가 이 크기보다 작아지지 않도록 합니다.")
         self.min_chunk_size_entry = ttk.Entry(self.content_safety_details_frame, width=10) # Parent changed
         self.min_chunk_size_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         self.min_chunk_size_entry.insert(0, "100")
+        Tooltip(self.min_chunk_size_entry, "최소 청크 크기를 입력하세요.")
 
         self._toggle_content_safety_details() # Set initial state and text
 
@@ -539,6 +642,7 @@ class BatchTranslatorGUI:
             variable=self.dynamic_lorebook_expanded_var,
             command=self._toggle_dynamic_lorebook_details
         )
+        Tooltip(self.dynamic_lorebook_toggle_button, "번역 시 동적으로 로어북 내용을 프롬프트에 주입하는 기능의 세부 설정을 보거나 숨깁니다.")
         self.dynamic_lorebook_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
 
         self.dynamic_lorebook_details_frame = ttk.Frame(dynamic_lorebook_outer_frame)
@@ -550,15 +654,20 @@ class BatchTranslatorGUI:
             text="동적 로어북 주입 활성화",
             variable=self.enable_dynamic_lorebook_injection_var
         )
+        Tooltip(self.enable_dynamic_lorebook_injection_check, "번역 시 로어북 탭에서 설정된 로어북 JSON 파일의 내용을\n프롬프트에 동적으로 주입하여 번역 일관성을 높입니다.")
         self.enable_dynamic_lorebook_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
 
         ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 항목 수:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 항목 수:"), "하나의 번역 청크에 주입될 로어북 항목의 최대 개수입니다.")
         self.max_lorebook_entries_injection_entry = ttk.Entry(self.dynamic_lorebook_details_frame, width=5) # Parent changed
         self.max_lorebook_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        Tooltip(self.max_lorebook_entries_injection_entry, "최대 주입 항목 수를 입력하세요.")
 
         ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 문자 수:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 문자 수:"), "하나의 번역 청크에 주입될 로어북 내용의 최대 총 문자 수입니다.")
         self.max_lorebook_chars_injection_entry = ttk.Entry(self.dynamic_lorebook_details_frame, width=10) # Parent changed
         self.max_lorebook_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        Tooltip(self.max_lorebook_chars_injection_entry, "최대 주입 문자 수를 입력하세요.")
 
         self._toggle_dynamic_lorebook_details() # Set initial state and text
 
@@ -569,15 +678,19 @@ class BatchTranslatorGUI:
         
         self.save_settings_button = ttk.Button(action_frame, text="설정 저장", command=self._save_settings)
         self.save_settings_button.pack(side="left", padx=5)
+        Tooltip(self.save_settings_button, "현재 UI에 입력된 모든 설정을 config.json 파일에 저장합니다.")
         
         self.load_settings_button = ttk.Button(action_frame, text="설정 불러오기", command=self._load_settings_ui)
         self.load_settings_button.pack(side="left", padx=5)
+        Tooltip(self.load_settings_button, "config.json 파일에서 설정을 불러와 UI에 적용합니다.")
         
         self.start_button = ttk.Button(action_frame, text="번역 시작", command=self._start_translation_thread_with_resume_check)
         self.start_button.pack(side="right", padx=5)
+        Tooltip(self.start_button, "현재 설정으로 입력 파일의 번역 작업을 시작합니다.")
         
         self.stop_button = ttk.Button(action_frame, text="중지", command=self._request_stop_translation, state=tk.DISABLED)
         self.stop_button.pack(side="right", padx=5)
+        Tooltip(self.stop_button, "현재 진행 중인 번역 작업을 중지 요청합니다.")
         
         # 진행률 표시
         progress_frame = ttk.Frame(settings_frame)
@@ -585,9 +698,11 @@ class BatchTranslatorGUI:
         
         self.progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=300, mode="determinate")
         self.progress_bar.pack(fill="x", pady=5)
+        Tooltip(self.progress_bar, "번역 작업의 전체 진행률을 표시합니다.")
         
         self.progress_label = ttk.Label(progress_frame, text="대기 중...")
         self.progress_label.pack(pady=2)
+        Tooltip(self.progress_label, "번역 작업의 현재 상태 및 진행 상황을 텍스트로 표시합니다.")
 
     def _toggle_content_safety_details(self):
         if self.content_safety_expanded_var.get():
@@ -644,15 +759,18 @@ class BatchTranslatorGUI:
         ttk.Label(path_frame, text="JSON 파일 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w") # Text changed
         self.lorebook_json_path_entry = ttk.Entry(path_frame, width=50) # Renamed
         self.lorebook_json_path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.lorebook_json_path_entry, "사용할 로어북 JSON 파일의 경로입니다.\n추출 기능을 사용하면 자동으로 채워지거나, 직접 입력/선택할 수 있습니다.")
         self.browse_lorebook_json_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_lorebook_json) # Renamed
         self.browse_lorebook_json_button.grid(row=0, column=2, padx=5, pady=5)
         
 
         extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 로어북 추출", command=self._extract_lorebook_thread) # Text and command changed
         extract_button.grid(row=2, column=0, columnspan=3, padx=5, pady=10)
+        Tooltip(extract_button, "'설정 및 번역' 탭에서 선택된 입력 파일을 분석하여 로어북을 추출하고, 그 결과를 아래 텍스트 영역에 표시합니다.")
         
         self.lorebook_progress_label = ttk.Label(path_frame, text="로어북 추출 대기 중...") # Renamed
         self.lorebook_progress_label.grid(row=3, column=0, columnspan=3, padx=5, pady=2)
+        Tooltip(self.lorebook_progress_label, "로어북 추출 작업의 진행 상태를 표시합니다.")
 
         # 로어북 추출 설정 프레임
         extraction_settings_frame = ttk.LabelFrame(lorebook_frame, text="로어북 추출 설정", padding="10") # Text changed
@@ -660,6 +778,7 @@ class BatchTranslatorGUI:
         
         # 샘플링 비율 설정 (lorebook_sampling_ratio)
         ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):"), "로어북 추출 시 전체 텍스트 중 분석할 비율입니다.\n100%로 설정하면 전체 텍스트를 분석합니다.")
         
         sample_ratio_frame = ttk.Frame(extraction_settings_frame)
         sample_ratio_frame.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
@@ -673,9 +792,11 @@ class BatchTranslatorGUI:
             command=self._update_sample_ratio_label
         )
         self.sample_ratio_scale.pack(side="left", padx=(0,10))
+        Tooltip(self.sample_ratio_scale, "샘플링 비율을 조절합니다 (5.0% ~ 100.0%).")
         
         self.sample_ratio_label = ttk.Label(sample_ratio_frame, text="25.0%", width=8)
         self.sample_ratio_label.pack(side="left")
+        Tooltip(self.sample_ratio_label, "현재 설정된 샘플링 비율입니다.")
         
         # 도움말 레이블
         ttk.Label(extraction_settings_frame, 
@@ -685,6 +806,7 @@ class BatchTranslatorGUI:
         
         # 최대 항목 수 (세그먼트 당) 설정 (lorebook_max_entries_per_segment)
         ttk.Label(extraction_settings_frame, text="세그먼트 당 최대 항목 수:").grid(row=2, column=0, padx=5, pady=(15,5), sticky="w") # Text changed
+        Tooltip(ttk.Label(extraction_settings_frame, text="세그먼트 당 최대 항목 수:"), "하나의 분석 세그먼트(샘플링된 텍스트 조각)에서 추출할 로어북 항목의 최대 개수입니다.")
         
         max_entries_segment_frame = ttk.Frame(extraction_settings_frame)
         max_entries_segment_frame.grid(row=2, column=1, columnspan=2, padx=5, pady=(15,5), sticky="ew")
@@ -699,36 +821,47 @@ class BatchTranslatorGUI:
             validatecommand=(self.master.register(self._validate_max_entries_segment), '%P') # Validation changed
         )
         self.max_entries_per_segment_spinbox.pack(side="left", padx=(0,10))
+        Tooltip(self.max_entries_per_segment_spinbox, "세그먼트 당 추출할 최대 항목 수를 설정합니다 (1 ~ 20).")
         self.max_entries_per_segment_spinbox.set("5")  # 기본값
         
         self.max_entries_per_segment_label = ttk.Label(max_entries_segment_frame, text="개 항목", width=8) # Renamed
         self.max_entries_per_segment_label.pack(side="left")
+        Tooltip(self.max_entries_per_segment_label, "현재 설정된 세그먼트 당 최대 항목 수입니다.")
 
         # New Lorebook settings
         ttk.Label(extraction_settings_frame, text="샘플링 방식:").grid(row=6, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 방식:"), "텍스트에서 로어북 추출을 위해 세그먼트를 선택하는 방식입니다.\nuniform: 균등 간격, random: 무작위 선택.")
         self.lorebook_sampling_method_combobox = ttk.Combobox(extraction_settings_frame, values=["uniform", "random"], width=15)
         self.lorebook_sampling_method_combobox.grid(row=6, column=1, padx=5, pady=5, sticky="w")
         self.lorebook_sampling_method_combobox.set("uniform")
+        Tooltip(self.lorebook_sampling_method_combobox, "샘플링 방식을 선택하세요.")
 
         ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:").grid(row=7, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:"), "추출된 각 로어북 항목 설명의 최대 글자 수입니다.")
         self.lorebook_max_chars_entry = ttk.Entry(extraction_settings_frame, width=10)
         self.lorebook_max_chars_entry.grid(row=7, column=1, padx=5, pady=5, sticky="w")
         self.lorebook_max_chars_entry.insert(0, "200")
+        Tooltip(self.lorebook_max_chars_entry, "항목 당 최대 글자 수를 입력하세요.")
 
         ttk.Label(extraction_settings_frame, text="키워드 민감도:").grid(row=8, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(extraction_settings_frame, text="키워드 민감도:"), "로어북 키워드 추출 시 민감도입니다.\nhigh: 더 많은 키워드, medium: 중간, low: 적은 키워드.")
         self.lorebook_keyword_sensitivity_combobox = ttk.Combobox(extraction_settings_frame, values=["low", "medium", "high"], width=15)
         self.lorebook_keyword_sensitivity_combobox.grid(row=8, column=1, padx=5, pady=5, sticky="w")
         self.lorebook_keyword_sensitivity_combobox.set("medium")
+        Tooltip(self.lorebook_keyword_sensitivity_combobox, "키워드 추출 민감도를 선택하세요.")
 
         ttk.Label(extraction_settings_frame, text="로어북 세그먼트 크기:").grid(row=9, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(extraction_settings_frame, text="로어북 세그먼트 크기:"), "로어북 추출을 위해 텍스트를 나누는 단위(세그먼트)의 크기입니다.")
         self.lorebook_chunk_size_entry = ttk.Entry(extraction_settings_frame, width=10)
         self.lorebook_chunk_size_entry.grid(row=9, column=1, padx=5, pady=5, sticky="w")
         self.lorebook_chunk_size_entry.insert(0, "8000")
+        Tooltip(self.lorebook_chunk_size_entry, "로어북 세그먼트 크기를 입력하세요.")
 
         ttk.Label(extraction_settings_frame, text="우선순위 설정 (JSON):").grid(row=10, column=0, padx=5, pady=5, sticky="nw")
         self.lorebook_priority_text = scrolledtext.ScrolledText(extraction_settings_frame, width=40, height=5, wrap=tk.WORD)
         self.lorebook_priority_text.grid(row=10, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
         self.lorebook_priority_text.insert('1.0', json.dumps({"character": 5, "worldview": 5, "story_element": 5}, indent=2))
+        Tooltip(self.lorebook_priority_text, "로어북 항목 추출 시 우선순위를 JSON 형식으로 설정합니다.\n예: {\"인물\": 10, \"장소\": 5}")
         
         # 도움말 레이블
         ttk.Label(extraction_settings_frame, 
@@ -744,6 +877,7 @@ class BatchTranslatorGUI:
             variable=self.advanced_var,
             command=self._toggle_advanced_settings
         )
+        Tooltip(advanced_check, "로어북 추출에 사용될 고급 설정을 표시하거나 숨깁니다.")
         advanced_check.grid(row=4, column=0, columnspan=3, padx=5, pady=(15,5), sticky="w")
         
         # 고급 설정 프레임 (초기에는 숨김)
@@ -752,6 +886,7 @@ class BatchTranslatorGUI:
         
         # 온도 설정 (고유명사 추출용)
         ttk.Label(self.advanced_frame, text="추출 온도:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(ttk.Label(self.advanced_frame, text="추출 온도:"), "로어북 추출 시 모델 응답의 무작위성입니다.\n낮을수록 일관적, 높을수록 다양하지만 덜 정확할 수 있습니다.")
         
         self.extraction_temp_scale = ttk.Scale(
             self.advanced_frame,
@@ -762,10 +897,12 @@ class BatchTranslatorGUI:
             command=self._update_extraction_temp_label
         )
         self.extraction_temp_scale.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.extraction_temp_scale, "로어북 추출 온도를 조절합니다 (0.0 ~ 1.0).")
         self.extraction_temp_scale.set(0.2)  # 기본값
         
         self.extraction_temp_label = ttk.Label(self.advanced_frame, text="0.20", width=6)
         self.extraction_temp_label.grid(row=0, column=2, padx=5, pady=5)
+        Tooltip(self.extraction_temp_label, "현재 설정된 로어북 추출 온도입니다.")
         
         # 초기에는 고급 설정 숨김
         self.advanced_frame.grid_remove()
@@ -780,6 +917,7 @@ class BatchTranslatorGUI:
             text="로어북 설정 저장", # Text changed
             command=self._save_lorebook_settings # Command changed
         )
+        Tooltip(self.save_lorebook_settings_button, "현재 로어북 탭의 설정을 config.json 파일에 저장합니다.")
         self.save_lorebook_settings_button.pack(side="left", padx=5)
         
         # 설정 초기화 버튼
@@ -788,6 +926,7 @@ class BatchTranslatorGUI:
             text="기본값으로 초기화", 
             command=self._reset_lorebook_settings # Command changed
         )
+        Tooltip(self.reset_lorebook_settings_button, "로어북 탭의 모든 설정을 프로그램 기본값으로 되돌립니다.")
         self.reset_lorebook_settings_button.pack(side="left", padx=5)
         
         # 실시간 미리보기 버튼
@@ -796,6 +935,7 @@ class BatchTranslatorGUI:
             text="설정 미리보기", 
             command=self._preview_lorebook_settings # Command changed
         )
+        Tooltip(self.preview_lorebook_settings_button, "현재 로어북 설정이 실제 추출에 미칠 영향을 간략하게 미리봅니다.")
         self.preview_lorebook_settings_button.pack(side="right", padx=5)
 
         # 상태 표시 레이블
@@ -805,26 +945,32 @@ class BatchTranslatorGUI:
             font=("Arial", 9),
             foreground="gray"
         )
+        Tooltip(self.lorebook_status_label, "로어북 설정 변경 및 저장 상태를 표시합니다.")
         self.lorebook_status_label.pack(side="bottom", pady=5)
 
         # Lorebook Display Area
         lorebook_display_frame = ttk.LabelFrame(lorebook_frame, text="추출된 로어북 (JSON)", padding="10")
         lorebook_display_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(lorebook_display_frame, "추출되거나 불러온 로어북의 내용이 JSON 형식으로 표시됩니다.")
 
         self.lorebook_display_text = scrolledtext.ScrolledText(lorebook_display_frame, wrap=tk.WORD, height=10, width=70)
         self.lorebook_display_text.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(self.lorebook_display_text, "로어북 내용입니다. 직접 편집은 불가능하며, 'JSON 저장'으로 파일 저장 후 수정할 수 있습니다.")
 
         lorebook_display_buttons_frame = ttk.Frame(lorebook_display_frame)
         lorebook_display_buttons_frame.pack(fill="x", pady=5)
 
         self.load_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="로어북 불러오기", command=self._load_lorebook_to_display)
         self.load_lorebook_button.pack(side="left", padx=5)
+        Tooltip(self.load_lorebook_button, "기존 로어북 JSON 파일을 불러와 아래 텍스트 영역에 표시합니다.")
 
         self.copy_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="JSON 복사", command=self._copy_lorebook_json)
         self.copy_lorebook_button.pack(side="left", padx=5)
+        Tooltip(self.copy_lorebook_button, "아래 텍스트 영역에 표시된 로어북 JSON 내용을 클립보드에 복사합니다.")
 
         self.save_displayed_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="JSON 저장", command=self._save_displayed_lorebook_json)
         self.save_displayed_lorebook_button.pack(side="left", padx=5)
+        Tooltip(self.save_displayed_lorebook_button, "아래 텍스트 영역에 표시된 로어북 JSON 내용을 새 파일로 저장합니다.")
 
         # 설정 변경 감지 이벤트 바인딩
         self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_lorebook_setting_changed) # Changed
@@ -840,6 +986,7 @@ class BatchTranslatorGUI:
     def _create_log_widgets(self):
         self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD, state=tk.DISABLED, height=20)
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(self.log_text, "애플리케이션의 주요 동작 및 오류 로그가 표시됩니다.")
         
         gui_log_handler = TextHandler(self.log_text)
         # Use the global logger instance
