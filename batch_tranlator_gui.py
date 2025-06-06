@@ -96,7 +96,7 @@ class Tooltip:
             self.tooltip_window = None
             
         self.tooltip_window = tk.Toplevel(self.widget)
-        # self.tooltip_window.wm_overrideredirect(True) # 이 줄을 제거하거나 False로 설정
+        self.tooltip_window.wm_overrideredirect(True) 
         self.tooltip_window.wm_geometry(f"+{x}+{y}")
         # 플랫폼에 따라 창 제목 표시줄을 숨기려는 시도 (선택적)
         # self.tooltip_window.wm_attributes("-toolwindow", 1) # Windows에서 효과적일 수 있음
