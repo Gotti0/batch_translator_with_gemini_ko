@@ -1016,23 +1016,19 @@ class BatchTranslatorGUI:
         try:
             self._log_message("모델 목록 새로고침 중...")
             
-            # 1단계: 클라이언트가 없으면 자동으로 설정 저장 및 초기화
+            # 1단계: 클라이언트 유무 확인
             if not app_service.gemini_client:
-                self._log_message("클라이언트가 초기화되지 않아 설정을 자동 저장하여 초기화합니다...")
-                try:
-                    current_ui_config = self._get_config_from_ui()
-                    app_service.save_app_config(current_ui_config)
-                    self._log_message("설정 자동 저장 및 클라이언트 초기화 완료.")
-                except Exception as e:
-                    self._log_message(f"설정 자동 저장 실패: {e}", "ERROR")
-                    messagebox.showerror("설정 오류", f"API 설정 저장 중 오류가 발생했습니다: {e}")
-                    self._reset_model_combobox(current_user_input_model)
-                    return
-            
-            # 2단계: 클라이언트 재확인 (자동 초기화 후에도 실패할 수 있음)
-            if not app_service.gemini_client:
-                self._log_message("클라이언트 초기화 후에도 사용할 수 없습니다. API 키 또는 Vertex AI 설정을 확인하세요.", "WARNING")
-                messagebox.showwarning("인증 필요", "API 키가 유효하지 않거나 Vertex AI 설정을 확인해주세요.")
+                # 클라이언트가 없다면, 설정을 저장하지 않고 사용자에게 알림.
+                # AppService의 load_app_config를 호출하여 (저장 없이) 클라이언트 재설정을 시도할 수 있으나,
+                # 여기서는 단순히 사용자에게 알리고 모델 목록 조회를 중단하는 것이 안전합니다.
+                # load_app_config는 이미 AppService 초기화 시 또는 설정 저장/불러오기 시 호출됩니다.
+                self._log_message(
+                    "모델 목록 업데이트: Gemini 클라이언트가 초기화되지 않았습니다. "
+                    "API 키 또는 Vertex AI 설정을 확인하고 '설정 저장' 후 다시 시도해주세요.", "WARNING"
+                )
+                messagebox.showwarning("인증 필요", 
+                                       "모델 목록을 가져오려면 API 키 또는 Vertex AI 설정이 유효해야 합니다.\n"
+                                       "설정을 확인하고 '설정 저장' 버튼을 누른 후 다시 시도해주세요.")
                 self._reset_model_combobox(current_user_input_model)
                 return
             
