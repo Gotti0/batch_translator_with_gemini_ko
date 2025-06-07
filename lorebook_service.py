@@ -104,12 +104,20 @@ class LorebookService:
 
         for item_dict in raw_item_list:
             if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+                importance_val = item_dict.get("importance")
+                parsed_importance: Optional[int] = None
+                if importance_val is not None:
+                    try:
+                        parsed_importance = int(importance_val)
+                    except (ValueError, TypeError):
+                        logger.warning(f"로어북 항목의 importance 값 '{importance_val}'을(를) 정수로 변환할 수 없습니다. None으로 처리됩니다.")
+                        parsed_importance = None
                 entry_data = {
                     "keyword": item_dict.get("keyword"),
                     "description": item_dict.get("description"),
                     "category": item_dict.get("category"),
-                    "importance": item_dict.get("importance"),
-                    "isSpoiler": item_dict.get("isSpoiler", False),
+                    "importance": parsed_importance,
+                    "isSpoiler": bool(item_dict.get("isSpoiler", False)),
                     "sourceSegmentTextPreview": segment_text_preview,
                     "source_language": source_language_code
                 }
@@ -358,12 +366,19 @@ class LorebookService:
                         if isinstance(merged_entry_dict, dict) and "keyword" in merged_entry_dict and "description" in merged_entry_dict:
                             # API 응답에는 sourceSegmentTextPreview가 없을 수 있으므로, 원본 항목들 중 하나의 것을 사용하거나 None
                             source_preview = entries_for_keyword[0].sourceSegmentTextPreview
+                            importance_val_merged = merged_entry_dict.get("importance")
+                            parsed_importance_merged: Optional[int] = None
+                            if importance_val_merged is not None:
+                                try:
+                                    parsed_importance_merged = int(importance_val_merged)
+                                except (ValueError, TypeError):
+                                    logger.warning(f"병합된 로어북 항목의 importance 값 '{importance_val_merged}'을(를) 정수로 변환할 수 없습니다. None으로 처리됩니다.")
                             merged_entry_data = {
                                 "keyword": merged_entry_dict.get("keyword", entries_for_keyword[0].keyword), # 키워드는 원본 유지 또는 API 결과
                                 "description": merged_entry_dict.get("description"),
                                 "category": merged_entry_dict.get("category"),
-                                "importance": merged_entry_dict.get("importance"),
-                                "isSpoiler": merged_entry_dict.get("isSpoiler", False),
+                                "importance": parsed_importance_merged,
+                                "isSpoiler": bool(merged_entry_dict.get("isSpoiler", False)),
                                 "sourceSegmentTextPreview": source_preview,
                                 "source_language": entries_for_keyword[0].source_language # 원본 항목의 언어 코드 사용
                             }
