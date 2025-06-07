@@ -47,13 +47,22 @@ class LorebookService:
         # self.all_extracted_entries: List[LorebookEntryDTO] = [] # 추출된 모든 항목 (필요시 멤버 변수로, 아니면 로컬 변수로)
         self._lock = threading.Lock() # 병렬 처리 시 공유 자원 접근 동기화용
 
-    def _get_extraction_prompt(self, segment_text: str) -> str:
+    def _normalize_language_code(self, lang_code: Optional[str]) -> Optional[str]:
+        if not lang_code:
+            return None
+        lang_code_lower = lang_code.lower()
+        if lang_code_lower.startswith("zh-cn") or lang_code_lower.startswith("zh-hans"):
+            return "zh" # 중국어 간체 대표 코드로 통일
+        # 다른 언어 코드에 대한 정규화 규칙 추가 가능
+        return lang_code_lower.split('-')[0] # 기본적으로 첫 부분만 사용 (예: "en-US" -> "en")
+    
+    def _get_extraction_prompt(self, segment_text: str, fixed_language_code: Optional[str] = None) -> str:
         """로어북 항목 추출을 위한 프롬프트를 생성합니다."""
         base_template = self.config.get(
             "lorebook_ai_prompt_template", # config.json 에서 이 프롬프트 템플릿을 수정해야 합니다.
-            ("First, identify the BCP-47 language code of the following text.\n"
-             "Then, using that identified language as the source language for the keywords, extract major characters, places, items, important events, settings, etc., from the text.\n"
-             "Each item in the 'entities' array should have 'keyword', 'description', 'category', 'importance'(1-10), 'isSpoiler'(true/false) keys.\n"
+            ("{{language_instruction}}" # 언어 지시문 플레이스홀더
+             "Each item in the 'entities' array should have 'keyword' (core term only, any additional info in parentheses should be part of the description), "
+             "'description', 'category' (lowercase, e.g., character, place), 'importance' (1-10, relative, avoid assigning all items the same highest importance, use a range), 'isSpoiler'(true/false) keys.\n"
              "Summarize descriptions to not exceed {max_chars_per_entry} characters, and extract a maximum of {max_entries_per_segment} items.\n"
              "For keyword extraction, set sensitivity to {keyword_sensitivity} and prioritize items based on: {priority_settings}.\n"
              "Text: ```\n{novelText}\n```\n"
@@ -62,13 +71,27 @@ class LorebookService:
              "2. 'entities': The JSON array of extracted lorebook entries.\n"
              "Example response:\n"
              "{\n"
-             "  \"detected_language_code\": \"ja\",\n"
+             "  \"detected_language_code\": \"{example_lang_code}\",\n" # 예시 언어 코드 플레이스홀더
              "  \"entities\": [\n"
              "    {\"keyword\": \"主人公\", \"description\": \"物語の主要なキャラクター\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n"
              "  ]\n"
              "}\n"
              "Ensure your entire response is a single valid JSON object.")
         )
+
+        if fixed_language_code:
+            language_instruction = (
+                f"The language of the following text is '{fixed_language_code}'.\n"
+                f"Using '{fixed_language_code}' as the source language for the keywords, extract major characters, places, items, important events, settings, etc., from the text.\n"
+            )
+            example_lang_code = fixed_language_code
+        else: # 자동 감지 모드
+            language_instruction = (
+                "First, identify the BCP-47 language code of the following text.\n"
+                "Then, using that identified language as the source language for the keywords, extract major characters, places, items, important events, settings, etc., from the text.\n"
+            )
+            example_lang_code = "ja" # 기본 예시
+
 
         prompt = base_template.replace("{novelText}", segment_text)
         prompt = prompt.replace("{max_chars_per_entry}", str(self.config.get("lorebook_max_chars_per_entry", 200)))
@@ -82,6 +105,10 @@ class LorebookService:
         priority_settings_dict = self.config.get("lorebook_priority_settings", {"character": 5, "worldview": 5, "story_element": 5})
         priority_settings_str = ", ".join([f"{k}: {v}" for k, v in priority_settings_dict.items()])
         prompt = prompt.replace("{priority_settings}", priority_settings_str)
+
+        prompt = prompt.replace("{{language_instruction}}", language_instruction)
+        prompt = prompt.replace("{example_lang_code}", example_lang_code)
+        
         
         # 샘플링 방식도 프롬프트에 힌트로 제공 가능 (선택 사항)
         # sampling_method = self.config.get("lorebook_sampling_method", "uniform")
@@ -104,22 +131,29 @@ class LorebookService:
 
         for item_dict in raw_item_list:
             if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+                keyword_val = item_dict.get("keyword", "")
+                # 키워드 정규화: 괄호 및 내용 제거
+                normalized_keyword = re.sub(r'\s*\(.*?\)\s*$', '', keyword_val).strip() # Non-greedy match for parentheses
+                if not normalized_keyword: # 정규화 후 키워드가 비어있으면 건너뜀
+                    logger.warning(f"정규화 후 키워드가 비어있어 항목 건너뜀: 원본 키워드 '{keyword_val}'")
+                    continue
+
                 importance_val = item_dict.get("importance")
                 parsed_importance: Optional[int] = None
                 if importance_val is not None:
                     try:
                         parsed_importance = int(importance_val)
                     except (ValueError, TypeError):
-                        logger.warning(f"로어북 항목의 importance 값 '{importance_val}'을(를) 정수로 변환할 수 없습니다. None으로 처리됩니다.")
+                        logger.warning(f"키워드 '{normalized_keyword}'의 importance 값 '{importance_val}'을(를) 정수로 변환할 수 없습니다. None으로 처리됩니다.")
                         parsed_importance = None
                 entry_data = {
-                    "keyword": item_dict.get("keyword"),
+                    "keyword": normalized_keyword,
                     "description": item_dict.get("description"),
-                    "category": item_dict.get("category"),
+                    "category": str(item_dict.get("category", "")).lower().strip() if item_dict.get("category") else None, # 소문자 변환 및 공백 제거
                     "importance": parsed_importance,
                     "isSpoiler": bool(item_dict.get("isSpoiler", False)),
                     "sourceSegmentTextPreview": segment_text_preview,
-                    "source_language": source_language_code
+                    "source_language": self._normalize_language_code(source_language_code) # 언어 코드 정규화
                 }
                 if not entry_data["keyword"] or not entry_data["description"]:
                     logger.warning(f"필수 필드(keyword 또는 description) 누락된 로어북 항목 건너뜀: {item_dict}")
@@ -168,8 +202,9 @@ class LorebookService:
             source_language_of_segment (Optional[str]): 이 세그먼트의 언어 코드.
             retry_count (int): 현재 재시도 횟수.
             max_retries (int): 최대 재시도 횟수.
-        """
-        prompt = self._get_extraction_prompt(segment_text)
+        """        
+        prompt = self._get_extraction_prompt(segment_text, fixed_language_code=source_language_of_segment)
+
         model_name = self.config.get("model_name", "gemini-2.0-flash")
         
         generation_config = {
@@ -371,7 +406,7 @@ class LorebookService:
                             if importance_val_merged is not None:
                                 try:
                                     parsed_importance_merged = int(importance_val_merged)
-                                except (ValueError, TypeError):
+                                except (ValueError, TypeError): # lgtm[py/unreachable-statement]
                                     logger.warning(f"병합된 로어북 항목의 importance 값 '{importance_val_merged}'을(를) 정수로 변환할 수 없습니다. None으로 처리됩니다.")
                             merged_entry_data = {
                                 "keyword": merged_entry_dict.get("keyword", entries_for_keyword[0].keyword), # 키워드는 원본 유지 또는 API 결과
@@ -380,7 +415,7 @@ class LorebookService:
                                 "importance": parsed_importance_merged,
                                 "isSpoiler": bool(merged_entry_dict.get("isSpoiler", False)),
                                 "sourceSegmentTextPreview": source_preview,
-                                "source_language": entries_for_keyword[0].source_language # 원본 항목의 언어 코드 사용
+                                "source_language": self._normalize_language_code(entries_for_keyword[0].source_language) # 정규화된 언어 코드 사용
                             }
                             if not merged_entry_data["keyword"] or not merged_entry_data["description"]:
                                 logger.warning(f"병합된 로어북 항목에 필수 필드 누락: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
