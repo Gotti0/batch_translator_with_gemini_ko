@@ -273,15 +273,9 @@ class BatchTranslatorGUI:
 
         if self.app_service:
             self._load_initial_config_to_ui() 
-        else:
-            self._log_message("AppService 초기화 실패로 UI에 설정을 로드할 수 없습니다.", "ERROR")
 
-        # 초기 포커스 설정
-        if hasattr(self, 'input_file_entry'):
-            self.input_file_entry.focus_set()
-
-        
-
+        # 모든 UI 요소 생성 및 설정 로드 후 초기 포커스 설정
+        self.input_file_entry.focus_set()
     def _load_initial_config_to_ui(self):
         if not self.app_service:
             logger.warning("AppService가 초기화되지 않아 UI에 설정을 로드할 수 없습니다.")
