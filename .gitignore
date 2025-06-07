@@ -41,3 +41,4 @@ myenv/
 .DS_Store
 btg_app.log
 config.json
+배치 번역기.spec
