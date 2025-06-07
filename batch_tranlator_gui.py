@@ -199,6 +199,24 @@ class ScrollableFrame:
         """메인 프레임 grid"""
         self.main_frame.grid(**kwargs)
 
+def set_placeholder(entry_widget: ttk.Entry, placeholder: str, placeholder_color: str = 'grey'):
+    """ttk.Entry 위젯에 플레이스홀더 텍스트를 설정합니다."""
+    entry_widget.insert(0, placeholder)
+    entry_widget.config(foreground=placeholder_color)
+
+    def on_focus_in(event):
+        if entry_widget.get() == placeholder and entry_widget.cget('foreground') == placeholder_color:
+            entry_widget.delete(0, tk.END)
+            entry_widget.config(foreground='black') # Or your default text color
+
+    def on_focus_out(event):
+        if not entry_widget.get():
+            entry_widget.insert(0, placeholder)
+            entry_widget.config(foreground=placeholder_color)
+
+    entry_widget.bind("<FocusIn>", on_focus_in)
+    entry_widget.bind("<FocusOut>", on_focus_out)
+
 
 class BatchTranslatorGUI:
     def __init__(self, master: tk.Tk):
@@ -257,6 +275,10 @@ class BatchTranslatorGUI:
             self._load_initial_config_to_ui() 
         else:
             self._log_message("AppService 초기화 실패로 UI에 설정을 로드할 수 없습니다.", "ERROR")
+
+        # 초기 포커스 설정
+        if hasattr(self, 'input_file_entry'):
+            self.input_file_entry.focus_set()
 
         
 
@@ -465,6 +487,7 @@ class BatchTranslatorGUI:
         Tooltip(self.gcp_project_label, "Vertex AI 사용 시 필요한 Google Cloud Project ID입니다.")
         self.gcp_project_entry = ttk.Entry(api_frame, width=30)
         self.gcp_project_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        set_placeholder(self.gcp_project_entry, "비워둘 경우 자동으로 채워집니다")
         Tooltip(self.gcp_project_entry, "GCP 프로젝트 ID를 입력하세요.")
 
         self.gcp_location_label = ttk.Label(api_frame, text="GCP 위치 (Vertex AI):")
