@@ -77,7 +77,7 @@ def _format_lorebook_for_prompt(
         details_str = ", ".join(details_parts)
         # 로어북 항목의 원본 언어 정보를 프롬프트에 포함
         lang_info = f" (lang: {entry.source_language})" if entry.source_language else ""
-        entry_str = f"- {entry.keyword}{lang_info}: {entry.description} ({details_str})"
+        entry_str = f"- {entry.keyword}{lang_info}: {entry.description_ko} ({details_str})" # entry.description -> entry.description_ko
         
         
         
@@ -116,18 +116,18 @@ class TranslationService:
                 raw_data = read_json_file(lorebook_json_path)
                 if isinstance(raw_data, list):
                     for item_dict in raw_data:
-                        if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+                        if isinstance(item_dict, dict) and "keyword" in item_dict and "description_ko" in item_dict: # description -> description_ko
                             try:
                                 entry = LorebookEntryDTO(
                                     keyword=item_dict.get("keyword", ""),
-                                    description=item_dict.get("description", ""),
+                                    description_ko=item_dict.get("description_ko", ""), # description -> description_ko
                                     category=item_dict.get("category"),
                                     importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                     sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
                                     isSpoiler=bool(item_dict.get("isSpoiler", False)),
                                     source_language=item_dict.get("source_language") # 로어북 JSON에서 source_language 로드
                                 )
-                                if entry.keyword and entry.description: # 필수 필드 확인
+                                if entry.keyword and entry.description_ko: # description -> description_ko
                                     self.lorebook_entries_for_injection.append(entry)
                                 else:
                                     logger.warning(f"로어북 항목에 필수 필드(keyword 또는 description) 누락: {item_dict}")

@@ -62,7 +62,7 @@ class LorebookService:
             "lorebook_ai_prompt_template", # config.json 에서 이 프롬프트 템플릿을 수정해야 합니다.
             ("{{language_instruction}}" # 언어 지시문 플레이스홀더
              "Each item in the 'entities' array should have 'keyword' (core term only, any additional info in parentheses should be part of the description), "
-             "'description' (in Korean), 'category' (lowercase, e.g., character, place), 'importance' (1-10, relative, avoid assigning all items the same highest importance, use a range), 'isSpoiler'(true/false) keys.\n"
+             "'description_ko' (in Korean), 'category' (lowercase, e.g., character, place), 'importance' (1-10, relative, avoid assigning all items the same highest importance, use a range), 'isSpoiler'(true/false) keys.\n"
              "Summarize descriptions to not exceed {max_chars_per_entry} characters, and extract a maximum of {max_entries_per_segment} items.\n"
              "For keyword extraction, set sensitivity to {keyword_sensitivity} and prioritize items based on: {priority_settings}.\n"
              "Text: ```\n{novelText}\n```\n"
@@ -73,7 +73,7 @@ class LorebookService:
              "{\n"
              "  \"detected_language_code\": \"{example_lang_code}\",\n" # 예시 언어 코드 플레이스홀더
              "  \"entities\": [\n"
-             "    {\"keyword\": \"주인공\", \"description\": \"이야기의 주요 등장인물\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n"
+             "    {\"keyword\": \"주인공\", \"description_ko\": \"이야기의 주요 등장인물\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n"
              "  ]\n"
              "}\n"
              "Ensure your entire response is a single valid JSON object.")
@@ -130,7 +130,8 @@ class LorebookService:
             return lorebook_entries
 
         for item_dict in raw_item_list:
-            if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+            # AI가 description_ko를 반환하므로 해당 키를 확인
+            if isinstance(item_dict, dict) and "keyword" in item_dict and "description_ko" in item_dict:             
                 keyword_val = item_dict.get("keyword", "")
                 # 키워드 정규화: 괄호 및 내용 제거
                 normalized_keyword = re.sub(r'\s*\(.*?\)\s*$', '', keyword_val).strip() # Non-greedy match for parentheses
@@ -148,15 +149,15 @@ class LorebookService:
                         parsed_importance = None
                 entry_data = {
                     "keyword": normalized_keyword,
-                    "description": item_dict.get("description"),
+                    "description_ko": item_dict.get("description_ko"), # description -> description_ko
                     "category": str(item_dict.get("category", "")).lower().strip() if item_dict.get("category") else None, # 소문자 변환 및 공백 제거
                     "importance": parsed_importance,
                     "isSpoiler": bool(item_dict.get("isSpoiler", False)),
                     "sourceSegmentTextPreview": segment_text_preview,
                     "source_language": self._normalize_language_code(source_language_code) # 언어 코드 정규화
                 }
-                if not entry_data["keyword"] or not entry_data["description"]:
-                    logger.warning(f"필수 필드(keyword 또는 description) 누락된 로어북 항목 건너뜀: {item_dict}")
+                if not entry_data["keyword"] or not entry_data["description_ko"]: # description -> description_ko
+                    logger.warning(f"필수 필드(keyword 또는 description_ko) 누락된 로어북 항목 건너뜀: {item_dict}")
                     continue
                 lorebook_entries.append(LorebookEntryDTO(**entry_data))
             else:
@@ -169,15 +170,15 @@ class LorebookService:
             "lorebook_conflict_resolution_prompt_template",
             "다음은 동일 키워드 '{keyword}'에 대해 여러 출처에서 추출된 로어북 항목들입니다.\n"
             "이 정보들을 종합하여 가장 정확하고 포괄적인 단일 로어북 항목으로 병합해주세요.\n"
-            "병합된 설명은 한국어로 작성하고, 카테고리, 중요도, 스포일러 여부도 결정해주세요.\n"
-            "JSON 객체 (키: 'keyword', 'description', 'category', 'importance', 'isSpoiler') 형식으로 반환해주세요.\n\n"
+            "병합된 설명은 한국어로 작성하고 ('description_ko' 키 사용), 카테고리, 중요도, 스포일러 여부도 결정해주세요.\n" # description_ko 명시
+            "JSON 객체 (키: 'keyword', 'description_ko', 'category', 'importance', 'isSpoiler') 형식으로 반환해주세요.\n\n" # description -> description_ko
             "충돌 항목들:\n{conflicting_items_text}\n\nJSON 형식으로만 응답해주세요."
         )
         items_text_list = []
         for i, entry in enumerate(conflicting_entries):
             items_text_list.append(
                 f"  항목 {i+1}:\n"
-                f"    - 설명: {entry.description}\n"
+                f"    - 설명: {entry.description_ko}\n" # description -> description_ko
                 f"    - 카테고리: {entry.category or 'N/A'}\n"
                 f"    - 중요도: {entry.importance or 'N/A'}\n"
                 f"    - 스포일러: {entry.isSpoiler}\n"
@@ -398,7 +399,8 @@ class LorebookService:
                             raise ValueError(f"API 응답이 예상치 않은 타입: {type(merged_response_text)}")
 
                         merged_entry_dict = json.loads(merged_json_str)
-                        if isinstance(merged_entry_dict, dict) and "keyword" in merged_entry_dict and "description" in merged_entry_dict:
+                        # AI가 description_ko를 반환하도록 프롬프트 수정했으므로 해당 키 확인
+                        if isinstance(merged_entry_dict, dict) and "keyword" in merged_entry_dict and "description_ko" in merged_entry_dict:
                             # API 응답에는 sourceSegmentTextPreview가 없을 수 있으므로, 원본 항목들 중 하나의 것을 사용하거나 None
                             source_preview = entries_for_keyword[0].sourceSegmentTextPreview
                             importance_val_merged = merged_entry_dict.get("importance")
@@ -410,14 +412,14 @@ class LorebookService:
                                     logger.warning(f"병합된 로어북 항목의 importance 값 '{importance_val_merged}'을(를) 정수로 변환할 수 없습니다. None으로 처리됩니다.")
                             merged_entry_data = {
                                 "keyword": merged_entry_dict.get("keyword", entries_for_keyword[0].keyword), # 키워드는 원본 유지 또는 API 결과
-                                "description": merged_entry_dict.get("description"),
+                                "description_ko": merged_entry_dict.get("description_ko"), # description -> description_ko
                                 "category": merged_entry_dict.get("category"),
                                 "importance": parsed_importance_merged,
                                 "isSpoiler": bool(merged_entry_dict.get("isSpoiler", False)),
                                 "sourceSegmentTextPreview": source_preview,
                                 "source_language": self._normalize_language_code(entries_for_keyword[0].source_language) # 정규화된 언어 코드 사용
                             }
-                            if not merged_entry_data["keyword"] or not merged_entry_data["description"]:
+                            if not merged_entry_data["keyword"] or not merged_entry_data["description_ko"]: # description -> description_ko
                                 logger.warning(f"병합된 로어북 항목에 필수 필드 누락: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
                                 final_lorebook.append(entries_for_keyword[0])
                             else:

@@ -104,7 +104,7 @@ class ConfigManager:
             "lorebook_max_entries_per_segment": 5,
             "lorebook_max_chars_per_entry": 200,
             "lorebook_keyword_sensitivity": "medium",
-            "lorebook_priority_settings": {
+            "lorebook_priority_settings": { # description_ko 에 맞춰서 카테고리명도 한국어로 변경 가능 (선택사항)
                 "character": 5,
                 "worldview": 5,
                 "story_element": 5
@@ -119,7 +119,7 @@ class ConfigManager:
             "clean_html_structure": True,
             "validate_html_after_processing": True,
             # "pronouns_csv": None, # 제거됨
-            "lorebook_conflict_resolution_prompt_template": "다음은 동일 키워드 '{keyword}'에 대해 여러 출처에서 추출된 로어북 항목들입니다. 이 정보들을 종합하여 가장 정확하고 포괄적인 단일 로어북 항목으로 병합해주세요. 병합된 설명은 한국어로 작성하고, 카테고리, 중요도, 스포일러 여부도 결정해주세요. JSON 객체 (키: 'keyword', 'description', 'category', 'importance', 'isSpoiler') 형식으로 반환해주세요.\n\n충돌 항목들:\n{conflicting_items_text}\n\nJSON 형식으로만 응답해주세요.",
+            "lorebook_conflict_resolution_prompt_template": "다음은 동일 키워드 '{keyword}'에 대해 여러 출처에서 추출된 로어북 항목들입니다. 이 정보들을 종합하여 가장 정확하고 포괄적인 단일 로어북 항목으로 병합해주세요. 병합된 설명은 한국어로 작성하고 ('description_ko' 키 사용), 카테고리, 중요도, 스포일러 여부도 결정해주세요. JSON 객체 (키: 'keyword', 'description_ko', 'category', 'importance', 'isSpoiler') 형식으로 반환해주세요.\n\n충돌 항목들:\n{conflicting_items_text}\n\nJSON 형식으로만 응답해주세요.",
             "lorebook_output_json_filename_suffix": "_lorebook.json",
 
             # 동적 로어북 주입 설정
