@@ -40,3 +40,4 @@ myenv/
 *~
 .DS_Store
 btg_app.log
+config.json
