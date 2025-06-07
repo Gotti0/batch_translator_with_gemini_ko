@@ -219,6 +219,8 @@ def set_placeholder(entry_widget: ttk.Entry, placeholder: str, placeholder_color
 
 
 class BatchTranslatorGUI:
+    GCP_PROJECT_PLACEHOLDER = "비워둘 경우 자동으로 채워집니다"
+
     def __init__(self, master: tk.Tk):
         self.master = master
         master.title("BTG - 배치 번역기 (4-Tier Refactored)")
@@ -305,12 +307,17 @@ class BatchTranslatorGUI:
             self.gcp_project_entry.delete(0, tk.END)
             gcp_project_val = config.get("gcp_project")
             logger.debug(f"Config에서 가져온 gcp_project: {gcp_project_val}")
-            self.gcp_project_entry.insert(0, gcp_project_val if gcp_project_val is not None else "")
+            if gcp_project_val and gcp_project_val.strip():
+                self.gcp_project_entry.insert(0, gcp_project_val)
+                self.gcp_project_entry.config(foreground='black') # Or your default text color
+            else:
+                # Ensure placeholder is set if no valid value
+                set_placeholder(self.gcp_project_entry, self.GCP_PROJECT_PLACEHOLDER)
 
             self.gcp_location_entry.delete(0, tk.END)
             gcp_location_val = config.get("gcp_location")
             logger.debug(f"Config에서 가져온 gcp_location: {gcp_location_val}")
-            self.gcp_location_entry.insert(0, gcp_location_val if gcp_location_val is not None else "")
+            self.gcp_location_entry.insert(0, gcp_location_val if gcp_location_val is not None and gcp_location_val.strip() else "")
 
             self._toggle_vertex_fields() 
             
@@ -481,7 +488,7 @@ class BatchTranslatorGUI:
         Tooltip(self.gcp_project_label, "Vertex AI 사용 시 필요한 Google Cloud Project ID입니다.")
         self.gcp_project_entry = ttk.Entry(api_frame, width=30)
         self.gcp_project_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
-        set_placeholder(self.gcp_project_entry, "비워둘 경우 자동으로 채워집니다")
+        set_placeholder(self.gcp_project_entry, self.GCP_PROJECT_PLACEHOLDER)
         Tooltip(self.gcp_project_entry, "GCP 프로젝트 ID를 입력하세요.")
 
         self.gcp_location_label = ttk.Label(api_frame, text="GCP 위치 (Vertex AI):")
@@ -1151,11 +1158,17 @@ class BatchTranslatorGUI:
             self.rpm_entry.delete(0, tk.END)
             self.rpm_entry.insert(0, str(rpm_val))
 
+        gcp_project_ui_val = self.gcp_project_entry.get().strip()
+        actual_gcp_project = None
+        if use_vertex:
+            if gcp_project_ui_val and gcp_project_ui_val != self.GCP_PROJECT_PLACEHOLDER:
+                actual_gcp_project = gcp_project_ui_val
+
         config_data = {
             "api_keys": api_keys_list if not use_vertex else [],
             "service_account_file_path": self.service_account_file_entry.get().strip() if use_vertex else None,
             "use_vertex_ai": use_vertex,
-            "gcp_project": self.gcp_project_entry.get().strip() if use_vertex else None,
+            "gcp_project": actual_gcp_project,
             "gcp_location": self.gcp_location_entry.get().strip() if use_vertex else None,
             "model_name": self.model_name_combobox.get().strip(), 
             "temperature": self.temperature_scale.get(),
