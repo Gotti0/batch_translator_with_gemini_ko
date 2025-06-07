@@ -62,7 +62,7 @@ class LorebookService:
             "lorebook_ai_prompt_template", # config.json 에서 이 프롬프트 템플릿을 수정해야 합니다.
             ("{{language_instruction}}" # 언어 지시문 플레이스홀더
              "Each item in the 'entities' array should have 'keyword' (core term only, any additional info in parentheses should be part of the description), "
-             "'description', 'category' (lowercase, e.g., character, place), 'importance' (1-10, relative, avoid assigning all items the same highest importance, use a range), 'isSpoiler'(true/false) keys.\n"
+             "'description' (in Korean), 'category' (lowercase, e.g., character, place), 'importance' (1-10, relative, avoid assigning all items the same highest importance, use a range), 'isSpoiler'(true/false) keys.\n"
              "Summarize descriptions to not exceed {max_chars_per_entry} characters, and extract a maximum of {max_entries_per_segment} items.\n"
              "For keyword extraction, set sensitivity to {keyword_sensitivity} and prioritize items based on: {priority_settings}.\n"
              "Text: ```\n{novelText}\n```\n"
@@ -73,7 +73,7 @@ class LorebookService:
              "{\n"
              "  \"detected_language_code\": \"{example_lang_code}\",\n" # 예시 언어 코드 플레이스홀더
              "  \"entities\": [\n"
-             "    {\"keyword\": \"主人公\", \"description\": \"物語の主要なキャラクター\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n"
+             "    {\"keyword\": \"주인공\", \"description\": \"이야기의 주요 등장인물\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n"
              "  ]\n"
              "}\n"
              "Ensure your entire response is a single valid JSON object.")
