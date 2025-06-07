@@ -60,12 +60,24 @@ class Tooltip:
         self.text = text
         self.tooltip_window = None
         self.id = None
-        self.x = self.y = 0
+        self.last_event_x_root = 0 # Store event's root coords
+        self.last_event_y_root = 0
         self.widget.bind("<Enter>", self.enter)
         self.widget.bind("<Leave>", self.leave)
         self.widget.bind("<ButtonPress>", self.leave) # 클릭 시에도 툴팁 숨김
 
     def enter(self, event=None):
+        if event:
+            self.last_event_x_root = event.x_root
+            self.last_event_y_root = event.y_root
+        else:
+            # If no event, try to get widget center as a fallback
+            try:
+                self.last_event_x_root = self.widget.winfo_rootx() + self.widget.winfo_width() // 2
+                self.last_event_y_root = self.widget.winfo_rooty() + self.widget.winfo_height() // 2
+            except tk.TclError: # Widget might not be mapped yet
+                self.last_event_x_root = 0
+                self.last_event_y_root = 0
         self.schedule()
 
     def leave(self, event=None):
@@ -84,20 +96,47 @@ class Tooltip:
             self.widget.after_cancel(id)
 
     def showtip(self, event=None):
-        # 위젯의 현재 위치를 기준으로 툴팁 위치 계산
-        x = y = 0
-        x, y, _, _ = self.widget.bbox("insert") # 위젯의 바운딩 박스 (내부 좌표)
-        x += self.widget.winfo_rootx() + 25     # 위젯의 화면상 x 좌표 + 오프셋
-        y += self.widget.winfo_rooty() + 20     # 위젯의 화면상 y 좌표 + 오프셋
+        # Calculate tooltip position
+        # Use mouse position from the <Enter> event if available
+        if self.last_event_x_root != 0 and self.last_event_y_root != 0:
+            # Position near the mouse cursor that triggered <Enter>
+            tooltip_x = self.last_event_x_root + 15  # Offset from cursor
+            tooltip_y = self.last_event_y_root + 10  # Offset from cursor
+        else:
+            # Fallback: position relative to widget's top-left corner, below the widget
+            tooltip_x = self.widget.winfo_rootx() + 20 # Small x-offset from widget's left
+            tooltip_y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5 # Below the widget
 
-        # 이전 툴팁 창이 있다면 파괴
+        # Destroy previous tooltip window if it exists
         if self.tooltip_window:
             self.tooltip_window.destroy()
             self.tooltip_window = None
             
         self.tooltip_window = tk.Toplevel(self.widget)
         self.tooltip_window.wm_overrideredirect(True) 
-        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+
+        # Create a temporary label to get its dimensions for adjustment
+        # This is done *before* setting the Toplevel's geometry
+        temp_label_for_size = tk.Label(self.tooltip_window, text=self.text, font=("tahoma", "8", "normal"),
+                                       background="#ffffe0", relief='solid', borderwidth=1)
+        temp_label_for_size.pack() # Pack to calculate size
+        temp_label_for_size.update_idletasks() # Ensure geometry is calculated
+        tip_width = temp_label_for_size.winfo_reqwidth()
+        tip_height = temp_label_for_size.winfo_reqheight()
+        temp_label_for_size.destroy() # Remove temporary label
+
+        # Ensure tooltip is within screen bounds (basic check)
+        screen_width = self.widget.winfo_screenwidth()
+        screen_height = self.widget.winfo_screenheight()
+
+        if tooltip_x + tip_width > screen_width:
+            tooltip_x = screen_width - tip_width - 5
+        if tooltip_y + tip_height > screen_height:
+            tooltip_y = screen_height - tip_height - 5
+        if tooltip_x < 0: tooltip_x = 5
+        if tooltip_y < 0: tooltip_y = 5
+
+        self.tooltip_window.wm_geometry(f"+{tooltip_x}+{tooltip_y}")
         # 플랫폼에 따라 창 제목 표시줄을 숨기려는 시도 (선택적)
         # self.tooltip_window.wm_attributes("-toolwindow", 1) # Windows에서 효과적일 수 있음
 
