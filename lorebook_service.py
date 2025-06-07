@@ -485,18 +485,18 @@ class LorebookService:
                     raw_seed_data = read_json_file(seed_path_obj)
                     if isinstance(raw_seed_data, list):
                         for item_dict in raw_seed_data:
-                            if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+                            if isinstance(item_dict, dict) and "keyword" in item_dict and "description_ko" in item_dict: # description -> description_ko
                                 try:
                                     entry = LorebookEntryDTO(
                                         keyword=item_dict.get("keyword", ""),
-                                        description=item_dict.get("description", ""),
+                                        description_ko=item_dict.get("description_ko", ""), # description -> description_ko
                                         category=item_dict.get("category"),
                                         importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                         sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
                                         isSpoiler=bool(item_dict.get("isSpoiler", False)),
                                         source_language=item_dict.get("source_language", lang_for_segment_extraction_hint) # 시드 파일 내 언어 우선
                                     )
-                                    if entry.keyword and entry.description:
+                                    if entry.keyword and entry.description_ko: # description -> description_ko
                                         seed_entries.append(entry)
                                 except (TypeError, ValueError) as e_dto:
                                     logger.warning(f"시드 로어북 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")
