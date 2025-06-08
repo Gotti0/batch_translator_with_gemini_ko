@@ -106,14 +106,14 @@ class LorebookService:
             if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
                 entry_data = {
                     "keyword": item_dict.get("keyword"),
-                    "description": item_dict.get("description"),
+                    "description_ko": item_dict.get("description"), # AI 응답의 'description'을 'description_ko'에 매핑
                     "category": item_dict.get("category"),
                     "importance": item_dict.get("importance"),
                     "isSpoiler": item_dict.get("isSpoiler", False),
                     "sourceSegmentTextPreview": segment_text_preview,
                     "source_language": source_language_code
                 }
-                if not entry_data["keyword"] or not entry_data["description"]:
+                if not entry_data["keyword"] or not entry_data["description_ko"]:
                     logger.warning(f"필수 필드(keyword 또는 description) 누락된 로어북 항목 건너뜀: {item_dict}")
                     continue
                 lorebook_entries.append(LorebookEntryDTO(**entry_data))
@@ -135,7 +135,7 @@ class LorebookService:
         for i, entry in enumerate(conflicting_entries):
             items_text_list.append(
                 f"  항목 {i+1}:\n"
-                f"    - 설명: {entry.description}\n"
+                f"    - 설명: {entry.description_ko}\n"
                 f"    - 카테고리: {entry.category or 'N/A'}\n"
                 f"    - 중요도: {entry.importance or 'N/A'}\n"
                 f"    - 스포일러: {entry.isSpoiler}\n"
@@ -360,14 +360,14 @@ class LorebookService:
                             source_preview = entries_for_keyword[0].sourceSegmentTextPreview
                             merged_entry_data = {
                                 "keyword": merged_entry_dict.get("keyword", entries_for_keyword[0].keyword), # 키워드는 원본 유지 또는 API 결과
-                                "description": merged_entry_dict.get("description"),
+                                "description_ko": merged_entry_dict.get("description"), # AI 응답의 'description'을 'description_ko'에 매핑
                                 "category": merged_entry_dict.get("category"),
                                 "importance": merged_entry_dict.get("importance"),
                                 "isSpoiler": merged_entry_dict.get("isSpoiler", False),
                                 "sourceSegmentTextPreview": source_preview,
                                 "source_language": entries_for_keyword[0].source_language # 원본 항목의 언어 코드 사용
                             }
-                            if not merged_entry_data["keyword"] or not merged_entry_data["description"]:
+                            if not merged_entry_data["keyword"] or not merged_entry_data["description_ko"]:
                                 logger.warning(f"병합된 로어북 항목에 필수 필드 누락: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
                                 final_lorebook.append(entries_for_keyword[0])
                             else:
@@ -436,15 +436,15 @@ class LorebookService:
                             if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
                                 try:
                                     entry = LorebookEntryDTO(
-                                        keyword=item_dict.get("keyword", ""),
-                                        description=item_dict.get("description", ""),
+                                        keyword=item_dict.get("keyword", ""), # 시드 파일의 'description'을
+                                        description_ko=item_dict.get("description", ""), # 'description_ko'에 매핑
                                         category=item_dict.get("category"),
                                         importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                         sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
                                         isSpoiler=bool(item_dict.get("isSpoiler", False)),
                                         source_language=item_dict.get("source_language", lang_for_segment_extraction_hint) # 시드 파일 내 언어 우선
                                     )
-                                    if entry.keyword and entry.description:
+                                    if entry.keyword and entry.description_ko:
                                         seed_entries.append(entry)
                                 except (TypeError, ValueError) as e_dto:
                                     logger.warning(f"시드 로어북 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")

@@ -58,7 +58,7 @@ class LorebookEntryDTO:
     로어북의 각 항목을 나타냅니다.
     """
     keyword: str
-    description: str
+    description_ko: str # 한국어 설명
     category: Optional[str] = None # 예: "인물", "장소", "아이템", "설정"
     importance: Optional[int] = None # 1-10
     sourceSegmentTextPreview: Optional[str] = None # 추출된 원본 세그먼트 미리보기
@@ -118,7 +118,7 @@ if __name__ == '__main__':
 
     lorebook_entry_example = LorebookEntryDTO(
         keyword="아르카나 스톤",
-        description="고대 유물, 소유자에게 막대한 힘을 부여함",
+        description_ko="고대 유물, 소유자에게 막대한 힘을 부여함",
         category="아이템",
         importance=9,
         isSpoiler=True,
