@@ -237,28 +237,44 @@ class TranslationService:
     def translate_text(self, text_chunk: str) -> str:
         """기존 translate_text 메서드 (수정 없음)"""
         if not text_chunk.strip():
+            logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
 
-        processed_text = text_chunk
+        processed_text = text_chunk # In case any pre-processing was intended
         prompt = self._construct_prompt(processed_text)
 
         try:
             logger.debug(f"Gemini API 호출 시작. 모델: {self.config.get('model_name')}")
             
-            translated_text = self.gemini_client.generate_text(
+            translated_text_from_api = self.gemini_client.generate_text( # Renamed variable
                 prompt=prompt,
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict={
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)
+                    # Consider adding "response_mime_type": "text/plain" if not expecting JSON here
                 },
             )
 
-            if translated_text is None:
+            if translated_text_from_api is None:
                 logger.error("GeminiClient.generate_text가 None을 반환했습니다.")
-                raise BtgApiClientException("API 호출 결과가 없습니다.")
+                # This case should ideally be handled by GeminiClient raising an exception
+                # or returning an empty string if that's the API behavior for "no response".
+                # If it can return None for other reasons, this is a valid check.
+                raise BtgTranslationException("API로부터 응답을 받지 못했습니다 (None 반환).")
 
-            logger.debug(f"Gemini API 호출 성공. 번역된 텍스트 (일부): {translated_text[:100]}...")
+            # *** 핵심 변경 사항 시작 ***
+            if not translated_text_from_api.strip() and text_chunk.strip():
+                logger.warning(f"API가 비어있지 않은 입력에 대해 빈 문자열을 반환했습니다. 원본: '{text_chunk[:100]}...'")
+                raise BtgTranslationException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
+            # *** 핵심 변경 사항 종료 ***
+
+            logger.debug(f"Gemini API 호출 성공. 번역된 텍스트 (일부): {translated_text_from_api[:100]}...")
+            
+            # The variable 'translated_text' was used below, ensure it's assigned.
+            # Assuming 'final_text' was meant to be the return value.
+            # The original code had `final_text = translated_text` then `return final_text.strip()`
+            # Let's stick to `translated_text_from_api` for clarity.
 
         except GeminiContentSafetyException as e_safety:
             logger.warning(f"콘텐츠 안전 문제로 번역 실패: {e_safety}")
@@ -272,16 +288,17 @@ class TranslationService:
         except GeminiInvalidRequestException as e_invalid:
             logger.error(f"잘못된 API 요청: {e_invalid}")
             raise BtgApiClientException(f"잘못된 API 요청입니다: {e_invalid}", original_exception=e_invalid) from e_invalid
-        # 중복된 GeminiContentSafetyException 제거
-        except GeminiApiException as e_api:
+        except GeminiApiException as e_api: # Catches other general API errors from GeminiClient
             logger.error(f"Gemini API 호출 중 일반 오류 발생: {e_api}")
             raise BtgApiClientException(f"API 호출 중 오류가 발생했습니다: {e_api}", original_exception=e_api) from e_api
-        except Exception as e:
+        # BtgTranslationException for empty string is now caught here if raised from above
+        except BtgTranslationException: # Re-raise if it's our specific empty string exception
+            raise
+        except Exception as e: # Catch-all for other unexpected errors
             logger.error(f"번역 중 예상치 못한 오류 발생: {e}", exc_info=True)
             raise BtgTranslationException(f"번역 중 알 수 없는 오류가 발생했습니다: {e}", original_exception=e) from e
         
-        final_text = translated_text 
-        return final_text.strip()
+        return translated_text_from_api.strip() # Return the stripped translated text
     
     def translate_text_with_content_safety_retry(
         self, 
