@@ -234,7 +234,7 @@ class TranslationService:
         
         return final_prompt
 
-    def translate_text(self, text_chunk: str) -> str:
+    def translate_text(self, text_chunk: str, stream: bool = False) -> str:
         """기존 translate_text 메서드 (수정 없음)"""
         if not text_chunk.strip():
             logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
@@ -252,8 +252,8 @@ class TranslationService:
                 generation_config_dict={
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)
-                    # Consider adding "response_mime_type": "text/plain" if not expecting JSON here
                 },
+                stream=stream # 스트리밍 매개변수 전달
             )
 
             if translated_text_from_api is None:
@@ -393,7 +393,8 @@ class TranslationService:
             start_time = time.time()
             
             try:
-                translated_part = self.translate_text(sub_chunk.strip())
+                # 재귀 분할 시 스트리밍 사용
+                translated_part = self.translate_text(sub_chunk.strip(), stream=True)
                 processing_time = time.time() - start_time
                 
                 translated_parts.append(translated_part)
