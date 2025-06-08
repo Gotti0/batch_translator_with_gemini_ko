@@ -401,14 +401,14 @@ class TranslationService:
                     
                     if "[검열로 인한 번역 실패" in recursive_result:
                         failed_sub_chunks += 1
-                        logger.warning(f"   ❌ {sub_chunk_info} 최종 실패")
+                        logger.warning(f"   ❌ {sub_chunk_info} 최종 실패 (재귀 분할 후에도 검열됨)")
                     else:
                         successful_sub_chunks += 1
                         logger.info(f"   ✅ {sub_chunk_info} 재귀 분할 후 성공")
                 else:
                     # 다른 번역 오류인 경우
                     failed_sub_chunks += 1
-                    logger.error(f"   ❌ {sub_chunk_info} 번역 실패 (소요: {processing_time:.2f}초): {sub_e}")
+                    logger.error(f"   ❌ {sub_chunk_info} 번역 실패 (소요: {processing_time:.2f}초, 원인: {type(sub_e).__name__}): {str(sub_e)[:200]}")
                     translated_parts.append(f"[번역 실패: {str(sub_e)}]")
                 
                 logger.debug(f"      📈 진행률: {(i+1)/total_sub_chunks*100:.1f}% ({i+1}/{total_sub_chunks})")
