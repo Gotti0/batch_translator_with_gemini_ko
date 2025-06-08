@@ -408,8 +408,23 @@ class TranslationService:
                 else:
                     # 다른 번역 오류인 경우
                     failed_sub_chunks += 1
-                    logger.error(f"   ❌ {sub_chunk_info} 번역 실패 (소요: {processing_time:.2f}초, 원인: {type(sub_e).__name__}): {str(sub_e)[:200]}")
-                    translated_parts.append(f"[번역 실패: {str(sub_e)}]")
+                    
+                    # API로부터 받은 실제 오류 메시지에 가까운 내용을 추출 시도
+                    actual_api_error_str = str(sub_e) # 기본값: 잡힌 예외의 전체 메시지
+                    if hasattr(sub_e, 'original_exception') and sub_e.original_exception:
+                        orig_exc = sub_e.original_exception
+                        # BtgApiClientException -> Gemini*Exception 체인 확인
+                        if isinstance(orig_exc, BtgApiClientException) and \
+                           hasattr(orig_exc, 'original_exception') and orig_exc.original_exception:
+                            # orig_exc.original_exception이 Gemini*Exception 객체임
+                            actual_api_error_str = str(orig_exc.original_exception)
+                        else:
+                            # 직접적인 원인 예외의 메시지 사용
+                            actual_api_error_str = str(orig_exc)
+                    
+                    logger.error(f"   ❌ {sub_chunk_info} 번역 실패 (소요: {processing_time:.2f}초, 예외: {type(sub_e).__name__})")
+                    logger.error(f"     API 실제 오류 응답 (추정): {actual_api_error_str}") # 상세 오류 로깅
+                    translated_parts.append(f"[번역 실패: {str(sub_e)[:100]}]") # 번역 결과에는 간략한 오류 메시지 유지
                 
                 logger.debug(f"      📈 진행률: {(i+1)/total_sub_chunks*100:.1f}% ({i+1}/{total_sub_chunks})")
 
