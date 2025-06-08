@@ -62,7 +62,11 @@ except ImportError:
             postfix_parts = []
             if ordered_dict: postfix_parts.extend([f"{k}={v}" for k, v in ordered_dict.items()])
             if kwargs: postfix_parts.extend([f"{k}={v}" for k, v in kwargs.items()])
-            if postfix_parts: Tqdm.write(f"  {', '.join(postfix_parts)}", file=self.file)
+            if postfix_parts: 
+                message_to_write = f"  {', '.join(postfix_parts)}"
+                Tqdm.write(message_to_write, file=self.file)
+
+
 
 Tqdm = tqdm
 
@@ -82,7 +86,7 @@ except ImportError as e:
 
 cli_logger = setup_logger("btg_cli")
 
-tqdm_instances: Dict[str, Tqdm] = {}
+tqdm_instances: Dict[str, Tqdm] = {} # type: ignore
 tqdm_lock = threading.Lock()
 
 def cli_translation_progress_callback(dto: TranslationJobProgressDTO):
@@ -350,13 +354,12 @@ def main():
                     should_start_new = True
             else:
                 if previous_config_hash and previous_config_hash == current_config_hash:
-                    Tqdm.write(
+                    prompt_message = (
                         f"'{args.input_file.name}'에 대한 이전 번역 작업 내역이 있습니다.\n"
                         f"  이어하려면: --resume\n"
                         f"  새로 시작하려면: --force-new\n"
-                        "옵션 없이 실행하면 새로 번역을 시작합니다 (기존 내역 삭제). 계속하시겠습니까? [y/N]: ",
-                        file=sys.stdout
-                    )
+                        "옵션 없이 실행하면 새로 번역을 시작합니다 (기존 내역 삭제). 계속하시겠습니까? [y/N]: "
+                    ) # Fixed: Added closing parenthesis
                     try:
                         answer = input().lower()
                         if answer != 'y':
@@ -473,7 +476,11 @@ except ImportError:
             postfix_parts = []
             if ordered_dict: postfix_parts.extend([f"{k}={v}" for k, v in ordered_dict.items()])
             if kwargs: postfix_parts.extend([f"{k}={v}" for k, v in kwargs.items()])
-            if postfix_parts: Tqdm.write(f"  {', '.join(postfix_parts)}", file=self.file)
+            if postfix_parts: 
+                message_to_write = f"  {', '.join(postfix_parts)}"
+                Tqdm.write(message_to_write, file=self.file)
+
+
 
 Tqdm = tqdm
 
@@ -493,7 +500,7 @@ except ImportError as e:
 
 cli_logger = setup_logger("btg_cli")
 
-tqdm_instances: Dict[str, Tqdm] = {}
+tqdm_instances: Dict[str, Tqdm] = {} # type: ignore
 tqdm_lock = threading.Lock()
 
 def cli_translation_progress_callback(dto: TranslationJobProgressDTO):
@@ -763,13 +770,14 @@ def main():
                     should_start_new = True
             else:
                 if previous_config_hash and previous_config_hash == current_config_hash:
-                    Tqdm.write(
+                    prompt_message = (
                         f"'{args.input_file.name}'에 대한 이전 번역 작업 내역이 있습니다.\n"
                         f"  이어하려면: --resume\n"
                         f"  새로 시작하려면: --force-new\n"
-                        "옵션 없이 실행하면 새로 번역을 시작합니다 (기존 내역 삭제). 계속하시겠습니까? [y/N]: ",
-                        file=sys.stdout
+                        "옵션 없이 실행하면 새로 번역을 시작합니다 (기존 내역 삭제). 계속하시겠습니까? [y/N]: "
                     )
+                    Tqdm.write(prompt_message, file=sys.stdout)
+                    
                     try:
                         answer = input().lower()
                         if answer != 'y':
