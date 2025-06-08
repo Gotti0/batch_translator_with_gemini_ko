@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # c:\Users\Hyunwoo_Room\Downloads\Neo_Batch_Translator\lorebook_service.py
 import json
 import random
@@ -624,7 +623,6 @@ class LorebookService:
                 extracted_entries_count=len(final_lorebook)
             ))
         return lorebook_output_path
-=======
 # c:\Users\Hyunwoo_Room\Downloads\Neo_Batch_Translator\lorebook_service.py
 import json
 import random
@@ -1202,4 +1200,3 @@ class LorebookService:
                 extracted_entries_count=len(final_lorebook)
             ))
         return lorebook_output_path
->>>>>>> e5f49b08fda70ffa950c4c006c6c3bb71265837b
