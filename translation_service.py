@@ -261,12 +261,12 @@ class TranslationService:
                 # This case should ideally be handled by GeminiClient raising an exception
                 # or returning an empty string if that's the API behavior for "no response".
                 # If it can return None for other reasons, this is a valid check.
-                raise BtgTranslationException("API로부터 응답을 받지 못했습니다 (None 반환).")
+                raise GeminiContentSafetyException("API로부터 응답을 받지 못했습니다 (None 반환).")
 
             # *** 핵심 변경 사항 시작 ***
             if not translated_text_from_api.strip() and text_chunk.strip():
                 logger.warning(f"API가 비어있지 않은 입력에 대해 빈 문자열을 반환했습니다. 원본: '{text_chunk[:100]}...'")
-                raise BtgTranslationException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
+                raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
             # *** 핵심 변경 사항 종료 ***
 
             logger.debug(f"Gemini API 호출 성공. 번역된 텍스트 (일부): {translated_text_from_api[:100]}...")
