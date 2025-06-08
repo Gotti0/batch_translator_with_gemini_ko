@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # batch_translator_gui.py
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
@@ -1864,7 +1863,6 @@ if __name__ == '__main__':
         exit(1) 
 
     root.mainloop()
-=======
 # batch_translator_gui.py
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
@@ -3624,5 +3622,4 @@ if __name__ == '__main__':
         exit(1) 
 
     root.mainloop()
->>>>>>> e5f49b08fda70ffa950c4c006c6c3bb71265837b
     logger.info("BatchTranslatorGUI 종료됨.")

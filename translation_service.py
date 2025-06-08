@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # translation_service.py
 import time
 import random
@@ -586,7 +585,6 @@ if __name__ == '__main__':
         print(f"테스트 3 오류: {type(e).__name__} - {e}")
 
     print("\n--- TranslationService 테스트 종료 ---")
-=======
 # translation_service.py
 import time
 import random
@@ -1137,4 +1135,3 @@ if __name__ == '__main__':
         print(f"테스트 3 오류: {type(e).__name__} - {e}")
 
     print("\n--- TranslationService 테스트 종료 ---")
->>>>>>> e5f49b08fda70ffa950c4c006c6c3bb71265837b

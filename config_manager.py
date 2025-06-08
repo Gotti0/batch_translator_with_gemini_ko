@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # config_manager.py
 import json
 from pathlib import Path
@@ -329,7 +328,6 @@ if __name__ == '__main__':
     assert config4["max_workers"] == (os.cpu_count() or 1) # 0 이하의 값일 경우 기본값으로 복원
 
     print("\n테스트 완료.")
-=======
 # config_manager.py
 import json
 from pathlib import Path
@@ -662,4 +660,3 @@ if __name__ == '__main__':
     assert config4["max_workers"] == (os.cpu_count() or 1) # 0 이하의 값일 경우 기본값으로 복원
 
     print("\n테스트 완료.")
->>>>>>> e5f49b08fda70ffa950c4c006c6c3bb71265837b

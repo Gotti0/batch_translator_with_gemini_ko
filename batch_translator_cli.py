@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # batch_translator_cli.py
 import argparse
 import sys
@@ -410,7 +409,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-=======
 # batch_translator_cli.py
 import argparse
 import sys
@@ -824,4 +822,3 @@ def main():
 
 if __name__ == "__main__":
     main()
->>>>>>> e5f49b08fda70ffa950c4c006c6c3bb71265837b

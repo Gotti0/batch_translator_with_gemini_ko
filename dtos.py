@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # dtos.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Union
@@ -149,7 +148,6 @@ if __name__ == '__main__':
         output_file_path="output/translated_text.txt"
     )
     print(f"번역 요청: {trans_request}")
-=======
 # dtos.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Union
@@ -300,4 +298,3 @@ if __name__ == '__main__':
         output_file_path="output/translated_text.txt"
     )
     print(f"번역 요청: {trans_request}")
->>>>>>> e5f49b08fda70ffa950c4c006c6c3bb71265837b

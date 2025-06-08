@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # gemini_client.py
 import os
 import logging
@@ -721,7 +720,6 @@ if __name__ == '__main__':
     else:
         print("  [건너뜀] TEST_VERTEX_SA_JSON_STRING_VALID 또는 TEST_GCP_PROJECT_FOR_VERTEX 환경 변수 없음.")
     
-=======
 # gemini_client.py
 import os
 import logging
@@ -1436,5 +1434,4 @@ if __name__ == '__main__':
     else:
         print("  [건너뜀] TEST_VERTEX_SA_JSON_STRING_VALID 또는 TEST_GCP_PROJECT_FOR_VERTEX 환경 변수 없음.")
     
->>>>>>> e5f49b08fda70ffa950c4c006c6c3bb71265837b
     print("\nGemini 클라이언트 (신 SDK 패턴) 테스트 종료.")
