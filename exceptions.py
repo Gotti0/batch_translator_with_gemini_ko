@@ -52,6 +52,10 @@ class BtgTranslationException(BtgBusinessLogicException):
     """번역 로직 수행 중 발생하는 특정 오류에 대한 예외입니다."""
     pass
 
+class BtgInvalidTranslationLengthException(BtgTranslationException):
+    """번역 결과의 길이가 원본과 비교하여 비정상적일 때 발생하는 예외입니다."""
+    pass
+
 class BtgChunkingException(BtgBusinessLogicException):
     """텍스트 청킹(분할) 로직 중 발생하는 오류에 대한 예외입니다."""
     pass
