@@ -84,23 +84,39 @@ class Tooltip:
             self.widget.after_cancel(id)
 
     def showtip(self, event=None):
-        # 위젯의 현재 위치를 기준으로 툴팁 위치 계산
-        x = y = 0
-        x, y, _, _ = self.widget.bbox("insert") # 위젯의 바운딩 박스 (내부 좌표)
-        x += self.widget.winfo_rootx() + 25     # 위젯의 화면상 x 좌표 + 오프셋
-        y += self.widget.winfo_rooty() + 20     # 위젯의 화면상 y 좌표 + 오프셋
+        if not self.widget.winfo_exists():
+            self.hidetip()
+            return
+
+        # Default internal offsets if bbox fails or is not applicable
+        # These are coordinates relative to the widget's top-left corner.
+        cursor_x_in_widget = 0
+        cursor_y_in_widget = 0
+
+        bbox = self.widget.bbox("insert") # Get bbox relative to the widget
+        if bbox:
+            # If bbox is valid, use its x,y (relative to widget's top-left)
+            cursor_x_in_widget, cursor_y_in_widget, _, _ = bbox
+        
+        # Calculate final screen coordinates for the tooltip
+        # Add widget's screen coordinates, cursor's relative coordinates, and a fixed offset
+        final_tooltip_x = self.widget.winfo_rootx() + cursor_x_in_widget + 25
+        final_tooltip_y = self.widget.winfo_rooty() + cursor_y_in_widget + 20
 
         # 이전 툴팁 창이 있다면 파괴
         if self.tooltip_window:
             self.tooltip_window.destroy()
             self.tooltip_window = None
-            
+        
+        # Create new tooltip window
+        # Ensure widget still exists before making it a master of Toplevel
+        if not self.widget.winfo_exists(): # Double check, as time might have passed
+            self.hidetip()
+            return
+
         self.tooltip_window = tk.Toplevel(self.widget)
         self.tooltip_window.wm_overrideredirect(True) 
-        self.tooltip_window.wm_geometry(f"+{x}+{y}")
-        # 플랫폼에 따라 창 제목 표시줄을 숨기려는 시도 (선택적)
-        # self.tooltip_window.wm_attributes("-toolwindow", 1) # Windows에서 효과적일 수 있음
-
+        self.tooltip_window.wm_geometry(f"+{int(final_tooltip_x)}+{int(final_tooltip_y)}")
         label = tk.Label(self.tooltip_window, text=self.text, justify='left',
                          background="#ffffe0", relief='solid', borderwidth=1,
                          font=("tahoma", "8", "normal"))
