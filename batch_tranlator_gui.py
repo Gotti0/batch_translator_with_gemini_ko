@@ -972,6 +972,13 @@ class BatchTranslatorGUI:
         self.save_displayed_lorebook_button.pack(side="left", padx=5)
         Tooltip(self.save_displayed_lorebook_button, "아래 텍스트 영역에 표시된 로어북 JSON 내용을 새 파일로 저장합니다.")
 
+        self.edit_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="로어북 편집", command=self._open_lorebook_editor)
+        self.edit_lorebook_button.pack(side="left", padx=5)
+        Tooltip(self.edit_lorebook_button, "표시된 로어북 내용을 별도의 편집기 창에서 수정합니다.")
+
+
+
+
         # 설정 변경 감지 이벤트 바인딩
         self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_lorebook_setting_changed) # Changed
         self.max_entries_per_segment_spinbox.bind("<KeyRelease>", self._on_lorebook_setting_changed) # Changed
@@ -1747,6 +1754,260 @@ class BatchTranslatorGUI:
             except Exception as e:
                 messagebox.showerror("오류", f"로어북 저장 실패: {e}")
                 self._log_message(f"표시된 로어북 저장 실패: {e}", "ERROR")
+
+    def _open_lorebook_editor(self):
+        current_json_str = self.lorebook_display_text.get('1.0', tk.END).strip()
+        if not current_json_str:
+            if not messagebox.askyesno("로어북 비어있음", "표시된 로어북 내용이 없습니다. 새 로어북을 만드시겠습니까?"):
+                return
+            current_json_str = "[]" # 새 로어북을 위한 빈 리스트
+
+        try:
+            # JSON 유효성 검사
+            json.loads(current_json_str)
+        except json.JSONDecodeError as e:
+            messagebox.showerror("JSON 오류", f"로어북 내용이 유효한 JSON 형식이 아닙니다: {e}")
+            return
+
+        editor_window = LorebookEditorWindow(self.master, current_json_str, self._handle_lorebook_editor_save)
+        editor_window.grab_set() # Modal-like behavior
+
+    def _handle_lorebook_editor_save(self, updated_json_str: str):
+        self._display_lorebook_content(updated_json_str)
+        self._log_message("로어북 편집기에서 변경 사항이 적용되었습니다.")
+        # Optionally, ask user if they want to save to the file now
+        if messagebox.askyesno("파일 저장 확인", "편집된 로어북을 현재 설정된 JSON 파일 경로에 저장하시겠습니까?"):
+            lorebook_file_path = self.lorebook_json_path_entry.get()
+            if lorebook_file_path:
+                try:
+                    with open(lorebook_file_path, 'w', encoding='utf-8') as f:
+                        f.write(updated_json_str)
+                    messagebox.showinfo("저장 완료", f"로어북이 '{lorebook_file_path}'에 저장되었습니다.")
+                    self._log_message(f"편집된 로어북 파일 저장됨: {lorebook_file_path}")
+                except Exception as e:
+                    messagebox.showerror("파일 저장 오류", f"로어북 파일 저장 실패: {e}")
+                    self._log_message(f"편집된 로어북 파일 저장 실패: {e}", "ERROR")
+            else:
+                messagebox.showwarning("경로 없음", "로어북 JSON 파일 경로가 설정되지 않았습니다. 'JSON 저장' 버튼을 사용하거나 경로를 설정해주세요.")
+
+
+class LorebookEditorWindow(tk.Toplevel):
+    def __init__(self, master, lorebook_json_str: str, save_callback: Callable[[str], None]):
+        super().__init__(master)
+        self.title("로어북 편집기")
+        self.geometry("800x600")
+        self.save_callback = save_callback
+
+        try:
+            self.lorebook_data: List[Dict[str, Any]] = json.loads(lorebook_json_str)
+            if not isinstance(self.lorebook_data, list): # Ensure it's a list
+                raise ValueError("Lorebook data must be a list of entries.")
+        except (json.JSONDecodeError, ValueError) as e:
+            messagebox.showerror("데이터 오류", f"로어북 데이터를 불러오는 중 오류 발생: {e}", parent=self)
+            self.lorebook_data = [] # Fallback to empty list
+
+        self.current_selection_index: Optional[int] = None
+
+        # Main frame
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Left: Listbox for keywords
+        listbox_frame = ttk.Frame(main_frame)
+        listbox_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+
+        self.listbox = tk.Listbox(listbox_frame, width=30, exportselection=False)
+        self.listbox.pack(side=tk.TOP, fill=tk.Y, expand=True)
+        self.listbox.bind("<<ListboxSelect>>", self._on_listbox_select)
+
+        listbox_buttons_frame = ttk.Frame(listbox_frame)
+        listbox_buttons_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5,0))
+        ttk.Button(listbox_buttons_frame, text="새 항목", command=self._add_new_entry).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(listbox_buttons_frame, text="항목 삭제", command=self._delete_selected_entry).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+
+        # Right: Entry fields for selected item
+        self.entry_fields_frame = ttk.Frame(main_frame)
+        self.entry_fields_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        fields = {
+            "keyword": {"label": "키워드:", "widget": ttk.Entry, "height": 1},
+            "description_ko": {"label": "설명 (KO):", "widget": tk.Text, "height": 5},
+            "category": {"label": "카테고리:", "widget": ttk.Entry, "height": 1},
+            "importance": {"label": "중요도 (1-10):", "widget": ttk.Spinbox, "height": 1, "extra_args": {"from_": 0, "to": 10}},
+            "source_language": {"label": "원본 언어:", "widget": ttk.Entry, "height": 1},
+            "sourceSegmentTextPreview": {"label": "원본 미리보기:", "widget": tk.Text, "height": 3, "readonly": True},
+        }
+        self.entry_widgets: Dict[str, Union[ttk.Entry, tk.Text, ttk.Spinbox, ttk.Checkbutton]] = {}
+
+        for i, (field_name, config) in enumerate(fields.items()):
+            ttk.Label(self.entry_fields_frame, text=config["label"]).grid(row=i, column=0, sticky=tk.NW, padx=5, pady=2)
+            if config["widget"] == tk.Text:
+                widget = tk.Text(self.entry_fields_frame, height=config["height"], width=50, wrap=tk.WORD)
+            elif config["widget"] == ttk.Spinbox:
+                widget = ttk.Spinbox(self.entry_fields_frame, width=48, **config.get("extra_args", {}))
+            else: # ttk.Entry
+                widget = ttk.Entry(self.entry_fields_frame, width=50)
+
+            if config.get("readonly"):
+                widget.config(state=tk.DISABLED)
+            widget.grid(row=i, column=1, sticky=tk.EW, padx=5, pady=2)
+            self.entry_widgets[field_name] = widget
+
+        self.is_spoiler_var = tk.BooleanVar()
+        self.entry_widgets["isSpoiler"] = ttk.Checkbutton(self.entry_fields_frame, text="스포일러 포함", variable=self.is_spoiler_var)
+        self.entry_widgets["isSpoiler"].grid(row=len(fields), column=1, sticky=tk.W, padx=5, pady=5)
+
+        # Bottom: Save/Cancel buttons
+        buttons_frame = ttk.Frame(self, padding="10")
+        buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons_frame, text="변경사항 저장 후 닫기", command=self._save_and_close).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(buttons_frame, text="현재 항목 저장", command=self._save_current_entry).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(buttons_frame, text="취소", command=self.destroy).pack(side=tk.RIGHT)
+
+        self._populate_listbox()
+        if self.lorebook_data:
+            self.listbox.selection_set(0)
+            self._load_entry_to_fields(0)
+        else:
+            self._clear_entry_fields()
+
+    def _populate_listbox(self):
+        self.listbox.delete(0, tk.END)
+        for i, entry in enumerate(self.lorebook_data):
+            self.listbox.insert(tk.END, f"{i:03d}: {entry.get('keyword', 'N/A')}")
+
+    def _on_listbox_select(self, event):
+        selection = self.listbox.curselection()
+        if selection:
+            self._save_current_entry() # Save previous entry before loading new one
+            self.current_selection_index = selection[0]
+            self._load_entry_to_fields(self.current_selection_index)
+
+    def _load_entry_to_fields(self, index: int):
+        if not (0 <= index < len(self.lorebook_data)):
+            self._clear_entry_fields()
+            return
+
+        entry = self.lorebook_data[index]
+        for field_name, widget in self.entry_widgets.items():
+            value = entry.get(field_name)
+            if isinstance(widget, tk.Text):
+                widget.config(state=tk.NORMAL)
+                widget.delete('1.0', tk.END)
+                widget.insert('1.0', str(value) if value is not None else "")
+                if field_name == "sourceSegmentTextPreview": # Make readonly field disabled after insert
+                    widget.config(state=tk.DISABLED)
+            elif isinstance(widget, ttk.Entry):
+                widget.delete(0, tk.END)
+                widget.insert(0, str(value) if value is not None else "")
+            elif isinstance(widget, ttk.Spinbox):
+                widget.set(str(value) if value is not None else "0")
+            elif isinstance(widget, ttk.Checkbutton):
+                self.is_spoiler_var.set(bool(value))
+        self.current_selection_index = index
+
+    def _clear_entry_fields(self):
+        for field_name, widget in self.entry_widgets.items():
+            if isinstance(widget, tk.Text):
+                widget.config(state=tk.NORMAL)
+                widget.delete('1.0', tk.END)
+                if field_name == "sourceSegmentTextPreview":
+                     widget.config(state=tk.DISABLED)
+            elif isinstance(widget, ttk.Entry):
+                widget.delete(0, tk.END)
+            elif isinstance(widget, ttk.Spinbox):
+                widget.set("0")
+            elif isinstance(widget, ttk.Checkbutton):
+                self.is_spoiler_var.set(False)
+        self.current_selection_index = None
+        self.entry_widgets["keyword"].focus_set()
+
+    def _save_current_entry(self):
+        if self.current_selection_index is None or not (0 <= self.current_selection_index < len(self.lorebook_data)):
+            # This case might happen if "새 항목" was clicked and then "현재 항목 저장"
+            # Or if list is empty. For new item, keyword is crucial.
+            keyword = self.entry_widgets["keyword"].get().strip()
+            if not keyword:
+                # messagebox.showwarning("경고", "새 항목을 저장하려면 키워드를 입력해야 합니다.", parent=self)
+                return False # Indicate save failed or was not applicable
+            # This implies creating a new entry if keyword is present but no selection
+            # For simplicity, we'll handle explicit new entry creation via _add_new_entry
+            return True # Or False, depending on desired behavior for "save current" with no selection
+
+        index_to_save = self.current_selection_index
+        if not (0 <= index_to_save < len(self.lorebook_data)): return True # Should not happen
+
+        updated_entry: Dict[str, Any] = {}
+        for field_name, widget_instance in self.entry_widgets.items():
+            if isinstance(widget_instance, tk.Text):
+                updated_entry[field_name] = widget_instance.get('1.0', tk.END).strip()
+            elif isinstance(widget_instance, ttk.Entry):
+                updated_entry[field_name] = widget_instance.get().strip()
+            elif isinstance(widget_instance, ttk.Spinbox):
+                try:
+                    updated_entry[field_name] = int(widget_instance.get())
+                except ValueError:
+                    updated_entry[field_name] = 0 # Default or handle error
+            elif isinstance(widget_instance, ttk.Checkbutton):
+                updated_entry[field_name] = self.is_spoiler_var.get()
+
+        if not updated_entry.get("keyword"):
+            messagebox.showwarning("경고", "키워드는 비워둘 수 없습니다.", parent=self)
+            self.entry_widgets["keyword"].focus_set()
+            return False
+
+        self.lorebook_data[index_to_save] = updated_entry
+        self._populate_listbox() # Refresh listbox in case keyword changed
+        self.listbox.selection_set(index_to_save) # Re-select
+        # logger.debug(f"Entry at index {index_to_save} saved: {updated_entry}")
+        return True
+
+    def _add_new_entry(self):
+        self._save_current_entry() # Save any pending changes to the currently selected item
+        self._clear_entry_fields()
+        # Create a new blank entry and add it to the data
+        new_entry_template = {
+            "keyword": "", "description_ko": "", "category": "",
+            "importance": 0, "isSpoiler": False, "source_language": "",
+            "sourceSegmentTextPreview": "새 항목"
+        }
+        self.lorebook_data.append(new_entry_template)
+        self._populate_listbox()
+        new_index = len(self.lorebook_data) - 1
+        self.listbox.selection_set(new_index)
+        self.listbox.see(new_index)
+        self._load_entry_to_fields(new_index)
+        self.entry_widgets["keyword"].focus_set()
+
+    def _delete_selected_entry(self):
+        if self.current_selection_index is None:
+            messagebox.showwarning("경고", "삭제할 항목을 선택하세요.", parent=self)
+            return
+
+        if messagebox.askyesno("삭제 확인", f"'{self.lorebook_data[self.current_selection_index].get('keyword')}' 항목을 정말 삭제하시겠습니까?", parent=self):
+            del self.lorebook_data[self.current_selection_index]
+            self._populate_listbox()
+            self._clear_entry_fields()
+            if self.lorebook_data: # If list is not empty, select first item
+                self.listbox.selection_set(0)
+                self._load_entry_to_fields(0)
+
+    def _save_and_close(self):
+        if not self._save_current_entry(): # Try to save the currently edited/new item
+            # If save failed (e.g. keyword missing for a new item not yet fully committed)
+            # and user wants to close, ask for confirmation
+            if not messagebox.askokcancel("저장 오류", "현재 항목 저장에 실패했습니다 (예: 키워드 누락). 저장하지 않고 닫으시겠습니까?", parent=self):
+                 return
+
+        # Filter out any entries that might have been added but left with an empty keyword
+        # This can happen if "새 항목" is clicked, then "저장하고 닫기" without filling the keyword.
+        self.lorebook_data = [entry for entry in self.lorebook_data if entry.get("keyword", "").strip()]
+
+        final_json_str = json.dumps(self.lorebook_data, indent=2, ensure_ascii=False)
+        self.save_callback(final_json_str)
+        self.destroy()
+
 
 class TextHandler(logging.Handler):
     def __init__(self, text_widget: scrolledtext.ScrolledText): # type: ignore
