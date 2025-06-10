@@ -115,12 +115,12 @@ class TranslationService:
             try:
                 raw_data = read_json_file(lorebook_json_path)
                 if isinstance(raw_data, list):
-                    for item_dict in raw_data:
-                        if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+                    for item_dict in raw_data: # type: ignore
+                        if isinstance(item_dict, dict) and "keyword" in item_dict and "description_ko" in item_dict: # FIX: Check for 'description_ko'
                             try:
                                 entry = LorebookEntryDTO(
-                                    keyword=item_dict.get("keyword", ""), # JSON 파일의 'description'을
-                                    description_ko=item_dict.get("description", ""), # 'description_ko'에 매핑
+                                    keyword=item_dict.get("keyword", ""), # 원본 키워드 가져오기
+                                    description_ko=item_dict.get("description_ko", ""), # 'description_ko' 키에서 설명 가져오기
                                     category=item_dict.get("category"),
                                     importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                     sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
@@ -130,11 +130,11 @@ class TranslationService:
                                 if entry.keyword and entry.description_ko: # 필수 필드 확인
                                     self.lorebook_entries_for_injection.append(entry)
                                 else:
-                                    logger.warning(f"로어북 항목에 필수 필드(keyword 또는 description) 누락: {item_dict}")
+                                    logger.warning(f"로어북 항목에 필수 필드(keyword 또는 description_ko) 값이 비어있음: {item_dict}") # FIX: Updated message
                             except (TypeError, ValueError) as e_dto:
                                 logger.warning(f"로어북 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")
                         else:
-                            logger.warning(f"잘못된 로어북 항목 형식 (딕셔너리가 아니거나 필수 키 누락): {item_dict}")
+                            logger.warning(f"잘못된 로어북 항목 형식 (딕셔너리가 아니거나 필수 키 'keyword' 또는 'description_ko' 누락) 건너뜀: {item_dict}") # FIX: Updated message
                     logger.info(f"{len(self.lorebook_entries_for_injection)}개의 로어북 항목을 로드했습니다: {lorebook_json_path}")
                 else:
                     logger.error(f"로어북 JSON 파일이 리스트 형식이 아닙니다: {lorebook_json_path}, 타입: {type(raw_data)}")
