@@ -146,6 +146,52 @@ class LorebookService:
         prompt = prompt.replace("{conflicting_items_text}", "\n".join(items_text_list))
         return prompt
 
+    def _group_similar_keywords_via_api(self, keywords: List[str]) -> Dict[str, str]:
+        """
+        LLM API를 사용하여 유사하거나 동일한 의미의 키워드들을 그룹핑하고,
+        각 원본 키워드에 대한 대표 키워드를 매핑하는 딕셔너리를 반환합니다.
+        """
+        if not keywords:
+            return {}
+
+        unique_keywords = sorted(list(set(keywords)))
+        if len(unique_keywords) <= 1: # 키워드가 없거나 하나만 있으면 그룹핑 불필요
+            return {kw: kw for kw in unique_keywords}
+
+        # TODO: 프롬프트는 LLM의 응답 형식과 성능에 맞춰 정교하게 조정 필요
+        prompt = (
+            "다음은 로어북에서 추출된 키워드 목록입니다. 의미상 동일하거나 매우 유사한 대상을 가리키는 키워드들을 그룹화하고, "
+            "각 그룹의 가장 대표적인 키워드를 지정해주세요.\n"
+            "응답은 JSON 객체 형식으로, 각 원본 키워드를 키로 하고 해당 키워드의 대표 키워드를 값으로 하는 매핑을 제공해주세요.\n"
+            "예를 들어, ['주인공', '그녀', '레이카']가 있다면, '주인공'을 대표로 하여 "
+            "{'주인공': '주인공', '그녀': '주인공', '레이카': '주인공'}과 같이 응답할 수 있습니다.\n"
+            "만약 그룹화할 대상이 없다면 원본 키워드를 그대로 대표 키워드로 사용해주세요.\n\n"
+            f"키워드 목록:\n{json.dumps(unique_keywords, ensure_ascii=False)}\n\n"
+            "JSON 응답:"
+        )
+        model_name = self.config.get("model_name", "gemini-2.0-flash")
+        generation_config = {
+            "temperature": self.config.get("lorebook_semantic_grouping_temperature", 0.1), # 낮은 온도로 일관성 유도
+            "response_mime_type": "application/json",
+        }
+
+        try:
+            response_data = self.gemini_client.generate_text(
+                prompt=prompt,
+                model_name=model_name,
+                generation_config_dict=generation_config
+            )
+            if isinstance(response_data, dict):
+                # 모든 키워드가 응답에 포함되도록 보장 (LLM이 누락할 경우 대비)
+                keyword_map = {kw: response_data.get(kw, kw) for kw in unique_keywords}
+                logger.info(f"유사 키워드 그룹핑 API 호출 성공. {len(keyword_map)}개 매핑 생성.")
+                return keyword_map
+            logger.warning(f"유사 키워드 그룹핑 API로부터 예상치 못한 응답 형식: {type(response_data)}. 그룹핑 없이 진행.")
+            return {kw: kw for kw in unique_keywords}
+        except Exception as e:
+            logger.error(f"유사 키워드 그룹핑 API 호출 중 오류: {e}. 그룹핑 없이 진행.")
+            return {kw: kw for kw in unique_keywords} # 오류 시, 각 키워드는 스스로를 대표
+
     def _extract_lorebook_entries_from_segment_via_api(
         self,
         segment_text: str,
@@ -312,12 +358,24 @@ class LorebookService:
 
         logger.info(f"로어북 충돌 해결 시작. 총 {len(all_extracted_entries)}개 항목 검토 중...")
         
+        keyword_to_representative_map: Dict[str, str] = {}
+        if self.config.get("lorebook_enable_semantic_keyword_grouping", False):
+            all_keywords = [entry.keyword for entry in all_extracted_entries]
+            if all_keywords:
+                logger.info("의미 기반 유사 키워드 그룹핑 시도...")
+                keyword_to_representative_map = self._group_similar_keywords_via_api(all_keywords)
+                logger.debug(f"유사 키워드 매핑 결과: {keyword_to_representative_map}")
+
         grouped_by_keyword: Dict[str, List[LorebookEntryDTO]] = {}
         for entry in all_extracted_entries:
-            key_lower = entry.keyword.lower() # 대소문자 무시
-            if key_lower not in grouped_by_keyword:
-                grouped_by_keyword[key_lower] = []
-            grouped_by_keyword[key_lower].append(entry)
+            # 의미 기반 그룹핑이 활성화되었고 매핑이 있다면 대표 키워드를 사용, 아니면 원본 키워드 사용
+            representative_keyword = keyword_to_representative_map.get(entry.keyword, entry.keyword)
+            # 그룹핑을 위한 키는 소문자로 통일
+            grouping_key_lower = representative_keyword.lower()
+            
+            if grouping_key_lower not in grouped_by_keyword:
+                grouped_by_keyword[grouping_key_lower] = []
+            grouped_by_keyword[grouping_key_lower].append(entry)
 
         final_lorebook: List[LorebookEntryDTO] = []
         # conflict_resolution_batch_size = self.config.get("lorebook_conflict_resolution_batch_size", 5) # 현재는 키워드별로 처리
@@ -326,9 +384,12 @@ class LorebookService:
             if len(entries_for_keyword) == 1:
                 final_lorebook.append(entries_for_keyword[0]) # 충돌 없음
             else:
-                logger.debug(f"키워드 '{entries_for_keyword[0].keyword}'에 대해 {len(entries_for_keyword)}개의 잠재적 충돌 항목 발견.")
-                
-                conflict_prompt = self._get_conflict_resolution_prompt(entries_for_keyword[0].keyword, entries_for_keyword)
+                # 그룹의 대표 키워드 (또는 그룹 내 첫 번째 항목의 키워드)를 충돌 해결 프롬프트에 사용
+                # keyword_lower는 정규화된 대표 키워드의 소문자 버전임.
+                # 실제 프롬프트에는 그룹 내 항목 중 하나의 원본 키워드(대소문자 유지)를 사용하는 것이 좋을 수 있음.
+                representative_keyword_for_prompt = entries_for_keyword[0].keyword 
+                logger.debug(f"대표 키워드 '{representative_keyword_for_prompt}' (그룹 키: '{keyword_lower}')에 대해 {len(entries_for_keyword)}개의 잠재적 충돌 항목 발견.")
+                conflict_prompt = self._get_conflict_resolution_prompt(representative_keyword_for_prompt, entries_for_keyword)
                 model_name = self.config.get("model_name", "gemini-2.0-flash")
                 generation_config = {
                     "temperature": self.config.get("lorebook_conflict_resolution_temperature", self.config.get("temperature", 0.3)),
@@ -359,7 +420,7 @@ class LorebookService:
                             # API 응답에는 sourceSegmentTextPreview가 없을 수 있으므로, 원본 항목들 중 하나의 것을 사용하거나 None
                             source_preview = entries_for_keyword[0].sourceSegmentTextPreview
                             merged_entry_data = {
-                                "keyword": merged_entry_dict.get("keyword", entries_for_keyword[0].keyword), # 키워드는 원본 유지 또는 API 결과
+                                "keyword": merged_entry_dict.get("keyword", representative_keyword_for_prompt), # API 결과 또는 그룹 대표 키워드 사용
                                 "description_ko": merged_entry_dict.get("description"), # AI 응답의 'description'을 'description_ko'에 매핑
                                 "category": merged_entry_dict.get("category"),
                                 "importance": merged_entry_dict.get("importance"),
@@ -369,25 +430,35 @@ class LorebookService:
                             }
                             if not merged_entry_data["keyword"] or not merged_entry_data["description_ko"]:
                                 logger.warning(f"병합된 로어북 항목에 필수 필드 누락: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
-                                final_lorebook.append(entries_for_keyword[0])
+                                final_lorebook.append(self._select_best_entry_from_group(entries_for_keyword))
                             else:
                                 final_lorebook.append(LorebookEntryDTO(**merged_entry_data))
-                                logger.info(f"키워드 '{entries_for_keyword[0].keyword}' 충돌 해결 및 병합 성공.")
+                                logger.info(f"키워드 그룹 '{representative_keyword_for_prompt}' 충돌 해결 및 병합 성공.")
                         else:
                             logger.warning(f"병합된 로어북 항목 형식이 잘못됨: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
-                            final_lorebook.append(entries_for_keyword[0])
+                            final_lorebook.append(self._select_best_entry_from_group(entries_for_keyword))
                     else:
-                        logger.warning(f"키워드 '{entries_for_keyword[0].keyword}' 충돌 해결 API 응답 없음. 원본 중 첫 번째 항목 사용.")
-                        final_lorebook.append(entries_for_keyword[0])
+                        logger.warning(f"키워드 그룹 '{representative_keyword_for_prompt}' 충돌 해결 API 응답 없음. 원본 중 가장 좋은 항목 선택.")
+                        final_lorebook.append(self._select_best_entry_from_group(entries_for_keyword))
                 except Exception as e_conflict:
-                    logger.error(f"키워드 '{entries_for_keyword[0].keyword}' 충돌 해결 중 오류: {e_conflict}. 원본 중 첫 번째 항목 사용.")
-                    final_lorebook.append(entries_for_keyword[0]) # 오류 발생 시 임시로 첫 번째 항목 사용
+                    logger.error(f"키워드 그룹 '{representative_keyword_for_prompt}' 충돌 해결 중 오류: {e_conflict}. 원본 중 가장 좋은 항목 선택.")
+                    final_lorebook.append(self._select_best_entry_from_group(entries_for_keyword)) # 오류 발생 시 그룹 내 최선 항목 선택
         
         # 최종 로어북 정렬 (예: 중요도, 키워드 순)
         final_lorebook.sort(key=lambda x: (-(x.importance or 0), x.keyword.lower()))
         
         logger.info(f"로어북 충돌 해결 완료. 최종 {len(final_lorebook)}개 항목.")
         return final_lorebook
+
+    def _select_best_entry_from_group(self, entry_group: List[LorebookEntryDTO]) -> LorebookEntryDTO:
+        """주어진 로어북 항목 그룹에서 가장 좋은 항목을 선택합니다 (예: 가장 긴 설명, 가장 높은 중요도)."""
+        if not entry_group:
+            # 이 경우는 발생하지 않아야 하지만, 방어적으로 처리
+            raise ValueError("빈 로어북 항목 그룹에서 최선 항목을 선택할 수 없습니다.")
+        # 중요도 높은 순, 설명 긴 순, 스포일러 아닌 것 우선 등으로 정렬하여 첫 번째 항목 반환
+        entry_group.sort(key=lambda e: (-(e.importance or 0), -len(e.description_ko or ""), e.isSpoiler is True))
+        return entry_group[0]
+
 
     def extract_and_save_lorebook(self,
                                   # all_text_segments: List[str], # 직접 세그먼트 리스트를 받는 대신 원본 텍스트를 받도록 변경

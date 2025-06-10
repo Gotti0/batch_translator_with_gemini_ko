@@ -122,6 +122,7 @@ class ConfigManager:
             "lorebook_conflict_resolution_prompt_template": "다음은 동일 키워드 '{keyword}'에 대해 여러 출처에서 추출된 로어북 항목들입니다. 이 정보들을 종합하여 가장 정확하고 포괄적인 단일 로어북 항목으로 병합해주세요. 병합된 설명은 한국어로 작성하고, 카테고리, 중요도, 스포일러 여부도 결정해주세요. JSON 객체 (키: 'keyword', 'description', 'category', 'importance', 'isSpoiler') 형식으로 반환해주세요.\n\n충돌 항목들:\n{conflicting_items_text}\n\nJSON 형식으로만 응답해주세요.",
             "lorebook_output_json_filename_suffix": "_lorebook.json",
 
+            "lorebook_enable_semantic_keyword_grouping": False, # 유사 키워드 그룹핑 기능 활성화 여부
             # 동적 로어북 주입 설정
             "enable_dynamic_lorebook_injection": False,
             "max_lorebook_entries_per_chunk_injection": 3,
@@ -242,6 +243,7 @@ if __name__ == '__main__':
     assert config1["requests_per_minute"] == 60 # RPM 기본값 확인
     assert config1["enable_dynamic_lorebook_injection"] is False
     assert config1["max_lorebook_entries_per_chunk_injection"] == 3
+    assert config1["lorebook_enable_semantic_keyword_grouping"] is False # 새로운 기본 설정 확인
     assert config1["max_lorebook_chars_per_chunk_injection"] == 500
 
     print("\n--- 2. 설정 저장 테스트 (api_keys 및 max_workers 사용) ---")
@@ -257,6 +259,7 @@ if __name__ == '__main__':
     config_to_save["requests_per_minute"] = 30 
     config_to_save["enable_dynamic_lorebook_injection"] = True
     config_to_save["lorebook_json_path"] = "path/to/active_lorebook.json" # 통합된 경로 사용 예시
+    config_to_save["lorebook_enable_semantic_keyword_grouping"] = True
     save_success = manager_no_file.save_config(config_to_save)
     print(f"설정 저장 성공 여부: {save_success}")
     assert save_success
@@ -281,6 +284,7 @@ if __name__ == '__main__':
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
     assert config2["enable_dynamic_lorebook_injection"] is True
     assert config2["max_lorebook_entries_per_chunk_injection"] == 3 # 기본값 유지 확인
+    assert config2["lorebook_enable_semantic_keyword_grouping"] is True # 저장된 값 확인
     assert config2["lorebook_json_path"] == "path/to/active_lorebook.json" # 통합된 경로 확인
 
     print("\n--- 4. 부분 설정 파일 로드 테스트 (api_key만 있고 api_keys는 없는 경우) ---")
