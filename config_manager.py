@@ -127,8 +127,8 @@ class ConfigManager:
             "max_lorebook_entries_per_chunk_injection": 3,
             "max_lorebook_chars_per_chunk_injection": 500,
             # 번역 길이 검증 설정
-            "translation_min_length_ratio": 0.1, # 원본 대비 최소 길이 비율
-            "translation_max_length_ratio": 3.0  # 원본 대비 최대 길이 비율
+            "translation_min_length_ratio": 0.3, # 원본 대비 최소 길이 비율
+            "translation_max_length_ratio": 2.0  # 원본 대비 최대 길이 비율
         }
 
     def load_config(self, use_default_if_missing: bool = True) -> Dict[str, Any]:
