@@ -255,8 +255,8 @@ class TranslationService:
         if original_len == 0 and translated_len == 0:
             return # 둘 다 비어있으면 정상
 
-        min_length_ratio = self.config.get("translation_min_length_ratio", 0.1)
-        max_length_ratio = self.config.get("translation_max_length_ratio", 3.0)
+        min_length_ratio = self.config.get("translation_min_length_ratio", 0.3)
+        max_length_ratio = self.config.get("translation_max_length_ratio", 2.0)
 
         ratio = translated_len / original_len
 
