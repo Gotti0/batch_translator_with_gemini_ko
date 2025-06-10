@@ -358,13 +358,12 @@ class LorebookService:
 
         logger.info(f"로어북 충돌 해결 시작. 총 {len(all_extracted_entries)}개 항목 검토 중...")
         
-        keyword_to_representative_map: Dict[str, str] = {}
-        if self.config.get("lorebook_enable_semantic_keyword_grouping", False):
-            all_keywords = [entry.keyword for entry in all_extracted_entries]
-            if all_keywords:
-                logger.info("의미 기반 유사 키워드 그룹핑 시도...")
-                keyword_to_representative_map = self._group_similar_keywords_via_api(all_keywords)
-                logger.debug(f"유사 키워드 매핑 결과: {keyword_to_representative_map}")
+        all_keywords = [entry.keyword for entry in all_extracted_entries if entry.keyword] # 키워드가 있는 항목만 추출
+        keyword_to_representative_map: Dict[str, str] = {} # 기본값: 빈 맵
+        if all_keywords: # 추출된 키워드가 있을 경우에만 API 호출
+            logger.info("의미 기반 유사 키워드 그룹핑 시도...")
+            keyword_to_representative_map = self._group_similar_keywords_via_api(all_keywords)
+            logger.debug(f"유사 키워드 매핑 결과: {keyword_to_representative_map}")
 
         grouped_by_keyword: Dict[str, List[LorebookEntryDTO]] = {}
         for entry in all_extracted_entries:
