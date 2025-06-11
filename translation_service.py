@@ -255,8 +255,8 @@ class TranslationService:
         if original_len == 0 and translated_len == 0:
             return # 둘 다 비어있으면 정상
 
-        min_length_ratio = self.config.get("translation_min_length_ratio", 0.3)
-        max_length_ratio = self.config.get("translation_max_length_ratio", 2.0)
+        min_length_ratio = self.config.get("translation_min_length_ratio", 0.15)
+        max_length_ratio = self.config.get("translation_max_length_ratio", 2.5)
 
         ratio = translated_len / original_len
 
@@ -302,8 +302,8 @@ class TranslationService:
         logger.debug(f"  번역 상세: {translated_counts}")
 
         # 설정에서 임계값 가져오기
-        abs_threshold = self.config.get("punctuation_mismatch_absolute_threshold", 2)
-        rel_threshold = self.config.get("punctuation_mismatch_relative_threshold", 0.5)
+        abs_threshold = self.config.get("punctuation_mismatch_absolute_threshold", 5)
+        rel_threshold = self.config.get("punctuation_mismatch_relative_threshold", 0.8)
 
         # 문장부호 개수 차이가 클 경우 경고 (예: 50% 이상 차이 또는 3개 이상 차이)
         # 이 임계값은 필요에 따라 조정 가능
