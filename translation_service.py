@@ -301,10 +301,14 @@ class TranslationService:
         logger.debug(f"  원본 상세: {original_counts}")
         logger.debug(f"  번역 상세: {translated_counts}")
 
+        # 설정에서 임계값 가져오기
+        abs_threshold = self.config.get("punctuation_mismatch_absolute_threshold", 2)
+        rel_threshold = self.config.get("punctuation_mismatch_relative_threshold", 0.5)
+
         # 문장부호 개수 차이가 클 경우 경고 (예: 50% 이상 차이 또는 3개 이상 차이)
         # 이 임계값은 필요에 따라 조정 가능
         if total_original_punctuation > 0 and \
-           (abs(total_original_punctuation - total_translated_punctuation) > max(2, int(total_original_punctuation * 0.5))): # int 캐스팅 추가
+           (abs(total_original_punctuation - total_translated_punctuation) > max(abs_threshold, int(total_original_punctuation * rel_threshold))):
             message = (
                 f"번역 전후 문장부호 개수 차이가 큽니다. "
                 f"원본: {total_original_punctuation}개, 번역: {total_translated_punctuation}개. 번역 품질 확인 필요."
