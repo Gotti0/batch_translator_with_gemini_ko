@@ -56,10 +56,6 @@ class BtgInvalidTranslationLengthException(BtgTranslationException):
     """번역 결과의 길이가 원본과 비교하여 비정상적일 때 발생하는 예외입니다."""
     pass
 
-class BtgPunctuationMismatchException(BtgTranslationException):
-    """번역 전후 텍스트의 문장부호 개수가 불일치할 때 발생하는 예외입니다."""
-    pass
-
 class BtgChunkingException(BtgBusinessLogicException):
     """텍스트 청킹(분할) 로직 중 발생하는 오류에 대한 예외입니다."""
     pass

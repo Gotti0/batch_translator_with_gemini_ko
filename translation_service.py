@@ -18,7 +18,7 @@ try:
     )
     from .file_handler import read_json_file # JSON 로딩을 위해 추가
     from .logger_config import setup_logger
-    from .exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException, BtgPunctuationMismatchException
+    from .exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
     from .chunk_service import ChunkService
     # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다.
     # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다.
@@ -35,7 +35,7 @@ except ImportError:
     )
     from file_handler import read_json_file # JSON 로딩을 위해 추가
     from logger_config import setup_logger
-    from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException, BtgPunctuationMismatchException
+    from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
     from chunk_service import ChunkService
     from dtos import LorebookEntryDTO # 로어북 DTO 임포트
     # from google.genai import types as genai_types # Fallback import
@@ -280,42 +280,6 @@ class TranslationService:
 
         logger.debug(f"번역 길이 검증 통과: 원본 길이 {original_len}, 번역 길이 {translated_len} (비율: {ratio:.2f})")
 
-    def _count_punctuation_consistency(self, original_text: str, translated_text: str):
-        """
-        원본 텍스트와 번역된 텍스트의 주요 문장부호 개수를 비교하여 일관성을 검사합니다.
-        차이가 크면 경고를 로깅합니다.
-        """
-        if not original_text.strip() and not translated_text.strip():
-            return # 둘 다 비어있으면 검사 불필요
-
-        # 검사할 문장부호 목록 (영어, 한국어 등)
-        punctuations = ['.', '!', '?', '。', '！', '？']
-        
-        original_counts = {p: original_text.count(p) for p in punctuations}
-        translated_counts = {p: translated_text.count(p) for p in punctuations}
-
-        total_original_punctuation = sum(original_counts.values())
-        total_translated_punctuation = sum(translated_counts.values())
-
-        logger.debug(f"문장부호 개수 검사: 원본 총 {total_original_punctuation}개, 번역 총 {total_translated_punctuation}개")
-        logger.debug(f"  원본 상세: {original_counts}")
-        logger.debug(f"  번역 상세: {translated_counts}")
-
-        # 설정에서 임계값 가져오기
-        abs_threshold = self.config.get("punctuation_mismatch_absolute_threshold", 5)
-        rel_threshold = self.config.get("punctuation_mismatch_relative_threshold", 0.8)
-
-        # 문장부호 개수 차이가 클 경우 경고 (예: 50% 이상 차이 또는 3개 이상 차이)
-        # 이 임계값은 필요에 따라 조정 가능
-        if total_original_punctuation > 0 and \
-           (abs(total_original_punctuation - total_translated_punctuation) > max(abs_threshold, int(total_original_punctuation * rel_threshold))):
-            message = (
-                f"번역 전후 문장부호 개수 차이가 큽니다. "
-                f"원본: {total_original_punctuation}개, 번역: {total_translated_punctuation}개. 번역 품질 확인 필요."
-            )
-            logger.warning(message) # 경고는 유지하되, 예외 발생
-            raise BtgPunctuationMismatchException(message)
-
     def translate_text(self, text_chunk: str, stream: bool = False) -> str:
         """기존 translate_text 메서드 (수정 없음)"""
         if not text_chunk.strip():
@@ -354,18 +318,13 @@ class TranslationService:
             # 번역 후 길이 검증
             self._validate_translation_length(text_chunk, translated_text_from_api)
             
-            # 번역 후 문장부호 일관성 검사
-            self._count_punctuation_consistency(text_chunk, translated_text_from_api)
+            # 문장부호 일관성 검사 로직 제거
         
         except GeminiContentSafetyException as e_safety:
             logger.warning(f"콘텐츠 안전 문제로 번역 실패: {e_safety}")
             # 콘텐츠 안전 문제 발생 시, 분할 재시도 로직을 호출하도록 변경
             # translate_text_with_content_safety_retry가 이 예외를 처리하도록 함
             raise BtgTranslationException(f"콘텐츠 안전 문제로 번역할 수 없습니다. ({e_safety})", original_exception=e_safety) from e_safety
-        except BtgPunctuationMismatchException as e_punc:
-            logger.warning(f"문장부호 불일치 문제로 번역 실패: {e_punc}")
-            # 문장부호 불일치 문제 발생 시, 분할 재시도 로직을 호출하도록 변경
-            raise BtgTranslationException(f"문장부호 개수 차이로 번역할 수 없습니다. ({e_punc})", original_exception=e_punc) from e_punc
         except BtgInvalidTranslationLengthException: # 새로 추가된 예외 처리
             raise # 이미 로깅되었으므로 그대로 다시 발생시켜 상위에서 처리하도록 함
         except GeminiAllApiKeysExhaustedException as e_keys:
@@ -409,16 +368,14 @@ class TranslationService:
         try:
             # 1차 시도: 전체 청크 번역
             return self.translate_text(text_chunk)
-            
         except BtgTranslationException as e:
             # 콘텐츠 안전 문제 또는 문장부호 불일치 문제가 아닌 경우, 그대로 예외 발생
             # BtgInvalidTranslationLengthException도 재시도 대상에 포함
             if not ("콘텐츠 안전 문제" in str(e) or \
-                    "문장부호 개수 차이" in str(e) or \
                     isinstance(e, BtgInvalidTranslationLengthException)):
                 raise e
             
-            error_type_for_log = "콘텐츠 안전 문제" if "콘텐츠 안전 문제" in str(e) else ("문장부호 불일치" if "문장부호 개수 차이" in str(e) else "번역 길이 문제")
+            error_type_for_log = "콘텐츠 안전 문제" if "콘텐츠 안전 문제" in str(e) else "번역 길이 문제"
             logger.warning(f"{error_type_for_log} 감지. 청크 분할 재시도 시작: {str(e)}")
             return self._translate_with_recursive_splitting(
                 text_chunk, max_split_attempts, min_chunk_size, current_attempt=1
@@ -503,10 +460,9 @@ class TranslationService:
                 
                 # 콘텐츠 안전 문제 또는 문장부호 불일치 문제인 경우 재귀 시도
                 if "콘텐츠 안전 문제" in str(sub_e) or \
-                   "문장부호 개수 차이" in str(sub_e) or \
                    isinstance(sub_e, BtgInvalidTranslationLengthException):
-                    error_type_for_log_sub = "콘텐츠 안전 문제" if "콘텐츠 안전 문제" in str(sub_e) else ("문장부호 불일치" if "문장부호 개수 차이" in str(sub_e) else "번역 길이 문제")
-                    logger.warning(f"   🛡️ {sub_chunk_info} {error_type_for_log_sub} 발생 (소요: {processing_time:.2f}초)")
+                    error_type_for_log_sub = "콘텐츠 안전 문제" if "콘텐츠 안전 문제" in str(sub_e) else "번역 길이 문제"
+                    logger.warning(f"   🛡️ {sub_chunk_info} {error_type_for_log_sub} 발생 (소요: {processing_time:.2f}초)") # 문장부호 관련 메시지 제거
                     logger.info(f"   🔄 재귀 분할 시도 (깊이: {current_attempt} → {current_attempt+1})")
                     
                     # 재귀적으로 더 작게 분할 시도

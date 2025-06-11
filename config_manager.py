@@ -129,8 +129,6 @@ class ConfigManager:
             # 번역 길이 검증 설정
             "translation_min_length_ratio": 0.15, # 원본 대비 최소 길이 비율
             "translation_max_length_ratio": 2.5,  # 원본 대비 최대 길이 비율
-            "punctuation_mismatch_absolute_threshold": 5, # 문장부호 불일치 절대값 임계치
-            "punctuation_mismatch_relative_threshold": 0.8  # 문장부호 불일치 상대값 임계치
         }
 
     def load_config(self, use_default_if_missing: bool = True) -> Dict[str, Any]:
@@ -287,8 +285,6 @@ if __name__ == '__main__':
     assert config2["enable_dynamic_lorebook_injection"] is True
     assert config2["max_lorebook_entries_per_chunk_injection"] == 3 # 기본값 유지 확인
     assert config2["lorebook_json_path"] == "path/to/active_lorebook.json" # 통합된 경로 확인
-    assert config2["punctuation_mismatch_absolute_threshold"] == 2 # 문장부호 임계값 기본값 확인
-    assert config2["punctuation_mismatch_relative_threshold"] == 0.5 # 문장부호 임계값 기본값 확인
 
     print("\n--- 4. 부분 설정 파일 로드 테스트 (api_key만 있고 api_keys는 없는 경우) ---")
     partial_config_path_api_key_only = test_output_dir / "partial_api_key_only.json"
