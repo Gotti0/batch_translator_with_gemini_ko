@@ -20,7 +20,7 @@ import logging
 # 4계층 아키텍처의 AppService 및 DTOs, Exceptions 임포트
 try:
     from app_service import AppService
-    from dtos import TranslationJobProgressDTO, LorebookExtractionProgressDTO, ModelInfoDTO # Changed PronounExtractionProgressDTO
+    from dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO, ModelInfoDTO # Changed LorebookExtractionProgressDTO to GlossaryExtractionProgressDTO
     from exceptions import BtgConfigException, BtgServiceException, BtgFileHandlerException, BtgApiClientException, BtgBusinessLogicException, BtgException # BtgPronounException removed, BtgBusinessLogicException added
     from logger_config import setup_logger
     from file_handler import get_metadata_file_path, load_metadata, _hash_config_for_metadata, delete_file # PRONOUN_CSV_HEADER removed
