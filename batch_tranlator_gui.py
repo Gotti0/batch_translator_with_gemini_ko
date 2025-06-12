@@ -399,8 +399,6 @@ class BatchTranslatorGUI:
             
 
             # For priority_settings, ai_prompt_template, conflict_resolution_prompt_template - ScrolledText
-            self.glossary_priority_text.delete('1.0', tk.END) # Widget name changed
-            self.glossary_priority_text.insert('1.0', json.dumps(config.get("glossary_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2)) # Key changed
             self.glossary_chunk_size_entry.delete(0, tk.END) # Widget name changed
             if hasattr(self, 'glossary_chunk_size_entry'): # Check if widget exists
                 self.glossary_chunk_size_entry.insert(0, str(config.get("glossary_chunk_size", 8000))) # Key changed
@@ -1157,26 +1155,10 @@ class BatchTranslatorGUI:
                 "max_glossary_chars_per_chunk_injection": int(self.max_glossary_chars_injection_entry.get() or "500"), # Key and widget name changed
                 
                 # lorebook_json_path_for_injection 은 lorebook_json_path 로 통합되었으므로 여기서 제거
-            # Content Safety Retry settings 
-            # type: ignore
-            "use_content_safety_retry": self.use_content_safety_retry_var.get(),
-            "max_content_safety_split_attempts": int(self.max_split_attempts_entry.get() or "3"),
-            "min_content_safety_chunk_size": int(self.min_chunk_size_entry.get() or "100"),
-
-
+            "use_content_safety_retry": self.use_content_safety_retry_var.get(), # type: ignore
+            "max_content_safety_split_attempts": int(self.max_split_attempts_entry.get() or "3"), # type: ignore
+            "min_content_safety_chunk_size": int(self.min_chunk_size_entry.get() or "100"), # type: ignore
         }
-        try:
-            config_data["glossary_priority_settings"] = json.loads(self.glossary_priority_text.get("1.0", tk.END).strip() or "{}") # Key and widget name changed
-        
-        except json.JSONDecodeError:
-            messagebox.showwarning("입력 오류", "용어집 우선순위 설정이 유효한 JSON 형식이 아닙니다. 기본값으로 유지됩니다.") # Text changed
-            
-            if self.app_service and self.app_service.config_manager:
-                config_data["glossary_priority_settings"] = self.app_service.config_manager.get_default_config().get("glossary_priority_settings") # Key changed                           
-            else: # Fallback if app_service or config_manager is None
-                config_data["glossary_priority_settings"] = {"character": 5, "worldview": 5, "story_element": 5} # Hardcoded default
-        
-
         
         return config_data
 
