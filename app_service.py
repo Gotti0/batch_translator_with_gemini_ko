@@ -33,7 +33,7 @@ try:
     from .glossary_service import SimpleGlossaryService 
     from .chunk_service import ChunkService
     from .exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
-    from .dtos import TranslationJobProgressDTO, LorebookExtractionProgressDTO # DTO 임포트 확인
+    from .dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO # DTO 임포트 확인
     from .post_processing_service import PostProcessingService
 except ImportError:
     # Fallback imports
@@ -52,7 +52,7 @@ except ImportError:
     from glossary_service import SimpleGlossaryService
     from chunk_service import ChunkService
     from exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
-    from dtos import TranslationJobProgressDTO, LorebookExtractionProgressDTO # DTO 임포트 확인
+    from dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO # DTO 임포트 확인
     from post_processing_service import PostProcessingService
 
 logger = setup_logger(__name__)
@@ -265,7 +265,7 @@ class AppService:
     def extract_lorebook( # Renamed from extract_pronouns
         self,
         input_file_path: Union[str, Path],
-        progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None, # DTO Changed
+        progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO Changed
         novel_language_code: Optional[str] = None, # 명시적 언어 코드 전달
         seed_lorebook_path: Optional[Union[str, Path]] = None # CLI에서 전달된 시드 로어북 경로
         # tqdm_file_stream is not typically used by lorebook extraction directly in AppService,
@@ -302,17 +302,17 @@ class AppService:
         except FileNotFoundError as e:
             logger.error(f"로어북 추출을 위한 입력 파일을 찾을 수 없습니다: {input_file_path}") # Message updated
             if progress_callback:
-                progress_callback(LorebookExtractionProgressDTO(0,0,f"오류: 입력 파일 없음 - {e.filename}",0)) # DTO Changed
+                progress_callback(GlossaryExtractionProgressDTO(0,0,f"오류: 입력 파일 없음 - {e.filename}",0)) # DTO Changed
             raise BtgFileHandlerException(f"입력 파일 없음: {input_file_path}", original_exception=e) from e
         except (BtgBusinessLogicException, BtgApiClientException) as e: # BtgPronounException replaced with BtgBusinessLogicException
             logger.error(f"로어북 추출 중 오류: {e}") # Message updated
             if progress_callback:
-                progress_callback(LorebookExtractionProgressDTO(0,0,f"오류: {e}",0)) # DTO Changed
+                progress_callback(GlossaryExtractionProgressDTO(0,0,f"오류: {e}",0)) # DTO Changed
             raise
         except Exception as e: 
             logger.error(f"로어북 추출 서비스 중 예상치 못한 오류: {e}", exc_info=True)  # Message updated
             if progress_callback:
-                progress_callback(LorebookExtractionProgressDTO(0,0,f"예상치 못한 오류: {e}",0)) # DTO Changed
+                progress_callback(GlossaryExtractionProgressDTO(0,0,f"예상치 못한 오류: {e}",0)) # DTO Changed
             raise BtgServiceException(f"로어북 추출 중 오류: {e}", original_exception=e) from e # Message updated
 
 
@@ -902,7 +902,7 @@ if __name__ == '__main__':
     if app_service and app_service.glossary_service: # Changed from pronoun_service
         print("\n--- 로어북 추출 테스트 ---") # Changed
         try:
-            def _lorebook_progress_dto_cb(dto: LorebookExtractionProgressDTO): # Changed DTO
+            def _lorebook_progress_dto_cb(dto: GlossaryExtractionProgressDTO): # Changed DTO
                 logger.debug(f"로어북 진행 DTO: {dto.processed_segments}/{dto.total_segments} - {dto.current_status_message} (추출 항목: {dto.extracted_entries_count})") # Changed fields
 
             result_path = app_service.extract_lorebook( # Changed method
