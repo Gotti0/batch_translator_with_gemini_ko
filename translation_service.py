@@ -43,55 +43,37 @@ except ImportError:
 logger = setup_logger(__name__)
 
 def _format_glossary_for_prompt( # 함수명 변경
-    lorebook_entries: List[LorebookEntryDTO],
+    glossary_entries: List[LorebookEntryDTO], # DTO는 GlossaryEntryDTO (경량화된 버전)
     max_entries: int,
     max_chars: int
 ) -> str:
-    if not lorebook_entries:
+    if not glossary_entries:
         return "용어집 컨텍스트 없음" # 메시지 변경
 
     selected_entries_str = []
     current_chars = 0
     entries_count = 0
 
-    # 중요도 높은 순, 중요도 같으면 키워드 가나다 순으로 정렬
-    # isSpoiler가 True인 항목은 낮은 우선순위를 갖도록 조정 (예: 중요도를 낮춤)
-    def sort_key(entry: LorebookEntryDTO):
-        importance = entry.importance or 0
-        if entry.isSpoiler:
-            importance -= 100 # 스포일러 항목의 중요도를 크게 낮춤
-        return (-importance, entry.keyword.lower())
-
-    sorted_entries = sorted(lorebook_entries, key=sort_key)
+    # 등장 횟수 많은 순, 같으면 키워드 가나다 순으로 정렬
+    sorted_entries = sorted(glossary_entries, key=lambda x: (-x.occurrence_count, x.keyword.lower()))
 
     for entry in sorted_entries:
         if entries_count >= max_entries:
             break
-
-        spoiler_text = "예" if entry.isSpoiler else "아니오"
-        details_parts = []
-        if entry.category:
-            details_parts.append(f"카테고리: {entry.category}")
-        details_parts.append(f"스포일러: {spoiler_text}")
-        
-        details_str = ", ".join(details_parts)
-        # 로어북 항목의 원본 언어 정보를 프롬프트에 포함
-        # GlossaryEntryDTO에 aliases 필드가 있다면 여기에 추가 가능
-        aliases_str = f" (별칭: {', '.join(entry.aliases)})" if hasattr(entry, 'aliases') and entry.aliases else ""
-        lang_info = f" (lang: {entry.source_language})" if entry.source_language else ""
-        entry_str = f"- {entry.keyword}{aliases_str}{lang_info}: {entry.description_ko} ({details_str})"
-
-        
-        
         
         # 현재 항목 추가 시 최대 글자 수 초과하면 중단 (단, 최소 1개는 포함되도록)
+        # 경량화된 DTO에 맞춰 포맷팅 변경
+        entry_str = (f"- {entry.keyword} ({entry.source_language}) "
+                     f"-> {entry.translated_keyword} ({entry.target_language}) "
+                     f"(등장: {entry.occurrence_count}회)")
+        
         if current_chars + len(entry_str) > max_chars and entries_count > 0:
             break
         
         selected_entries_str.append(entry_str)
         current_chars += len(entry_str) + 1 # +1 for newline
         entries_count += 1
-    
+
     if not selected_entries_str:
         return "용어집 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)" # 메시지 변경
         
@@ -118,24 +100,24 @@ class TranslationService:
             try:
                 raw_data = read_json_file(lorebook_json_path)
                 if isinstance(raw_data, list):
-                    for item_dict in raw_data: # type: ignore
-                        if isinstance(item_dict, dict) and "keyword" in item_dict and "description_ko" in item_dict: # FIX: Check for 'description_ko'
+                    for item_dict in raw_data:
+                        if isinstance(item_dict, dict) and \
+                           "keyword" in item_dict and \
+                           "translated_keyword" in item_dict and \
+                           "source_language" in item_dict and \
+                           "target_language" in item_dict:
                             try:
-                                entry = LorebookEntryDTO(
-                                    keyword=item_dict.get("keyword", ""), # 원본 키워드 가져오기
-                                    description_ko=item_dict.get("description_ko", ""), # 'description_ko' 키에서 설명 가져오기
-                                    aliases=item_dict.get("aliases", []), # 별칭 로드
-                                    term_type=item_dict.get("term_type"), # 타입 로드
-                                    category=item_dict.get("category"),
-                                    importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
-                                    sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
-                                    isSpoiler=bool(item_dict.get("isSpoiler", False)),
-                                    source_language=item_dict.get("source_language") # 로어북 JSON에서 source_language 로드
+                                entry = LorebookEntryDTO( # LorebookEntryDTO는 GlossaryEntryDTO의 alias
+                                    keyword=item_dict.get("keyword", ""),
+                                    translated_keyword=item_dict.get("translated_keyword", ""),
+                                    source_language=item_dict.get("source_language", ""),
+                                    target_language=item_dict.get("target_language", ""),
+                                    occurrence_count=int(item_dict.get("occurrence_count", 0))
                                 )
-                                if entry.keyword and entry.description_ko: # 필수 필드 확인
+                                if all([entry.keyword, entry.translated_keyword, entry.source_language, entry.target_language]): # 필수 필드 확인
                                     self.lorebook_entries_for_injection.append(entry)
                                 else:
-                                    logger.warning(f"용어집 항목에 필수 필드(keyword 또는 description_ko) 값이 비어있음: {item_dict}") # 메시지 변경
+                                    logger.warning(f"경량 용어집 항목에 필수 필드 누락: {item_dict}")
                             except (TypeError, ValueError) as e_dto:
                                 logger.warning(f"용어집 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}") # 메시지 변경
                         else:
@@ -182,40 +164,37 @@ class TranslationService:
         if self.config.get("enable_dynamic_lorebook_injection", False) and \
            self.lorebook_entries_for_injection and \
            "{{lorebook_context}}" in final_prompt:
-
+            
             relevant_entries_for_chunk: List[LorebookEntryDTO] = []
             chunk_text_lower = chunk_text.lower() # For case-insensitive keyword matching
+            # 최종 번역 목표 언어 (예: "ko")
+            # 이 설정은 config.json 또는 다른 방식으로 제공되어야 합니다.
+            final_target_lang = self.config.get("target_translation_language", "ko").lower()
 
             if config_source_lang == "auto":
-                # "auto" 모드: LLM이 언어를 감지하고 로어북을 필터링하도록 지시.
-                # Python에서는 키워드 기반으로만 필터링하거나, 모든 로어북 항목을 전달.
-                # 여기서는 키워드 및 별칭 기반 필터링만 수행하고, LLM이 언어 필터링을 하도록 프롬프트에 명시.
-                logger.info("자동 언어 감지 모드: 용어집은 키워드/별칭 일치로 필터링 후 LLM에 전달. LLM이 언어 기반 추가 필터링 수행.") # 메시지 변경
+                # "auto" 모드: 청크의 언어는 LLM이 감지.
+                # 용어집 항목의 target_language가 최종 번역 목표 언어와 일치하는 것만 고려.
+                # source_language 필터링은 LLM의 문맥 이해에 맡기거나, 여기서 간단한 키워드 매칭만 수행.
+                logger.info(f"자동 언어 감지 모드: 용어집은 키워드 일치 및 최종 목표 언어({final_target_lang}) 일치로 필터링 후 LLM에 전달.")
                 for entry in self.lorebook_entries_for_injection:
-                    # 키워드 또는 별칭 중 하나라도 청크에 포함되면 관련 항목으로 간주
-                    entry_keywords_to_check = [entry.keyword.lower()]
-                    if hasattr(entry, 'aliases') and entry.aliases:
-                        entry_keywords_to_check.extend([alias.lower() for alias in entry.aliases])
-                    
-                    if any(kw in chunk_text_lower for kw in entry_keywords_to_check):
+                    if entry.target_language.lower() == final_target_lang and \
+                       entry.keyword.lower() in chunk_text_lower:
                         relevant_entries_for_chunk.append(entry)
             else:
                 # 명시적 언어 설정 모드: Python에서 언어 및 키워드 기반으로 필터링.
-                logger.info(f"명시적 언어 모드 ('{current_source_lang_for_lorebook_filtering}'): 용어집을 언어 및 키워드/별칭 기준으로 필터링.") # 메시지 변경
+                logger.info(f"명시적 언어 모드 ('{current_source_lang_for_lorebook_filtering}'): 용어집을 출발어/도착어 및 키워드 기준으로 필터링.")
                 for entry in self.lorebook_entries_for_injection:
-                    # 로어북 항목의 언어와 현재 번역 출발 언어가 일치하는지 확인
                     if entry.source_language and \
                        current_source_lang_for_lorebook_filtering and \
-                       entry.source_language.lower() != current_source_lang_for_lorebook_filtering.lower():
-                        logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 언어 불일치 (용어집: {entry.source_language}, 번역 출발: {current_source_lang_for_lorebook_filtering}).") # 메시지 변경
-                        continue
-
-                    entry_keywords_to_check = [entry.keyword.lower()]
-                    if hasattr(entry, 'aliases') and entry.aliases:
-                        entry_keywords_to_check.extend([alias.lower() for alias in entry.aliases])
-
-                    if any(kw in chunk_text_lower for kw in entry_keywords_to_check):
+                       entry.source_language.lower() == current_source_lang_for_lorebook_filtering.lower() and \
+                       entry.target_language.lower() == final_target_lang and \
+                       entry.keyword.lower() in chunk_text_lower:
                         relevant_entries_for_chunk.append(entry)
+                    elif not (entry.source_language and current_source_lang_for_lorebook_filtering and entry.source_language.lower() == current_source_lang_for_lorebook_filtering.lower()):
+                        logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 출발 언어 불일치 (용어집SL: {entry.source_language}, 청크SL: {current_source_lang_for_lorebook_filtering}).")
+                    elif not (entry.target_language.lower() == final_target_lang):
+                        logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 도착 언어 불일치 (용어집TL: {entry.target_language}, 최종TL: {final_target_lang}).")
+                        continue
             
             logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 용어집 항목 발견.") # 메시지 변경
 

@@ -27,19 +27,18 @@ except ImportError:
 
 logger = setup_logger(__name__)
 
-class LorebookService:
+class SimpleGlossaryService:
     """
-    텍스트에서 로어북 항목(키워드, 설명, 카테고리 등)을 추출하고 관리하는 비즈니스 로직을 담당합니다.
+    텍스트에서 간단한 용어집 항목(원본 용어, 번역된 용어, 출발/도착 언어, 등장 횟수)을
+    추출하고 관리하는 비즈니스 로직을 담당합니다. (경량화 버전)
     """
-    def __init__(self, gemini_client: GeminiClient, config: Dict[str, Any]): # 클래스명 변경: LorebookService -> GlossaryService
+    def __init__(self, gemini_client: GeminiClient, config: Dict[str, Any]):
         """
-        GlossaryService를 초기화합니다.
+        SimpleGlossaryService를 초기화합니다.
 
         Args:
             gemini_client (GeminiClient): Gemini API와 통신하기 위한 클라이언트.
-            config (Dict[str, Any]): 애플리케이션 설정.
-                                     (용어집 추출 관련 설정 포함: glossary_sampling_ratio,
-                                      glossary_max_entries_per_segment, glossary_extraction_prompt_template 등)
+            config (Dict[str, Any]): 애플리케이션 설정 (주로 파일명 접미사 등).
         """
         self.gemini_client = gemini_client
         self.config = config
@@ -50,49 +49,41 @@ class LorebookService:
     def _get_glossary_extraction_prompt(self, segment_text: str) -> str: # 함수명 변경
         """용어집 항목 추출을 위한 프롬프트를 생성합니다."""
         base_template = self.config.get(
-            "glossary_extraction_prompt_template", # 설정 키 변경
-            ("First, identify the BCP-47 language code of the following text.\n"
-             "Then, using that identified language as the source language for the keywords, extract major terms (characters, places, items, specific concepts, etc.), their aliases, and their term types from the text.\n" # 프롬프트 내용 수정
-             "Each item in the 'entities' array should have 'keyword' (the main term), 'description' (in Korean), 'aliases' (a list of alternative names or nicknames), 'term_type' (e.g., PERSON, LOCATION, ORGANIZATION, GENERAL_TERM), 'category', 'importance'(1-10), 'isSpoiler'(true/false) keys.\n" # 필드 추가 명시
-             "Summarize descriptions to not exceed {max_chars_per_entry} characters, and extract a maximum of {max_entries_per_segment} items.\n" # aliases, term_type 추가
-             "For keyword extraction and alias identification, set sensitivity to {keyword_sensitivity} and prioritize items based on: {priority_settings}.\n"
+            "simple_glossary_extraction_prompt_template", # 새로운 설정 키 (필요시)
+            ("Analyze the following text. Identify key terms, their source language (BCP-47), "
+             "their translation into {target_lang_name} (BCP-47: {target_lang_code}), "
+             "and estimate their occurrence count in this segment.\n"
+             "Each item in the 'terms' array should have 'keyword' (original term), "
+             "'translated_keyword' (the translation), 'source_language' (BCP-47 of keyword), "
+             "'target_language' (BCP-47 of translated_keyword, should be {target_lang_code}), "
+             "and 'occurrence_count' (estimated count in this segment, integer).\n"
              "Text: ```\n{novelText}\n```\n"
-             "Respond with a single JSON object containing two keys:\n"
-             "1. 'detected_language_code': The BCP-47 language code you identified (string).\n"
-             "2. 'entities': The JSON array of extracted lorebook entries.\n"
+             "Respond with a single JSON object containing one key: 'terms', which is an array of the extracted term objects.\n"
              "Example response:\n"
              "{\n"
-             "  \"detected_language_code\": \"ja\",\n"
-             "  \"entities\": [\n" # 예시 응답에 aliases, term_type 추가 필요
-             "    {\"keyword\": \"主人公\", \"description\": \"物語の主要なキャラクター\", \"aliases\": [\"彼女\", \"그녀\"], \"term_type\": \"PERSON\", \"category\": \"인물\", \"importance\": 10, \"isSpoiler\": false}\n"
+             "  \"terms\": [\n"
+             "    {\"keyword\": \"猫\", \"translated_keyword\": \"cat\", \"source_language\": \"ja\", \"target_language\": \"en\", \"occurrence_count\": 3},\n"
+             "    {\"keyword\": \"犬\", \"translated_keyword\": \"dog\", \"source_language\": \"ja\", \"target_language\": \"en\", \"occurrence_count\": 1}\n"
              "  ]\n"
              "}\n"
              "Ensure your entire response is a single valid JSON object.")
         )
+        # 경량화된 서비스에서는 사용자가 번역 목표 언어를 명시적으로 제공한다고 가정
+        # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "en" (영어)를 사용.
+        # 실제 구현에서는 이 부분을 동적으로 설정해야 함.
+        target_lang_code = self.config.get("glossary_target_language_code", "en")
+        target_lang_name = self.config.get("glossary_target_language_name", "English")
 
+        prompt = base_template.replace("{target_lang_code}", target_lang_code)
+        prompt = prompt.replace("{target_lang_name}", target_lang_name)
         prompt = base_template.replace("{novelText}", segment_text)
-        prompt = prompt.replace("{max_chars_per_entry}", str(self.config.get("lorebook_max_chars_per_entry", 200)))
-        prompt = prompt.replace("{max_entries_per_segment}", str(self.config.get("glossary_max_entries_per_segment", 5))) # 설정 키 변경
-        
-        # 키워드 민감도 설정값 반영
-        keyword_sensitivity = self.config.get("glossary_keyword_sensitivity", "medium") # 설정 키 변경
-        prompt = prompt.replace("{keyword_sensitivity}", keyword_sensitivity)
-
-        # 우선순위 설정값 반영 (딕셔셔너리를 문자열로 변환)
-        priority_settings_dict = self.config.get("glossary_priority_settings", {"PERSON": 10, "LOCATION": 8, "GENERAL_TERM": 5}) # 예시 우선순위 변경
-        priority_settings_str = ", ".join([f"{k}: {v}" for k, v in priority_settings_dict.items()])
-        prompt = prompt.replace("{priority_settings}", priority_settings_str)
-        
-        # 샘플링 방식도 프롬프트에 힌트로 제공 가능 (선택 사항)
-        # sampling_method = self.config.get("lorebook_sampling_method", "uniform")
-        # prompt += f"\n참고: 이 텍스트는 '{sampling_method}' 방식으로 샘플링되었습니다."
         return prompt
 
     def _parse_raw_glossary_items_to_dto( # 함수명 변경
         self,
         raw_item_list: List[Dict[str, Any]],
-        segment_text_preview: str,
-        source_language_code: Optional[str] = None
+        # segment_text_preview: str, # 경량화로 제거
+        # source_language_code: Optional[str] = None # LLM이 직접 반환
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
         API 응답 등으로 받은 원시 용어집 항목 딕셔너리 리스트를 GlossaryEntryDTO 리스트로 변환합니다.
@@ -103,126 +94,46 @@ class LorebookService:
             return glossary_entries
 
         for item_dict in raw_item_list:
-            if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+            if isinstance(item_dict, dict) and \
+               "keyword" in item_dict and \
+               "translated_keyword" in item_dict and \
+               "source_language" in item_dict and \
+               "target_language" in item_dict:
                 entry_data = {
                     "keyword": item_dict.get("keyword"),
-                    "description_ko": item_dict.get("description"), # AI 응답의 'description'을 'description_ko'에 매핑
-                    "aliases": item_dict.get("aliases", []), # 별칭 필드 추가
-                    "term_type": item_dict.get("term_type"), # 용어 타입 필드 추가
-                    "category": item_dict.get("category"),
-                    "importance": item_dict.get("importance"),
-                    "isSpoiler": item_dict.get("isSpoiler", False),
-                    "sourceSegmentTextPreview": segment_text_preview,
-                    "source_language": source_language_code
+                    "translated_keyword": item_dict.get("translated_keyword"),
+                    "source_language": item_dict.get("source_language"),
+                    "target_language": item_dict.get("target_language"),
+                    "occurrence_count": int(item_dict.get("occurrence_count", 0))
                 }
-                if not entry_data["keyword"] or not entry_data["description_ko"]:
-                    logger.warning(f"필수 필드(keyword 또는 description) 누락된 용어집 항목 건너뜀: {item_dict}")
+                if not all(entry_data.get(key) for key in ["keyword", "translated_keyword", "source_language", "target_language"]):
+                    logger.warning(f"필수 필드 누락된 용어집 항목 건너뜀: {item_dict}")
                     continue
                 glossary_entries.append(GlossaryEntryDTO(**entry_data)) # DTO 변경
             else:
                 logger.warning(f"잘못된 용어집 항목 형식 건너뜀: {item_dict}")
         return glossary_entries
 
-    def _get_conflict_resolution_prompt(self, keyword: str, conflicting_entries: List[GlossaryEntryDTO]) -> str: # DTO 변경
-        """용어집 충돌 해결을 위한 프롬프트를 생성합니다."""
-        base_template = self.config.get(
-            "glossary_conflict_resolution_prompt_template", # 설정 키 변경
-            "다음은 동일 키워드 '{keyword}'에 대해 여러 출처에서 추출된 로어북 항목들입니다.\n"
-            "이 정보들을 종합하여 가장 정확하고 포괄적인 단일 로어북 항목으로 병합해주세요.\n"
-            "병합된 설명은 한국어로 작성하고, 카테고리, 중요도, 스포일러 여부도 결정해주세요.\n"
-            "JSON 객체 (키: 'keyword', 'description', 'category', 'importance', 'isSpoiler') 형식으로 반환해주세요.\n\n"
-            "충돌 항목들:\n{conflicting_items_text}\n\nJSON 형식으로만 응답해주세요."
-        )
-        items_text_list = []
-        for i, entry in enumerate(conflicting_entries):
-            items_text_list.append(
-                f"  항목 {i+1}:\n"
-                f"    - 설명: {entry.description_ko}\n"
-                f"    - 별칭: {', '.join(entry.aliases) if entry.aliases else 'N/A'}\n" # 별칭 정보 추가
-                f"    - 타입: {entry.term_type or 'N/A'}\n" # 타입 정보 추가
-                f"    - 카테고리: {entry.category or 'N/A'}\n"
-                f"    - 중요도: {entry.importance or 'N/A'}\n"
-                f"    - 스포일러: {entry.isSpoiler}\n"
-                f"    - 출처 미리보기: {entry.sourceSegmentTextPreview or 'N/A'}"
-            )
-        
-        prompt = base_template.replace("{keyword}", keyword)
-        prompt = prompt.replace("{conflicting_items_text}", "\n".join(items_text_list))
-        return prompt
-
-    def _group_similar_keywords_via_api(self, keywords: List[str]) -> Dict[str, str]:
-        """
-        LLM API를 사용하여 유사하거나 동일한 의미의 키워드들을 그룹핑하고,
-        각 원본 키워드에 대한 대표 키워드를 매핑하는 딕셔너리를 반환합니다.
-        """
-        if not keywords:
-            return {}
-
-        unique_keywords = sorted(list(set(keywords)))
-        if len(unique_keywords) <= 1: # 키워드가 없거나 하나만 있으면 그룹핑 불필요
-            return {kw: kw for kw in unique_keywords}
-
-        # TODO: 프롬프트는 LLM의 응답 형식과 성능에 맞춰 정교하게 조정 필요
-        prompt = (
-            "다음은 로어북에서 추출된 키워드 목록입니다. 의미상 동일하거나 매우 유사한 대상을 가리키는 키워드들을 그룹화하고, "
-            "각 그룹의 가장 대표적인 키워드를 지정해주세요.\n"
-            "응답은 JSON 객체 형식으로, 각 원본 키워드를 키로 하고 해당 키워드의 대표 키워드를 값으로 하는 매핑을 제공해주세요.\n"
-            "예를 들어, ['주인공', '그녀', '레이카']가 있다면, '주인공'을 대표로 하여 "
-            "{'주인공': '주인공', '그녀': '주인공', '레이카': '주인공'}과 같이 응답할 수 있습니다.\n"
-            "만약 그룹화할 대상이 없다면 원본 키워드를 그대로 대표 키워드로 사용해주세요.\n\n"
-            f"키워드 목록:\n{json.dumps(unique_keywords, ensure_ascii=False)}\n\n"
-            "JSON 응답:"
-        )
-        model_name = self.config.get("model_name", "gemini-2.0-flash")
-        generation_config = {
-            "temperature": self.config.get("lorebook_semantic_grouping_temperature", 0.1), # 낮은 온도로 일관성 유도
-            "response_mime_type": "application/json", # JSON 응답 요청
-        }
-
-        try:
-            response_data = self.gemini_client.generate_text(
-                prompt=prompt,
-                model_name=model_name,
-                generation_config_dict=generation_config
-            )
-            if isinstance(response_data, dict):
-                # 모든 키워드가 응답에 포함되도록 보장 (LLM이 누락할 경우 대비)
-                keyword_map = {kw: response_data.get(kw, kw) for kw in unique_keywords}
-                logger.info(f"유사 키워드 그룹핑 API 호출 성공. {len(keyword_map)}개 매핑 생성.")
-                return keyword_map
-            logger.warning(f"유사 키워드 그룹핑 API로부터 예상치 못한 응답 형식: {type(response_data)}. 그룹핑 없이 진행.")
-            return {kw: kw for kw in unique_keywords}
-        except Exception as e:
-            logger.error(f"유사 키워드 그룹핑 API 호출 중 오류: {e}. 그룹핑 없이 진행.")
-            return {kw: kw for kw in unique_keywords} # 오류 시, 각 키워드는 스스로를 대표
+    # _get_conflict_resolution_prompt, _group_similar_keywords_via_api 메서드는 경량화로 인해 제거 또는 대폭 단순화.
+    # 여기서는 제거하는 것으로 가정. 필요하다면 매우 단순한 형태로 재구현.
 
     def _extract_glossary_entries_from_segment_via_api( # 함수명 변경
         self,
         segment_text: str,
-        source_language_of_segment: Optional[str] = None, # 세그먼트의 언어 코드
-        retry_count: int = 0, max_retries: int = 2 # 재시도 횟수 줄임
+        # source_language_of_segment: Optional[str] = None, # LLM이 직접 감지
+        retry_count: int = 0, max_retries: int = 2
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
-        단일 텍스트 세그먼트에서 Gemini API를 사용하여 로어북 항목들을 추출합니다.
-
-        Args:
-            segment_text (str): 분석할 텍스트 세그먼트.
-            source_language_of_segment (Optional[str]): 이 세그먼트의 언어 코드.
-            retry_count (int): 현재 재시도 횟수.
-            max_retries (int): 최대 재시도 횟수.
+        단일 텍스트 세그먼트에서 Gemini API를 사용하여 용어집 항목들을 추출합니다.
         """
-        prompt = self._get_glossary_extraction_prompt(segment_text) # 변경된 함수 호출
+        prompt = self._get_glossary_extraction_prompt(segment_text)
         model_name = self.config.get("model_name", "gemini-2.0-flash")
-        
         generation_config = {
-            "temperature": self.config.get("glossary_extraction_temperature", self.config.get("temperature", 0.2)), # 설정 키 변경
-            "top_p": self.config.get("top_p", 0.9),
-            "response_mime_type": "application/json", # Gemini API가 JSON 출력 직접 지원
+            "temperature": self.config.get("glossary_extraction_temperature", 0.3), # 단순 추출이므로 약간 높여도 됨
+            "response_mime_type": "application/json",
         }
 
         try:
-            # GeminiClient가 response_mime_type="application/json" 설정 시
-            # 이미 파싱된 Python 객체(이 경우 List[Dict])를 반환한다고 가정합니다.
             response_data = self.gemini_client.generate_text(
                 prompt=prompt,
                 model_name=model_name,
@@ -238,12 +149,11 @@ class LorebookService:
                 logger.warning(f"용어집 추출 API로부터 예상치 못한 리스트 응답을 받았습니다: {response_data}")
             elif isinstance(response_data, dict): # GeminiClient가 JSON 객체를 파싱하여 반환한 경우
                 logger.debug("GeminiClient가 파싱된 딕셔너리(JSON 객체)를 반환했습니다.")
-                detected_lang = response_data.get("detected_language_code")
-                raw_entities = response_data.get("entities")
+                # 프롬프트는 'terms' 키를 가진 객체를 요청
+                raw_terms = response_data.get("terms")
 
-                if detected_lang and isinstance(raw_entities, list):
-                    logger.info(f"LLM이 감지한 언어: {detected_lang}. 추출된 항목 수: {len(raw_entities)}")
-                    return self._parse_raw_glossary_items_to_dto(raw_entities, segment_text[:100], detected_lang) # 변경된 함수 호출
+                if isinstance(raw_terms, list):
+                    return self._parse_raw_glossary_items_to_dto(raw_terms) # 변경된 함수 호출
                 else:
                     logger.warning(f"API 응답 JSON 객체에 'detected_language_code' 또는 'entities' 필드가 누락/잘못되었습니다: {response_data}")
             elif isinstance(response_data, str):
@@ -255,13 +165,11 @@ class LorebookService:
                 try:
                     parsed_dict = json.loads(json_str)
                     if isinstance(parsed_dict, dict):
-                        detected_lang = parsed_dict.get("detected_language_code")
-                        raw_entities = parsed_dict.get("entities")
-                        if detected_lang and isinstance(raw_entities, list):
-                            logger.info(f"LLM이 감지한 언어 (문자열 파싱): {detected_lang}. 추출된 항목 수: {len(raw_entities)}")
-                            return self._parse_raw_glossary_items_to_dto(raw_entities, segment_text[:100], detected_lang) # 변경된 함수 호출
+                        raw_terms = parsed_dict.get("terms")
+                        if isinstance(raw_terms, list):
+                            return self._parse_raw_glossary_items_to_dto(raw_terms) # 변경된 함수 호출
                         else:
-                            logger.warning(f"파싱된 JSON 객체에 'detected_language_code' 또는 'entities' 필드가 누락/잘못되었습니다: {parsed_dict}")
+                            logger.warning(f"파싱된 JSON 객체에 'terms' 필드가 누락/잘못되었습니다: {parsed_dict}")
                     else:
                         logger.warning(f"파싱된 JSON 데이터가 객체가 아닙니다: {type(parsed_dict)}. 응답: {json_str[:100]}")
                 except json.JSONDecodeError as je:
@@ -275,7 +183,7 @@ class LorebookService:
             if retry_count < max_retries: # 재시도 로직 강화
                 logger.info(f"용어집 추출 응답 형식 오류 또는 파싱 실패, 재시도 중 ({retry_count + 1}/{max_retries})...")
                 time.sleep(1 + retry_count)
-                return self._extract_glossary_entries_from_segment_via_api(segment_text, source_language_of_segment, retry_count + 1, max_retries)
+                return self._extract_glossary_entries_from_segment_via_api(segment_text, retry_count + 1, max_retries)
             else:
                 logger.error("최대 재시도 횟수 초과 (응답 형식 오류 또는 파싱 실패). 빈 결과 반환.")
                 return []
@@ -288,7 +196,7 @@ class LorebookService:
             if retry_count < max_retries:
                 logger.info(f"API 오류, 재시도 중 ({retry_count + 1}/{max_retries})...")
                 time.sleep( (1 + retry_count) * 2 ) 
-                return self._extract_glossary_entries_from_segment_via_api(segment_text, source_language_of_segment, retry_count + 1, max_retries)
+                return self._extract_glossary_entries_from_segment_via_api(segment_text, retry_count + 1, max_retries)
             else:
                 logger.error(f"최대 재시도 횟수 초과 (API 오류).")
                 raise BtgApiClientException(f"용어집 추출 API 호출 최대 재시도 실패: {e_api}", original_exception=e_api) from e_api
@@ -299,8 +207,8 @@ class LorebookService:
     def _select_sample_segments(self, all_segments: List[str]) -> List[str]:
         """전체 세그먼트 리스트에서 표본 세그먼트를 선택합니다."""
         # 샘플링 방식 설정 (uniform, random, importance-based 등)
-        sampling_method = self.config.get("lorebook_sampling_method", "uniform")
-        sample_ratio = self.config.get("lorebook_sampling_ratio", 25.0) / 100.0
+        sampling_method = self.config.get("glossary_sampling_method", "uniform") # 설정 키 변경
+        sample_ratio = self.config.get("glossary_sampling_ratio", 10.0) / 100.0 # 기본 샘플링 비율 낮춤 (경량화)
         
         if not (0 < sample_ratio <= 1.0):
             logger.warning(f"잘못된 lorebook_sampling_ratio 값: {sample_ratio*100}%. 25%로 조정합니다.")
@@ -356,101 +264,28 @@ class LorebookService:
             raise BtgFileHandlerException(f"용어집 JSON 파일 저장 실패: {output_path}", original_exception=e) from e
 
     def _resolve_glossary_conflicts(self, all_extracted_entries: List[GlossaryEntryDTO]) -> List[GlossaryEntryDTO]: # 함수명 및 DTO 변경
-        """추출된 용어집 항목들의 충돌을 해결합니다."""
+        """추출된 용어집 항목들의 충돌을 해결합니다. (경량화 버전: 중복 제거 및 등장 횟수 합산)"""
         if not all_extracted_entries:
             return []
 
         logger.info(f"용어집 충돌 해결 시작. 총 {len(all_extracted_entries)}개 항목 검토 중...")
         
-        all_keywords = [entry.keyword for entry in all_extracted_entries if entry.keyword] # 키워드가 있는 항목만 추출
-        keyword_to_representative_map: Dict[str, str] = {} # 기본값: 빈 맵
-        if all_keywords: # 추출된 키워드가 있을 경우에만 API 호출
-            logger.info("의미 기반 유사 키워드 그룹핑 시도...")
-            keyword_to_representative_map = self._group_similar_keywords_via_api(all_keywords)
-            logger.debug(f"유사 키워드 매핑 결과: {keyword_to_representative_map}")
+        # (keyword, source_language, target_language)를 키로 사용하여 그룹화 및 등장 횟수 합산
+        # translated_keyword는 첫 번째 등장한 것을 사용하거나, 가장 긴 것을 사용하는 등의 규칙 적용 가능
+        # 여기서는 첫 번째 등장한 translated_keyword를 사용
+        final_entries_map: Dict[Tuple[str, str, str], GlossaryEntryDTO] = {}
 
-        grouped_by_keyword: Dict[str, List[GlossaryEntryDTO]] = {} # DTO 변경
         for entry in all_extracted_entries:
-            # 의미 기반 그룹핑이 활성화되었고 매핑이 있다면 대표 키워드를 사용, 아니면 원본 키워드 사용
-            representative_keyword = keyword_to_representative_map.get(entry.keyword, entry.keyword)
-            # 그룹핑을 위한 키는 소문자로 통일
-            grouping_key_lower = representative_keyword.lower()
-            
-            if grouping_key_lower not in grouped_by_keyword:
-                grouped_by_keyword[grouping_key_lower] = []
-            grouped_by_keyword[grouping_key_lower].append(entry)
-
-        final_glossary: List[GlossaryEntryDTO] = [] # 변수명 및 DTO 변경
-        # conflict_resolution_batch_size = self.config.get("lorebook_conflict_resolution_batch_size", 5) # 현재는 키워드별로 처리
-
-        for keyword_lower, entries_for_keyword in grouped_by_keyword.items():
-            if len(entries_for_keyword) == 1:
-                final_lorebook.append(entries_for_keyword[0]) # 충돌 없음
+            key_tuple = (entry.keyword.lower(), entry.source_language.lower(), entry.target_language.lower())
+            if key_tuple not in final_entries_map:
+                final_entries_map[key_tuple] = entry
             else:
-                # 그룹의 대표 키워드 (또는 그룹 내 첫 번째 항목의 키워드)를 충돌 해결 프롬프트에 사용
-                # keyword_lower는 정규화된 대표 키워드의 소문자 버전임.
-                # 실제 프롬프트에는 그룹 내 항목 중 하나의 원본 키워드(대소문자 유지)를 사용하는 것이 좋을 수 있음.
-                representative_keyword_for_prompt = entries_for_keyword[0].keyword 
-                logger.debug(f"대표 키워드 '{representative_keyword_for_prompt}' (그룹 키: '{keyword_lower}')에 대해 {len(entries_for_keyword)}개의 잠재적 충돌 항목 발견.")
-                conflict_prompt = self._get_conflict_resolution_prompt(representative_keyword_for_prompt, entries_for_keyword)
-                model_name = self.config.get("model_name", "gemini-2.0-flash")
-                generation_config = {
-                    "temperature": self.config.get("glossary_conflict_resolution_temperature", self.config.get("temperature", 0.3)), # 설정 키 변경
-                    "top_p": self.config.get("top_p", 0.9),
-                    "response_mime_type": "application/json",
-                }
-
-                try:
-                    merged_response_text = self.gemini_client.generate_text(
-                        prompt=conflict_prompt,
-                        model_name=model_name,
-                        generation_config_dict=generation_config
-                    )
-
-                    if merged_response_text:
-                        if isinstance(merged_response_text, (dict, list)): # 이미 파싱된 경우
-                            merged_json_str = json.dumps(merged_response_text)
-                        elif isinstance(merged_response_text, str):
-                            merged_json_str = merged_response_text.strip()
-                            merged_json_str = re.sub(r'^```json\s*', '', merged_json_str, flags=re.IGNORECASE)
-                            merged_json_str = re.sub(r'\s*```$', '', merged_json_str, flags=re.IGNORECASE)
-                            merged_json_str = merged_json_str.strip()
-                        else:
-                            raise ValueError(f"API 응답이 예상치 않은 타입: {type(merged_response_text)}")
-
-                        merged_entry_dict = json.loads(merged_json_str)
-                        if isinstance(merged_entry_dict, dict) and "keyword" in merged_entry_dict and "description" in merged_entry_dict:
-                            # API 응답에는 sourceSegmentTextPreview가 없을 수 있으므로, 원본 항목들 중 하나의 것을 사용하거나 None
-                            source_preview = entries_for_keyword[0].sourceSegmentTextPreview
-                            merged_entry_data = {
-                                "keyword": merged_entry_dict.get("keyword", representative_keyword_for_prompt), # API 결과 또는 그룹 대표 키워드 사용
-                                "description_ko": merged_entry_dict.get("description"),
-                                "aliases": merged_entry_dict.get("aliases", entries_for_keyword[0].aliases), # 별칭 병합
-                                "term_type": merged_entry_dict.get("term_type", entries_for_keyword[0].term_type), # 타입 병합
-                                "category": merged_entry_dict.get("category"),
-                                "importance": merged_entry_dict.get("importance"),
-                                "isSpoiler": merged_entry_dict.get("isSpoiler", False),
-                                "sourceSegmentTextPreview": source_preview,
-                                "source_language": entries_for_keyword[0].source_language # 원본 항목의 언어 코드 사용
-                            }
-                            if not merged_entry_data["keyword"] or not merged_entry_data["description_ko"]:
-                                logger.warning(f"병합된 용어집 항목에 필수 필드 누락: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
-                                final_glossary.append(self._select_best_entry_from_group(entries_for_keyword))
-                            else:
-                                final_glossary.append(GlossaryEntryDTO(**merged_entry_data)) # DTO 변경
-                                logger.info(f"키워드 그룹 '{representative_keyword_for_prompt}' 충돌 해결 및 병합 성공.")
-                        else:
-                            logger.warning(f"병합된 용어집 항목 형식이 잘못됨: {merged_entry_dict}. 원본 중 첫 번째 항목 사용.")
-                            final_glossary.append(self._select_best_entry_from_group(entries_for_keyword))
-                    else:
-                        logger.warning(f"키워드 그룹 '{representative_keyword_for_prompt}' 충돌 해결 API 응답 없음. 원본 중 가장 좋은 항목 선택.")
-                        final_glossary.append(self._select_best_entry_from_group(entries_for_keyword))
-                except Exception as e_conflict:
-                    logger.error(f"키워드 그룹 '{representative_keyword_for_prompt}' 충돌 해결 중 오류: {e_conflict}. 원본 중 가장 좋은 항목 선택.")
-                    final_glossary.append(self._select_best_entry_from_group(entries_for_keyword)) # 오류 발생 시 그룹 내 최선 항목 선택
+                # 이미 존재하는 키이면 등장 횟수만 합산
+                final_entries_map[key_tuple].occurrence_count += entry.occurrence_count
         
-        # 최종 로어북 정렬 (예: 중요도, 키워드 순)
-        final_glossary.sort(key=lambda x: (-(x.importance or 0), x.keyword.lower()))
+        final_glossary = list(final_entries_map.values())
+        # 최종 용어집 정렬 (예: 키워드, 출발언어, 도착언어 순)
+        final_glossary.sort(key=lambda x: (x.keyword.lower(), x.source_language.lower(), x.target_language.lower()))
         
         logger.info(f"용어집 충돌 해결 완료. 최종 {len(final_glossary)}개 항목.")
         return final_glossary
@@ -458,19 +293,37 @@ class LorebookService:
     def _select_best_entry_from_group(self, entry_group: List[GlossaryEntryDTO]) -> GlossaryEntryDTO: # DTO 변경
         """주어진 용어집 항목 그룹에서 가장 좋은 항목을 선택합니다 (예: 가장 긴 설명, 가장 높은 중요도)."""
         if not entry_group:
-            # 이 경우는 발생하지 않아야 하지만, 방어적으로 처리
             raise ValueError("빈 용어집 항목 그룹에서 최선 항목을 선택할 수 없습니다.")
-        # 중요도 높은 순, 설명 긴 순, 스포일러 아닌 것 우선 등으로 정렬하여 첫 번째 항목 반환
-        entry_group.sort(key=lambda e: (-(e.importance or 0), -len(e.description_ko or ""), e.isSpoiler is True))
+        # 경량화 버전에서는 복잡한 선택 로직 대신 첫 번째 항목 반환 또는 등장 횟수 많은 것 선택 등
+        entry_group.sort(key=lambda e: (-e.occurrence_count, e.keyword.lower())) # 등장 횟수 많은 순, 같으면 키워드 순
         return entry_group[0]
 
+    def _update_occurrence_counts(self, glossary_entries: List[GlossaryEntryDTO], full_text: str) -> List[GlossaryEntryDTO]:
+        """
+        주어진 전체 텍스트에서 각 용어집 항목의 실제 등장 횟수를 계산하여 업데이트합니다.
+        LLM이 추정한 초기 등장 횟수는 덮어씁니다.
+        """
+        if not glossary_entries or not full_text:
+            return glossary_entries
+
+        logger.info(f"용어집 항목 {len(glossary_entries)}개에 대해 실제 등장 횟수 계산 시작...")
+        full_text_lower = full_text.lower() # 대소문자 구분 없는 검색을 위해
+
+        for entry in glossary_entries:
+            # 단순 문자열 검색 대신 단어 경계를 고려한 정규식 사용 (부분 일치 방지)
+            # re.escape를 사용하여 키워드 내 특수문자 처리
+            pattern = r'\b' + re.escape(entry.keyword.lower()) + r'\b'
+            entry.occurrence_count = len(re.findall(pattern, full_text_lower))
+            logger.debug(f"용어 '{entry.keyword}' 등장 횟수 업데이트: {entry.occurrence_count}")
+
+        return glossary_entries
 
     def extract_and_save_glossary(self, # 함수명 변경
                                   # all_text_segments: List[str], # 직접 세그먼트 리스트를 받는 대신 원본 텍스트를 받도록 변경
                                   novel_text_content: str, # 원본 텍스트 내용
                                   input_file_path_for_naming: Union[str, Path],
-                                  novel_language_code: Optional[str] = None, # 소설의 언어 코드
-                                  progress_callback: Optional[Callable[[LorebookExtractionProgressDTO], None]] = None,
+                                  # novel_language_code: Optional[str] = None, # LLM이 감지하므로 불필요
+                                  progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO 변경
                                   seed_lorebook_path: Optional[Union[str, Path]] = None # 시드 로어북 경로 추가
                                  ) -> Path:
         """
@@ -479,8 +332,7 @@ class LorebookService:
         Args:
             novel_text_content (str): 분석할 전체 텍스트 내용.
             input_file_path_for_naming (Union[str, Path]):
-                출력 JSON 파일 이름 생성에 사용될 원본 입력 파일 경로. (파일명에 _glossary.json 등으로 사용)
-            novel_language_code (Optional[str]): 로어북 항목에 설정할 소스 언어 코드.
+                출력 JSON 파일 이름 생성에 사용될 원본 입력 파일 경로.
             progress_callback (Optional[Callable[[GlossaryExtractionProgressDTO], None]], optional): # DTO 변경
                 진행 상황을 알리기 위한 콜백 함수.
             seed_lorebook_path (Optional[Union[str, Path]], optional):
@@ -494,12 +346,6 @@ class LorebookService:
         """
         all_extracted_entries_from_segments: List[GlossaryEntryDTO] = [] # DTO 변경
         seed_entries: List[GlossaryEntryDTO] = [] # DTO 변경
-        
-        # novel_language_code는 이제 LLM이 감지한 언어를 사용하기 위한 기본값/힌트로 사용될 수 있지만,
-        # LLM의 응답에 있는 detected_language_code가 우선됩니다.
-        # source_language_of_segment로 전달될 값은 novel_language_code가 "auto"가 아닐 경우 그 값을 사용하고,
-        # "auto"일 경우 None으로 전달하여 LLM이 감지하도록 유도합니다.
-        lang_for_segment_extraction_hint = novel_language_code if novel_language_code != "auto" else None
 
         if seed_lorebook_path:
             seed_path_obj = Path(seed_lorebook_path)
@@ -509,18 +355,16 @@ class LorebookService:
                     raw_seed_data = read_json_file(seed_path_obj)
                     if isinstance(raw_seed_data, list):
                         for item_dict in raw_seed_data:
-                            if isinstance(item_dict, dict) and "keyword" in item_dict and "description" in item_dict:
+                            if isinstance(item_dict, dict) and "keyword" in item_dict and \
+                               "translated_keyword" in item_dict and "source_language" in item_dict and \
+                               "target_language" in item_dict:
                                 try:
                                     entry = GlossaryEntryDTO( # DTO 변경
-                                        keyword=item_dict.get("keyword", ""), # 시드 파일의 'description'을
-                                        description_ko=item_dict.get("description", ""), # 'description_ko'에 매핑
-                                        aliases=item_dict.get("aliases", []), # 별칭 로드
-                                        term_type=item_dict.get("term_type"), # 타입 로드
-                                        category=item_dict.get("category"),
-                                        importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
-                                        sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
-                                        isSpoiler=bool(item_dict.get("isSpoiler", False)),
-                                        source_language=item_dict.get("source_language", lang_for_segment_extraction_hint) # 시드 파일 내 언어 우선
+                                        keyword=item_dict.get("keyword", ""),
+                                        translated_keyword=item_dict.get("translated_keyword", ""),
+                                        source_language=item_dict.get("source_language", ""),
+                                        target_language=item_dict.get("target_language", ""),
+                                        occurrence_count=int(item_dict.get("occurrence_count", 0))
                                     )
                                     if entry.keyword and entry.description_ko:
                                         seed_entries.append(entry)
@@ -533,10 +377,9 @@ class LorebookService:
                 logger.warning(f"제공된 시드 로어북 경로를 찾을 수 없거나 파일이 아닙니다: {seed_lorebook_path}")
         
         # ChunkService를 사용하여 텍스트를 세그먼트로 분할
-        lorebook_segment_size = self.config.get("lorebook_chunk_size", self.config.get("chunk_size", 8000))
-        all_text_segments = self.chunk_service.create_chunks_from_file_content(
-            novel_text_content, lorebook_segment_size
-        )
+        # 경량화로 인해 청크 크기 설정을 단순화하거나 제거할 수 있음. 여기서는 유지.
+        glossary_segment_size = self.config.get("glossary_chunk_size", self.config.get("chunk_size", 8000))
+        all_text_segments = self.chunk_service.create_chunks_from_file_content(novel_text_content, glossary_segment_size)
 
         sample_segments = self._select_sample_segments(all_text_segments)
         num_sample_segments = len(sample_segments)
@@ -585,7 +428,7 @@ class LorebookService:
                 ))
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_segment = {executor.submit(self._extract_glossary_entries_from_segment_via_api, segment, lang_for_segment_extraction_hint): segment # 변경된 함수 호출
+                future_to_segment = {executor.submit(self._extract_glossary_entries_from_segment_via_api, segment): segment # lang_for_segment_extraction_hint 제거
                            for segment in sample_segments}
                 
                 for future in as_completed(future_to_segment):
@@ -620,8 +463,12 @@ class LorebookService:
         # 모든 세그먼트 처리 후 또는 시드만 있는 경우 충돌 해결
         final_glossary = self._resolve_glossary_conflicts(all_extracted_entries_from_segments) # 함수명 및 변수명 변경
         
+        # LLM 기반 추출 후, 실제 등장 횟수로 업데이트 (요청 사항 반영)
+        if novel_text_content.strip(): # 원본 텍스트가 있을 경우에만 실행
+            final_glossary = self._update_occurrence_counts(final_glossary, novel_text_content)
+
         # 로어북 최대 항목 수 제한 (설정값 사용)
-        max_total_glossary_entries = self.config.get("glossary_max_total_entries", 1000) # 설정 키 변경, 예시 기본값
+        max_total_glossary_entries = self.config.get("glossary_max_total_entries", 500) # 기본값 줄임
         if len(final_glossary) > max_total_glossary_entries:
             logger.info(f"추출된 용어집 항목({len(final_glossary)}개)이 최대 제한({max_total_glossary_entries}개)을 초과하여 상위 항목만 저장합니다.")
             # 중요도 등으로 정렬되어 있으므로 상위 항목 선택

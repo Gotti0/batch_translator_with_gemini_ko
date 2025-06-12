@@ -390,19 +390,14 @@ class BatchTranslatorGUI:
             self.glossary_json_path_entry.delete(0, tk.END) # Widget name changed
             self.glossary_json_path_entry.insert(0, glossary_json_path_val if glossary_json_path_val is not None else "")
 
-            sample_ratio = config.get("glossary_sampling_ratio", 25.0) # Key changed
+            sample_ratio = config.get("glossary_sampling_ratio", 10.0) # Key changed, default to simpler
             self.sample_ratio_scale.set(sample_ratio)
             self.sample_ratio_label.config(text=f"{sample_ratio:.1f}%")
             
-            max_entries_segment = config.get("glossary_max_entries_per_segment", 5) # Key changed
+            # Removed UI elements for: max_entries_per_segment, sampling_method, max_chars_per_entry, keyword_sensitivity
+            # These are not directly used by SimpleGlossaryService's prompt
             
-            self.max_entries_per_segment_spinbox.set(str(max_entries_segment))
 
-            self.glossary_sampling_method_combobox.set(config.get("glossary_sampling_method", "uniform")) # Key changed, widget name changed
-            self.glossary_max_chars_entry.delete(0, tk.END) # Widget name changed
-            self.glossary_max_chars_entry.insert(0, str(config.get("glossary_max_chars_per_entry", 200))) # Key changed
-            self.glossary_keyword_sensitivity_combobox.set(config.get("glossary_keyword_sensitivity", "medium")) # Key changed, widget name changed
-            
             # For priority_settings, ai_prompt_template, conflict_resolution_prompt_template - ScrolledText
             self.glossary_priority_text.delete('1.0', tk.END) # Widget name changed
             self.glossary_priority_text.insert('1.0', json.dumps(config.get("glossary_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2)) # Key changed
@@ -420,7 +415,9 @@ class BatchTranslatorGUI:
             self.max_glossary_chars_injection_entry.insert(0, str(config.get("max_glossary_chars_per_chunk_injection", 500))) # Key changed
             # lorebook_json_path_for_injection_entry 관련 UI 로드 코드는 제거 (아래 _create_settings_widgets 에서 해당 UI 요소 제거됨)
 
-            extraction_temp = config.get("glossary_extraction_temperature", 0.2) # Key changed
+            extraction_temp = config.get("glossary_extraction_temperature", 0.3) # Key changed, default to simpler
+            
+
             
             self.extraction_temp_scale.set(extraction_temp)
             self.extraction_temp_label.config(text=f"{extraction_temp:.2f}")
@@ -802,7 +799,7 @@ class BatchTranslatorGUI:
         Tooltip(self.glossary_progress_label, "용어집 추출 작업의 진행 상태를 표시합니다.") # Text changed
 
 
-        # 로어북 추출 설정 프레임
+        # 용어집 추출 설정 프레임 (경량화)
         extraction_settings_frame = ttk.LabelFrame(glossary_frame, text="용어집 추출 설정", padding="10") # Text changed
         
         extraction_settings_frame.pack(fill="x", padx=5, pady=5)
@@ -831,85 +828,16 @@ class BatchTranslatorGUI:
         self.sample_ratio_label.pack(side="left")
         Tooltip(self.sample_ratio_label, "현재 설정된 샘플링 비율입니다.")
         
-        # 도움말 레이블
-        ttk.Label(extraction_settings_frame,
-                text="전체 텍스트에서 용어집 추출에 사용할 세그먼트 비율", # Text changed
-                
-                font=("Arial", 8), 
-                foreground="gray").grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
-        
-        # 최대 항목 수 (세그먼트 당) 설정 (lorebook_max_entries_per_segment)
-        ttk.Label(extraction_settings_frame, text="세그먼트 당 최대 항목 수:").grid(row=2, column=0, padx=5, pady=(15,5), sticky="w") # Text changed
-        Tooltip(ttk.Label(extraction_settings_frame, text="세그먼트 당 최대 항목 수:"), "하나의 분석 세그먼트(샘플링된 텍스트 조각)에서 추출할 로어북 항목의 최대 개수입니다.")
-        
-        max_entries_segment_frame = ttk.Frame(extraction_settings_frame)
-        max_entries_segment_frame.grid(row=2, column=1, columnspan=2, padx=5, pady=(15,5), sticky="ew")
-        
-        self.max_entries_per_segment_spinbox = ttk.Spinbox(
-            
-            max_entries_segment_frame,
-            from_=1,
-            to=20, # Adjusted range
-            width=8,
-            command=self._update_max_entries_segment_label, # Command changed
-            validate="key",
-            validatecommand=(self.master.register(self._validate_max_entries_segment), '%P') # Validation changed
-        )
-        self.max_entries_per_segment_spinbox.pack(side="left", padx=(0,10))
-        Tooltip(self.max_entries_per_segment_spinbox, "용어집 추출 시 세그먼트 당 최대 항목 수를 설정합니다 (1 ~ 20).") # Text changed
-        
-        self.max_entries_per_segment_spinbox.set("5")  # 기본값
-        
-        self.max_entries_per_segment_label = ttk.Label(max_entries_segment_frame, text="개 항목", width=8)
-        
-        self.max_entries_per_segment_label.pack(side="left")
-        Tooltip(self.max_entries_per_segment_label, "현재 설정된 세그먼트 당 최대 항목 수입니다.")
-
-        # New Lorebook settings
-        ttk.Label(extraction_settings_frame, text="샘플링 방식:").grid(row=6, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 방식:"), "텍스트에서 용어집 추출을 위해 세그먼트를 선택하는 방식입니다.\nuniform: 균등 간격, random: 무작위 선택.") # Text changed
-        self.glossary_sampling_method_combobox = ttk.Combobox(extraction_settings_frame, values=["uniform", "random"], width=15) # Widget name changed
-        self.glossary_sampling_method_combobox.grid(row=6, column=1, padx=5, pady=5, sticky="w")
-        self.glossary_sampling_method_combobox.set("uniform")
-        Tooltip(self.glossary_sampling_method_combobox, "샘플링 방식을 선택하세요.")
-
-
-        ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:").grid(row=7, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:"), "추출된 각 용어집 항목 설명의 최대 글자 수입니다.") # Text changed
-        self.glossary_max_chars_entry = ttk.Entry(extraction_settings_frame, width=10) # Widget name changed
-        self.glossary_max_chars_entry.grid(row=7, column=1, padx=5, pady=5, sticky="w")
-        self.glossary_max_chars_entry.insert(0, "200")
-        Tooltip(self.glossary_max_chars_entry, "항목 당 최대 글자 수를 입력하세요.")
-
-
-        ttk.Label(extraction_settings_frame, text="키워드 민감도:").grid(row=8, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="키워드 민감도:"), "용어집 키워드 추출 시 민감도입니다.\nhigh: 더 많은 키워드, medium: 중간, low: 적은 키워드.") # Text changed
-        self.glossary_keyword_sensitivity_combobox = ttk.Combobox(extraction_settings_frame, values=["low", "medium", "high"], width=15) # Widget name changed
-        self.glossary_keyword_sensitivity_combobox.grid(row=8, column=1, padx=5, pady=5, sticky="w")
-        self.glossary_keyword_sensitivity_combobox.set("medium")
-        Tooltip(self.glossary_keyword_sensitivity_combobox, "키워드 추출 민감도를 선택하세요.")
-
-        ttk.Label(extraction_settings_frame, text="용어집 세그먼트 크기:").grid(row=9, column=0, padx=5, pady=5, sticky="w") # Text changed
-        Tooltip(ttk.Label(extraction_settings_frame, text="용어집 세그먼트 크기:"), "용어집 추출을 위해 텍스트를 나누는 단위(세그먼트)의 크기입니다.") # Text changed
-        self.glossary_chunk_size_entry = ttk.Entry(extraction_settings_frame, width=10) # Widget name changed
-        self.glossary_chunk_size_entry.grid(row=9, column=1, padx=5, pady=5, sticky="w")
-        self.glossary_chunk_size_entry.insert(0, "8000")
-        Tooltip(self.glossary_chunk_size_entry, "용어집 세그먼트 크기를 입력하세요.") # Text changed
-
-
-
-        ttk.Label(extraction_settings_frame, text="우선순위 설정 (JSON):").grid(row=10, column=0, padx=5, pady=5, sticky="nw")
-        self.glossary_priority_text = scrolledtext.ScrolledText(extraction_settings_frame, width=40, height=5, wrap=tk.WORD) # Widget name changed
-        self.glossary_priority_text.grid(row=10, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
-        self.glossary_priority_text.insert('1.0', json.dumps({"character": 5, "worldview": 5, "story_element": 5}, indent=2))
-        Tooltip(self.glossary_priority_text, "용어집 항목 추출 시 우선순위를 JSON 형식으로 설정합니다.\n예: {\"인물\": 10, \"장소\": 5}") # Text changed
+        # 제거된 UI 요소들:
+        # - 세그먼트 당 최대 항목 수 (max_entries_per_segment_spinbox, max_entries_per_segment_label)
+        # - 샘플링 방식 (glossary_sampling_method_combobox)
+        # - 항목 당 최대 글자 수 (glossary_max_chars_entry)
+        # - 키워드 민감도 (glossary_keyword_sensitivity_combobox)
+        # - 용어집 세그먼트 크기 (glossary_chunk_size_entry)
+        # - 우선순위 설정 (glossary_priority_text)
+        # 이들은 SimpleGlossaryService에서 직접 사용하지 않으므로 UI에서 제거.
         
 
-        # 도움말 레이블
-        ttk.Label(extraction_settings_frame, 
-                text="번역 시 프롬프트에 포함할 최대 고유명사 개수", 
-                font=("Arial", 8), 
-                foreground="gray").grid(row=3, column=1, columnspan=2, padx=5, sticky="w")
         
         # 고급 설정 (접을 수 있는 형태)
         self.advanced_var = tk.BooleanVar()
@@ -919,8 +847,7 @@ class BatchTranslatorGUI:
             variable=self.advanced_var,
             command=self._toggle_advanced_settings
         )
-        Tooltip(advanced_check, "용어집 추출에 사용될 고급 설정을 표시하거나 숨깁니다.") # Text changed
-        
+        Tooltip(advanced_check, "용어집 추출에 사용될 추출 온도 설정을 표시하거나 숨깁니다.") # Text changed              
         advanced_check.grid(row=4, column=0, columnspan=3, padx=5, pady=(15,5), sticky="w")
         
         # 고급 설정 프레임 (초기에는 숨김)
@@ -942,8 +869,7 @@ class BatchTranslatorGUI:
         self.extraction_temp_scale.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         Tooltip(self.extraction_temp_scale, "용어집 추출 온도를 조절합니다 (0.0 ~ 1.0).") # Text changed
         
-        self.extraction_temp_scale.set(0.2)  # 기본값
-        
+        self.extraction_temp_scale.set(0.3)  # 경량화된 서비스 기본값               
         self.extraction_temp_label = ttk.Label(self.advanced_frame, text="0.20", width=6)
         self.extraction_temp_label.grid(row=0, column=2, padx=5, pady=5)
         Tooltip(self.extraction_temp_label, "현재 설정된 용어집 추출 온도입니다.") # Text changed
@@ -1037,16 +963,9 @@ class BatchTranslatorGUI:
 
         # 설정 변경 감지 이벤트 바인딩
         self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_glossary_setting_changed) # Changed
-        self.max_entries_per_segment_spinbox.bind("<KeyRelease>", self._on_glossary_setting_changed) # Changed
         self.extraction_temp_scale.bind("<ButtonRelease-1>", self._on_glossary_setting_changed) # Changed
         
-        # Bindings for new lorebook settings
-        self.glossary_sampling_method_combobox.bind("<<ComboboxSelected>>", self._on_glossary_setting_changed) # Widget name, command changed
-        self.glossary_max_chars_entry.bind("<KeyRelease>", self._on_glossary_setting_changed) # Widget name, command changed
-        self.glossary_keyword_sensitivity_combobox.bind("<<ComboboxSelected>>", self._on_glossary_setting_changed) # Widget name, command changed
-        self.glossary_chunk_size_entry.bind("<KeyRelease>", self._on_glossary_setting_changed) # Widget name, command changed
-        self.glossary_priority_text.bind("<KeyRelease>", self._on_glossary_setting_changed) # Widget name, command changed
-
+        # 제거된 UI 요소에 대한 바인딩도 제거
 
 
     def _create_log_widgets(self):
@@ -1644,20 +1563,19 @@ class BatchTranslatorGUI:
             current_config = app_service.config.copy()
             
             # 고유명사 관련 설정만 업데이트
-            glossary_config = self._get_glossary_config_from_ui() # Changed
+            glossary_config = self._get_glossary_config_from_ui()
             current_config.update(glossary_config)
             
             # type: ignore
             # 설정 저장
-            success = self.app_service.save_app_config(current_config)
-            
-            if success:
-                messagebox.showinfo("성공", "용어집 설정이 저장되었습니다.") # Text changed
-                self._log_message("용어집 설정 저장 완료") # Text changed                                
-                # 상태 레이블 업데이트
-                self._update_glossary_status_label("✅ 설정 저장됨") # Changed           
+            # AppService의 save_app_config가 load_app_config를 호출하므로, UI 업데이트는 거기서 처리될 수 있음
+            if self.app_service.save_app_config(current_config): # type: ignore
+                messagebox.showinfo("성공", "용어집 설정이 저장되었습니다.")
+                self._log_message("용어집 설정 저장 완료.")
+                self._update_glossary_status_label("✅ 설정 저장됨")
             else:
-                messagebox.showerror("오류", "설정 저장에 실패했습니다.")
+                messagebox.showerror("오류", "용어집 설정 저장에 실패했습니다.")
+                
                 
         except Exception as e:
             messagebox.showerror("오류", f"설정 저장 중 오류: {e}")
@@ -1673,29 +1591,17 @@ class BatchTranslatorGUI:
         try:
             config = {
                 "glossary_json_path": self.glossary_json_path_entry.get().strip() or None, # Key and widget name changed
-                "glossary_sampling_ratio": self.sample_ratio_scale.get(), # Key changed
-                "glossary_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()), # Key changed
-                "glossary_extraction_temperature": self.extraction_temp_scale.get(), # Key changed
-                "glossary_sampling_method": self.glossary_sampling_method_combobox.get(), # Key and widget name changed
-                "glossary_max_chars_per_entry": int(self.glossary_max_chars_entry.get() or "200"), # Key and widget name changed
-                "glossary_keyword_sensitivity": self.glossary_keyword_sensitivity_combobox.get(), # Key and widget name changed
-                "glossary_chunk_size": int(self.glossary_chunk_size_entry.get() or "8000"), # Key and widget name changed               
+                "glossary_sampling_ratio": self.sample_ratio_scale.get(),
+                "glossary_extraction_temperature": self.extraction_temp_scale.get(),                     
                 # Dynamic lorebook injection settings
                 "enable_dynamic_glossary_injection": self.enable_dynamic_glossary_injection_var.get(), # Key and var name changed
                 "max_glossary_entries_per_chunk_injection": int(self.max_glossary_entries_injection_entry.get() or "3"), # Key and widget name changed
                 "max_glossary_chars_per_chunk_injection": int(self.max_glossary_chars_injection_entry.get() or "500") # Key and widget name changed
             }
-            try:
-                config["glossary_priority_settings"] = json.loads(self.glossary_priority_text.get("1.0", tk.END).strip() or "{}") # Key and widget name changed           
-            except json.JSONDecodeError:
-                # Use existing config value if UI is invalid, or default if not available
-                default_priority = {"character": 5, "worldview": 5, "story_element": 5} # Hardcoded default
-                if app_service and app_service.config_manager:
-                    config["glossary_priority_settings"] = app_service.config.get("glossary_priority_settings",  # Key changed
-                                                                             app_service.config_manager.get_default_config().get("glossary_priority_settings", default_priority)) # Key changed
-                else:
-                    config["glossary_priority_settings"] = default_priority # Key changed
-                self._log_message("용어집 우선순위 JSON 파싱 오류. 기존/기본값 사용.", "WARNING") # Text changed
+            
+            # 제거된 UI 요소에 대한 설정 추출 로직도 제거
+            # 예: glossary_max_entries_per_segment, glossary_sampling_method 등
+
 
             return {k: v for k, v in config.items() if v is not None}
         except Exception as e:
@@ -1718,19 +1624,11 @@ class BatchTranslatorGUI:
                 # 기본값 로드
                 default_config = app_service.config_manager.get_default_config()
                 # UI에 기본값 적용
-                self.sample_ratio_scale.set(default_config.get("glossary_sampling_ratio", 25.0)) # Key changed
-                self.max_entries_per_segment_spinbox.set(str(default_config.get("glossary_max_entries_per_segment", 5))) # Key changed
-                self.extraction_temp_scale.set(default_config.get("glossary_extraction_temperature", 0.2)) # Key changed                       
-                # Reset new lorebook fields
-                self.glossary_sampling_method_combobox.set(default_config.get("glossary_sampling_method", "uniform")) # Key and widget name changed
-                self.glossary_max_chars_entry.delete(0, tk.END) # Widget name changed
-                self.glossary_max_chars_entry.insert(0, str(default_config.get("glossary_max_chars_per_entry", 200))) # Key changed
-                self.glossary_keyword_sensitivity_combobox.set(default_config.get("glossary_keyword_sensitivity", "medium")) # Key and widget name changed
-                self.glossary_chunk_size_entry.delete(0, tk.END) # Widget name changed
-                self.glossary_chunk_size_entry.insert(0, str(default_config.get("glossary_chunk_size", 8000))) # Key changed
-                self.glossary_priority_text.delete('1.0', tk.END) # Widget name changed
-                self.glossary_priority_text.insert('1.0', json.dumps(default_config.get("glossary_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2)) # Key changed
+                self.sample_ratio_scale.set(default_config.get("glossary_sampling_ratio", 10.0))
+                self.extraction_temp_scale.set(default_config.get("glossary_extraction_temperature", 0.3))
+                # 제거된 UI 요소에 대한 초기화 로직도 제거
                 
+
                 # 레이블 업데이트
                 self._update_sample_ratio_label(str(self.sample_ratio_scale.get()))
                 self._update_extraction_temp_label(str(self.extraction_temp_scale.get()))
@@ -1752,7 +1650,6 @@ class BatchTranslatorGUI:
             # type: ignore
             # 현재 설정 값들
             sample_ratio = self.sample_ratio_scale.get()
-            max_entries_segment = int(self.max_entries_per_segment_spinbox.get()) # Changed
             extraction_temp = self.extraction_temp_scale.get() # This is lorebook_extraction_temperature
             
             # 파일 크기 기반 추정
@@ -1768,7 +1665,6 @@ class BatchTranslatorGUI:
                 f"📏 파일 크기: {file_size:,} 바이트\n"
                 f"🧩 예상 청크 수: {estimated_chunks:,}개\n"
                 f"🎯 분석할 샘플: {estimated_sample_chunks:,}개 ({sample_ratio:.1f}%)\n"
-                f"📋 세그먼트 당 최대 항목: {max_entries_segment}개\n" # Text changed
                 f"🌡️ 추출 온도: {extraction_temp:.2f}\n\n"
                 f"⏱️ 예상 처리 시간: {estimated_sample_chunks * 2:.0f}~{estimated_sample_chunks * 5:.0f}초"
             )
@@ -1924,14 +1820,12 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
 
         fields = {
             "keyword": {"label": "키워드:", "widget": ttk.Entry, "height": 1},
-            "description_ko": {"label": "설명 (KO):", "widget": tk.Text, "height": 5},
-            "aliases": {"label": "별칭 (쉼표로 구분):", "widget": ttk.Entry, "height": 1}, # New field
-            "term_type": {"label": "타입:", "widget": ttk.Entry, "height": 1}, # New field
-            "category": {"label": "카테고리:", "widget": ttk.Entry, "height": 1},
-            "importance": {"label": "중요도 (1-10):", "widget": ttk.Spinbox, "height": 1, "extra_args": {"from_": 0, "to": 10}},
-            "source_language": {"label": "원본 언어:", "widget": ttk.Entry, "height": 1},
-            "sourceSegmentTextPreview": {"label": "원본 미리보기:", "widget": tk.Text, "height": 3, "readonly": True},
-        } # Added aliases and term_type
+            "translated_keyword": {"label": "번역된 키워드:", "widget": ttk.Entry, "height": 1},
+            "source_language": {"label": "출발 언어 (BCP-47):", "widget": ttk.Entry, "height": 1},
+            "target_language": {"label": "도착 언어 (BCP-47):", "widget": ttk.Entry, "height": 1},
+            "occurrence_count": {"label": "등장 횟수:", "widget": ttk.Spinbox, "height": 1, "extra_args": {"from_": 0, "to": 9999}},
+        }
+
         self.entry_widgets: Dict[str, Union[ttk.Entry, tk.Text, ttk.Spinbox, ttk.Checkbutton]] = {}
 
         for i, (field_name, config) in enumerate(fields.items()):
@@ -1947,11 +1841,7 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
                 widget.config(state=tk.DISABLED)
             widget.grid(row=i, column=1, sticky=tk.EW, padx=5, pady=2)
             self.entry_widgets[field_name] = widget
-
-        self.is_spoiler_var = tk.BooleanVar()
-        self.entry_widgets["isSpoiler"] = ttk.Checkbutton(self.entry_fields_frame, text="스포일러 포함", variable=self.is_spoiler_var)
-        self.entry_widgets["isSpoiler"].grid(row=len(fields), column=1, sticky=tk.W, padx=5, pady=5)
-
+      
         # Bottom: Save/Cancel buttons
         buttons_frame = ttk.Frame(self, padding="10")
         buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -2001,9 +1891,6 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
                 widget.delete('1.0', tk.END)
                 widget.insert('1.0', str(value) if value is not None else "")
                 if is_readonly: widget.config(state=tk.DISABLED)
-            elif field_name == "aliases" and isinstance(value, list): # Handle aliases list
-                widget.delete(0, tk.END)
-                widget.insert(0, ", ".join(value) if value else "")
             elif isinstance(widget, ttk.Entry):
                 widget.delete(0, tk.END)
                 widget.insert(0, str(value) if value is not None else "")
@@ -2011,7 +1898,8 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
                 widget.set(str(value) if value is not None else "0")
             elif isinstance(widget, ttk.Checkbutton):
                 self.is_spoiler_var.set(bool(value))
-        self.current_selection_index = index
+        self.current_selection_index = index # Ensure this is set after loading
+
 
     def _clear_entry_fields(self):
         for field_name, widget in self.entry_widgets.items():
@@ -2024,8 +1912,6 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
                 widget.delete(0, tk.END)
             elif isinstance(widget, ttk.Spinbox):
                 widget.set("0")
-            elif isinstance(widget, ttk.Checkbutton):
-                self.is_spoiler_var.set(False)
         self.current_selection_index = None
         if "keyword" in self.entry_widgets:
             self.entry_widgets["keyword"].focus_set()
@@ -2041,20 +1927,16 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         for field_name, widget_instance in self.entry_widgets.items():
             if isinstance(widget_instance, tk.Text):
                 updated_entry[field_name] = widget_instance.get('1.0', tk.END).strip()
-            elif field_name == "aliases" and isinstance(widget_instance, ttk.Entry): # Handle aliases
-                aliases_str = widget_instance.get().strip()
-                updated_entry[field_name] = [alias.strip() for alias in aliases_str.split(',') if alias.strip()]
             elif isinstance(widget_instance, ttk.Entry):
                 updated_entry[field_name] = widget_instance.get().strip()
             elif isinstance(widget_instance, ttk.Spinbox):
                 try:
                     updated_entry[field_name] = int(widget_instance.get())
                 except ValueError:
-                    updated_entry[field_name] = 0 # Default or handle error
-            elif isinstance(widget_instance, ttk.Checkbutton):
-                updated_entry[field_name] = self.is_spoiler_var.get()
+                    updated_entry[field_name] = 0 
 
-        if not updated_entry.get("keyword"):
+        if not updated_entry.get("keyword") or not updated_entry.get("translated_keyword") or \
+           not updated_entry.get("source_language") or not updated_entry.get("target_language"):          
             messagebox.showwarning("경고", "키워드는 비워둘 수 없습니다.", parent=self)
             self.entry_widgets["keyword"].focus_set()
             return False
@@ -2072,9 +1954,9 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         self._clear_entry_fields()
         # Create a new blank entry and add it to the data
         new_entry_template = {
-            "keyword": "", "description_ko": "", "aliases": [], "term_type": "",
-            "category": "", "importance": 0, "isSpoiler": False,
-            "source_language": "", "sourceSegmentTextPreview": "새 항목"
+            "keyword": "", "translated_keyword": "", 
++            "source_language": "", "target_language": "",
++            "occurrence_count": 0
         }
         self.glossary_data.append(new_entry_template) # Var name changed
         self._populate_listbox()
