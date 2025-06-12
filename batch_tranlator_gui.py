@@ -1137,12 +1137,8 @@ class BatchTranslatorGUI:
             "novel_language_fallback": self.novel_language_fallback_entry.get().strip() or "ja",
             # Lorebook settings
             "glossary_json_path": self.glossary_json_path_entry.get().strip() or None, # Key and widget name changed
-            "glossary_sampling_ratio": self.sample_ratio_scale.get(), # Key changed
-            "glossary_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()), # Key changed
+            "glossary_sampling_ratio": self.sample_ratio_scale.get(), 
             "glossary_extraction_temperature": self.extraction_temp_scale.get(), # Key changed
-            "glossary_sampling_method": self.glossary_sampling_method_combobox.get(), # Key and widget name changed
-            "glossary_max_chars_per_entry": int(self.glossary_max_chars_entry.get() or "200"), # Key and widget name changed - This was removed in _create_glossary_widgets, should be removed here too if not used.
-            "glossary_keyword_sensitivity": self.glossary_keyword_sensitivity_combobox.get(), # Key and widget name changed - This was removed in _create_glossary_widgets, should be removed here too if not used.
                 
                 # Dynamic lorebook injection settings
                 "enable_dynamic_glossary_injection": self.enable_dynamic_glossary_injection_var.get(), # Key and var name changed
