@@ -1386,7 +1386,7 @@ class BatchTranslatorGUI:
                     result_json_path = app_service.extract_lorebook( # Method name changed
                         input_file,
                         progress_callback=self._update_glossary_extraction_progress, # Callback changed                      
-                        seed_glossary_path=app_service.config.get("glossary_json_path") # Use current glossary as seed                   
+                        seed_lorebook_path=app_service.config.get("glossary_json_path") # Use current glossary as seed
                     )
                     self.master.after(0, lambda: messagebox.showinfo("성공", f"용어집 추출 완료!\n결과 파일: {result_json_path}")) # Text changed
                     self.master.after(0, lambda: self.glossary_progress_label.config(text=f"추출 완료: {result_json_path.name}")) # Changed

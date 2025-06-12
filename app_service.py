@@ -259,15 +259,15 @@ class AppService:
             logger.error(f"모델 목록 조회 중 API 오류: {e}")
             raise
         except Exception as e:
-            logger.error(f"모델 목록 조회 중 예상치 못한 오류: {e}", exc_info=True)
+            logger.error(f"모델 목록 조회 중 예상치 못한 오류: {e}", exc_info=True) # type: ignore
             raise BtgServiceException(f"모델 목록 조회 중 오류: {e}", original_exception=e) from e
 
-    def extract_lorebook( # Renamed from extract_pronouns
+    def extract_glossary(
         self,
         input_file_path: Union[str, Path],
         progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO Changed
         novel_language_code: Optional[str] = None, # 명시적 언어 코드 전달
-        seed_lorebook_path: Optional[Union[str, Path]] = None # CLI에서 전달된 시드 로어북 경로
+        seed_glossary_path: Optional[Union[str, Path]] = None # CLI에서 전달된 시드 용어집 경로
         # tqdm_file_stream is not typically used by lorebook extraction directly in AppService,
         # but can be passed down if SimpleGlossaryService supports it (currently it doesn't directly)
         # For CLI, tqdm is handled in the CLI module itself.
@@ -275,45 +275,45 @@ class AppService:
         if not self.glossary_service: # Changed from pronoun_service
             logger.error("로어북 추출 서비스 실패: 서비스가 초기화되지 않았습니다.") # Message updated
             raise BtgServiceException("로어북 추출 서비스가 초기화되지 않았습니다. 설정을 확인하세요.") # Message updated
-
-        logger.info(f"로어북 추출 서비스 시작: {input_file_path}, 시드 파일: {seed_lorebook_path}") # Message updated
+        
+        logger.info(f"용어집 추출 서비스 시작: {input_file_path}, 시드 파일: {seed_glossary_path}") # Message updated
         try:
             file_content = read_text_file(input_file_path)
             if not file_content:
                 logger.warning(f"입력 파일이 비어있습니다: {input_file_path}")
                 # For lorebook, an empty input means an empty lorebook, unless a seed is provided.
                 # SimpleGlossaryService.extract_and_save_lorebook handles empty content.
-
+        
             # 로어북 추출 시 사용할 언어 코드 결정
             # 1. 명시적으로 전달된 novel_language_code
             # 2. 설정 파일의 novel_language (통합됨)
             # 3. None (SimpleGlossaryService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
             lang_code_for_extraction = novel_language_code or self.config.get("novel_language") # 통합된 설정 사용
             # lang_code_for_extraction은 SimpleGlossaryService.extract_and_save_glossary에서 직접 사용되지 않음.
-            result_path = self.glossary_service.extract_and_save_glossary(
+            result_path = self.glossary_service.extract_and_save_glossary( # type: ignore
                 novel_text_content=file_content,
                 input_file_path_for_naming=input_file_path,
                 progress_callback=progress_callback,
-                seed_lorebook_path=seed_lorebook_path # 시드 로어북 경로 전달
+                seed_lorebook_path=seed_glossary_path # 시드 용어집 경로 전달
             )
-            logger.info(f"로어북 추출 완료. 결과 파일: {result_path}") # Message updated
-
+            logger.info(f"용어집 추출 완료. 결과 파일: {result_path}") # Message updated
+        
             return result_path
         except FileNotFoundError as e:
-            logger.error(f"로어북 추출을 위한 입력 파일을 찾을 수 없습니다: {input_file_path}") # Message updated
+            logger.error(f"용어집 추출을 위한 입력 파일을 찾을 수 없습니다: {input_file_path}") # Message updated
             if progress_callback:
                 progress_callback(GlossaryExtractionProgressDTO(0,0,f"오류: 입력 파일 없음 - {e.filename}",0)) # DTO Changed
             raise BtgFileHandlerException(f"입력 파일 없음: {input_file_path}", original_exception=e) from e
         except (BtgBusinessLogicException, BtgApiClientException) as e: # BtgPronounException replaced with BtgBusinessLogicException
-            logger.error(f"로어북 추출 중 오류: {e}") # Message updated
+            logger.error(f"용어집 추출 중 오류: {e}") # Message updated
             if progress_callback:
                 progress_callback(GlossaryExtractionProgressDTO(0,0,f"오류: {e}",0)) # DTO Changed
             raise
         except Exception as e: 
-            logger.error(f"로어북 추출 서비스 중 예상치 못한 오류: {e}", exc_info=True)  # Message updated
+            logger.error(f"용어집 추출 서비스 중 예상치 못한 오류: {e}", exc_info=True)  # Message updated
             if progress_callback:
                 progress_callback(GlossaryExtractionProgressDTO(0,0,f"예상치 못한 오류: {e}",0)) # DTO Changed
-            raise BtgServiceException(f"로어북 추출 중 오류: {e}", original_exception=e) from e # Message updated
+            raise BtgServiceException(f"용어집 추출 중 오류: {e}", original_exception=e) from e # Message updated
 
 
     def _translate_and_save_chunk(self, chunk_index: int, chunk_text: str,
@@ -904,8 +904,8 @@ if __name__ == '__main__':
         try:
             def _lorebook_progress_dto_cb(dto: GlossaryExtractionProgressDTO): # Changed DTO
                 logger.debug(f"로어북 진행 DTO: {dto.processed_segments}/{dto.total_segments} - {dto.current_status_message} (추출 항목: {dto.extracted_entries_count})") # Changed fields
-
-            result_path = app_service.extract_lorebook( # Changed method
+        
+            result_path = app_service.extract_glossary( # Changed method
                 temp_input_file,
                 progress_callback=_lorebook_progress_dto_cb,
                 seed_lorebook_path=None # Optionally provide a seed path for testing

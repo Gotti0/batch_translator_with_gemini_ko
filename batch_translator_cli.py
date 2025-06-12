@@ -171,7 +171,7 @@ def parse_arguments():
     parser.add_argument("--gcp-project", type=str, default=None, help="Vertex AI 사용 시 GCP 프로젝트 ID")
     parser.add_argument("--gcp-location", type=str, default=None, help="Vertex AI 사용 시 GCP 리전")
 
-    parser.add_argument("--glossary_seed_file", type=Path, default=None, help="용어집 생성 시 참고할 기존 용어집 JSON 파일 경로 (선택 사항)") # 인수명 변경 및 설명 수정
+    parser.add_argument("--seed-glossary-file", type=Path, default=None, help="용어집 생성 시 참고할 기존 용어집 JSON 파일 경로 (선택 사항)")
     parser.add_argument("--extract_glossary_only", action="store_true", help="번역 대신 용어집 추출만 수행합니다.") # 인수명 변경
 
     resume_group = parser.add_mutually_exclusive_group()
@@ -296,26 +296,26 @@ def main():
             cli_logger.info("CLI 인수로 제공된 인증/Vertex 정보를 반영하기 위해 설정을 다시 로드합니다.")
             app_service.load_app_config()
 
-        if args.glossary_seed_file: # 인수명 변경
-            cli_logger.info(f"용어집 생성 시 참고할 파일: {args.glossary_seed_file}") # Text changed
+        if args.seed_glossary_file:
+            cli_logger.info(f"용어집 생성 시 참고할 파일: {args.seed_glossary_file}")
             # 이 파일은 AppService.extract_lorebook 메서드에 전달되거나,
             # ConfigManager를 통해 설정에 저장되어 SimpleGlossaryService에서 사용될 수 있습니다.
             # 여기서는 AppService.config에 직접 저장하는 대신, extract_lorebook 호출 시 전달하는 것을 가정합니다.
             # app_service.config["lorebook_seed_file"] = str(args.lorebook_seed_file) # 필요시 AppService에서 처리
             app_service.load_app_config()
-
+        
         # type: ignore
         if args.extract_glossary_only: # 인수명 변경
             cli_logger.info("용어집 추출 모드로 실행합니다.") # 메시지 변경
             if not args.input_file.exists():
                 cli_logger.error(f"입력 파일을 찾을 수 없습니다: {args.input_file}")
                 sys.exit(1)
-
-            result_glossary_path = app_service.extract_glossary( # app_service 메서드명 변경 가정
+        
+            result_glossary_path = app_service.extract_glossary(
                 args.input_file,
                 progress_callback=cli_glossary_extraction_progress_callback, # 콜백 함수명 변경
-                novel_language_code=app_service.config.get("novel_language"), # 설정에서 가져온 novel_language 사용
-                seed_glossary_path=args.glossary_seed_file # Arg name changed
+                novel_language_code=app_service.config.get("novel_language"),
+                seed_glossary_path=args.seed_glossary_file
             )
             Tqdm.write(f"\n용어집 추출 완료. 결과 파일: {result_glossary_path}", file=sys.stdout) # 메시지 변경
 
