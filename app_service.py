@@ -30,7 +30,7 @@ try:
     from .config_manager import ConfigManager
     from .gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
     from .translation_service import TranslationService # Keep
-    from .lorebook_service import LorebookService 
+    from .glossary_service import SimpleGlossaryService 
     from .chunk_service import ChunkService
     from .exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
     from .dtos import TranslationJobProgressDTO, LorebookExtractionProgressDTO # DTO 임포트 확인
@@ -49,7 +49,7 @@ except ImportError:
     from config_manager import ConfigManager
     from gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
     from translation_service import TranslationService
-    from lorebook_service import LorebookService
+    from glossary_service import SimpleGlossaryService
     from chunk_service import ChunkService
     from exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
     from dtos import TranslationJobProgressDTO, LorebookExtractionProgressDTO # DTO 임포트 확인
@@ -68,7 +68,7 @@ class AppService:
         self.config: Dict[str, Any] = {}
         self.gemini_client: Optional[GeminiClient] = None
         self.translation_service: Optional[TranslationService] = None
-        self.lorebook_service: Optional[LorebookService] = None # Renamed from pronoun_service
+        self.glossary_service: Optional[SimpleGlossaryService] = None # Renamed from pronoun_service
         self.chunk_service = ChunkService()
 
         self.is_translation_running = False
@@ -212,11 +212,11 @@ class AppService:
 
             if self.gemini_client:
                 self.translation_service = TranslationService(self.gemini_client, self.config)
-                self.lorebook_service = LorebookService(self.gemini_client, self.config) # Changed to LorebookService
-                logger.info("TranslationService 및 LorebookService가 성공적으로 초기화되었습니다.") # Message updated
+                self.glossary_service = SimpleGlossaryService(self.gemini_client, self.config) # Changed to SimpleGlossaryService
+                logger.info("TranslationService 및 SimpleGlossaryService가 성공적으로 초기화되었습니다.") # Message updated
             else:
                 self.translation_service = None
-                self.lorebook_service = None # Renamed
+                self.glossary_service = None # Renamed
                 logger.warning("Gemini 클라이언트가 초기화되지 않아 번역 및 고유명사 서비스가 비활성화됩니다.")
 
             return self.config
@@ -226,7 +226,7 @@ class AppService:
             logger.warning("기본 설정으로 계속 진행합니다. Gemini 클라이언트는 초기화되지 않을 수 있습니다.")
             self.gemini_client = None
             self.translation_service = None # Keep
-            self.lorebook_service = None # Renamed
+            self.glossary_service = None # Renamed
             return self.config
         except Exception as e:
             logger.error(f"설정 로드 중 심각한 오류 발생: {e}", exc_info=True)
@@ -269,10 +269,10 @@ class AppService:
         novel_language_code: Optional[str] = None, # 명시적 언어 코드 전달
         seed_lorebook_path: Optional[Union[str, Path]] = None # CLI에서 전달된 시드 로어북 경로
         # tqdm_file_stream is not typically used by lorebook extraction directly in AppService,
-        # but can be passed down if LorebookService supports it (currently it doesn't directly)
+        # but can be passed down if SimpleGlossaryService supports it (currently it doesn't directly)
         # For CLI, tqdm is handled in the CLI module itself.
     ) -> Path:
-        if not self.lorebook_service: # Changed from pronoun_service
+        if not self.glossary_service: # Changed from pronoun_service
             logger.error("로어북 추출 서비스 실패: 서비스가 초기화되지 않았습니다.") # Message updated
             raise BtgServiceException("로어북 추출 서비스가 초기화되지 않았습니다. 설정을 확인하세요.") # Message updated
 
@@ -282,14 +282,14 @@ class AppService:
             if not file_content:
                 logger.warning(f"입력 파일이 비어있습니다: {input_file_path}")
                 # For lorebook, an empty input means an empty lorebook, unless a seed is provided.
-                # LorebookService.extract_and_save_lorebook handles empty content.
+                # SimpleGlossaryService.extract_and_save_lorebook handles empty content.
 
             # 로어북 추출 시 사용할 언어 코드 결정
             # 1. 명시적으로 전달된 novel_language_code
             # 2. 설정 파일의 novel_language (통합됨)
-            # 3. None (LorebookService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
+            # 3. None (SimpleGlossaryService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
             lang_code_for_extraction = novel_language_code or self.config.get("novel_language") # 통합된 설정 사용
-            result_path = self.lorebook_service.extract_and_save_lorebook( # Method changed
+            result_path = self.glossary_service.extract_and_save_lorebook( # Method changed
                 file_content, # Pass content directly
                 input_file_path, 
                 lang_code_for_extraction, # 결정된 언어 코드 전달
@@ -899,7 +899,7 @@ if __name__ == '__main__':
     else:
         logger.warning("Gemini 클라이언트가 없어 모델 목록 조회 테스트를 건너뜁니다.")
 
-    if app_service and app_service.lorebook_service: # Changed from pronoun_service
+    if app_service and app_service.glossary_service: # Changed from pronoun_service
         print("\n--- 로어북 추출 테스트 ---") # Changed
         try:
             def _lorebook_progress_dto_cb(dto: LorebookExtractionProgressDTO): # Changed DTO

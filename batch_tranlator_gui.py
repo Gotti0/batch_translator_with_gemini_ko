@@ -1424,7 +1424,7 @@ class BatchTranslatorGUI:
                             lore_content = f_res.read()
                         self.master.after(0, lambda: self._display_glossary_content(lore_content)) # Function name changed
             
-            # BtgPronounException replaced with BtgBusinessLogicException as LorebookService might throw more general business logic errors
+            # BtgPronounException replaced with BtgBusinessLogicException as SimpleGlossaryService might throw more general business logic errors
             except (BtgFileHandlerException, BtgApiClientException, BtgServiceException, BtgBusinessLogicException) as e_btg:
                 logger.error(f"용어집 추출 중 BTG 예외 발생: {e_btg}", exc_info=True) # Text changed
                 self.master.after(0, lambda: messagebox.showerror("추출 오류", f"용어집 추출 중 오류: {e_btg}")) # Text changed

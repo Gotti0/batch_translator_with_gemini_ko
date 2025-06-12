@@ -1,4 +1,4 @@
-# c:\Users\Hyunwoo_Room\Downloads\Neo_Batch_Translator\lorebook_service.py
+# c:\Users\Hyunwoo_Room\Downloads\Neo_Batch_Translator\glossary_service.py
 import json
 import random
 import re
@@ -157,7 +157,7 @@ class SimpleGlossaryService:
                 else:
                     logger.warning(f"API 응답 JSON 객체에 'detected_language_code' 또는 'entities' 필드가 누락/잘못되었습니다: {response_data}")
             elif isinstance(response_data, str):
-                logger.warning("GeminiClient가 JSON 문자열을 반환했습니다 (파싱 실패 또는 JSON 응답 아님). LorebookService에서 파싱 시도.")
+                logger.warning("GeminiClient가 JSON 문자열을 반환했습니다 (파싱 실패 또는 JSON 응답 아님). SimpleGlossaryService에서 파싱 시도.")
                 json_str = response_data.strip()
                 json_str = re.sub(r'^```json\s*', '', json_str, flags=re.IGNORECASE) 
                 json_str = re.sub(r'\s*```$', '', json_str, flags=re.IGNORECASE)

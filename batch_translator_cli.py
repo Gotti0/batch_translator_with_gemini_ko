@@ -299,7 +299,7 @@ def main():
         if args.glossary_seed_file: # 인수명 변경
             cli_logger.info(f"용어집 생성 시 참고할 파일: {args.glossary_seed_file}") # Text changed
             # 이 파일은 AppService.extract_lorebook 메서드에 전달되거나,
-            # ConfigManager를 통해 설정에 저장되어 LorebookService에서 사용될 수 있습니다.
+            # ConfigManager를 통해 설정에 저장되어 SimpleGlossaryService에서 사용될 수 있습니다.
             # 여기서는 AppService.config에 직접 저장하는 대신, extract_lorebook 호출 시 전달하는 것을 가정합니다.
             # app_service.config["lorebook_seed_file"] = str(args.lorebook_seed_file) # 필요시 AppService에서 처리
             app_service.load_app_config()
