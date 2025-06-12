@@ -86,7 +86,7 @@ class TranslationService:
         self.chunk_service = ChunkService()
         self.lorebook_entries_for_injection: List[LorebookEntryDTO] = [] # For new lorebook injection
 
-        if self.config.get("enable_dynamic_lorebook_injection", False):
+        if self.config.get("enable_dynamic_glossary_injection", False): # Key changed
             self._load_glossary_data() # 함수명 변경
             logger.info("동적 용어집 주입 활성화됨. 용어집 데이터 로드 시도.") # 메시지 변경
         else:
@@ -94,7 +94,7 @@ class TranslationService:
 
     def _load_glossary_data(self): # 함수명 변경
         # 통합된 로어북 경로 사용
-        lorebook_json_path_str = self.config.get("lorebook_json_path")
+        lorebook_json_path_str = self.config.get("glossary_json_path") # Key changed
         if lorebook_json_path_str and os.path.exists(lorebook_json_path_str):
             lorebook_json_path = Path(lorebook_json_path_str)
             try:
@@ -161,9 +161,9 @@ class TranslationService:
             logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_lorebook_filtering}'를 로어북 필터링에 사용.")
 
         # 1. Dynamic Lorebook Injection
-        if self.config.get("enable_dynamic_lorebook_injection", False) and \
+        if self.config.get("enable_dynamic_glossary_injection", False) and \
            self.lorebook_entries_for_injection and \
-           "{{lorebook_context}}" in final_prompt:
+           "{{glossary_context}}" in final_prompt: # Placeholder changed
             
             relevant_entries_for_chunk: List[LorebookEntryDTO] = []
             chunk_text_lower = chunk_text.lower() # For case-insensitive keyword matching
@@ -199,25 +199,24 @@ class TranslationService:
             logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 용어집 항목 발견.") # 메시지 변경
 
             # 1.b. Format the relevant entries for the prompt
-            max_entries = self.config.get("max_lorebook_entries_per_chunk_injection", 3)
-            max_chars = self.config.get("max_lorebook_chars_per_chunk_injection", 500)
+            max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) # Key changed
+            max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500) # Key changed
             
             formatted_lorebook_context = _format_glossary_for_prompt( # 함수명 변경
                 relevant_entries_for_chunk, max_entries, max_chars # Pass only relevant entries
             )
             
             # Check if actual content was formatted (not just "없음" messages)
-            if formatted_lorebook_context != "용어집 컨텍스트 없음" and \
-               formatted_lorebook_context != "용어집 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)": # 메시지 변경
+            if not formatted_lorebook_context.startswith("용어집 컨텍스트 없음"): # Check simplified
                 logger.info(f"API 요청에 동적 용어집 컨텍스트 주입됨. 내용 일부: {formatted_lorebook_context[:100]}...") # 메시지 변경
                 # 주입된 로어북 키워드 로깅
                 # 상세 로깅은 _format_glossary_for_prompt 내부 또는 호출부에서 처리 가능
             else:
                 logger.debug(f"동적 로어북 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_lorebook_context}")
-            final_prompt = final_prompt.replace("{{lorebook_context}}", formatted_lorebook_context)
+            final_prompt = final_prompt.replace("{{glossary_context}}", formatted_lorebook_context) # Placeholder changed
         else:
-            if "{{lorebook_context}}" in final_prompt:
-                 final_prompt = final_prompt.replace("{{lorebook_context}}", "로어북 컨텍스트 없음 (주입 비활성화 또는 해당 항목 없음)")
+            if "{{glossary_context}}" in final_prompt: # Placeholder changed
+                 final_prompt = final_prompt.replace("{{glossary_context}}", "용어집 컨텍스트 없음 (주입 비활성화 또는 해당 항목 없음)") # Placeholder changed
                  logger.debug("동적 로어북 주입 비활성화 또는 플레이스홀더 부재로 '컨텍스트 없음' 메시지 사용.")
         
         # 3. Main content slot - This should be done *after* all other placeholders are processed.
