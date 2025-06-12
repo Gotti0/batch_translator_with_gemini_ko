@@ -53,28 +53,32 @@ class TranslationJobProgressDTO:
 #     current_status_message: str
 
 @dataclass
-class LorebookEntryDTO:
+class GlossaryEntryDTO: # 클래스명 변경 LorebookEntryDTO -> GlossaryEntryDTO
     """
-    로어북의 각 항목을 나타냅니다.
+    용어집의 각 항목을 나타냅니다.
     """
     keyword: str
     description_ko: str # 한국어 설명
+    aliases: List[str] = field(default_factory=list) # 별칭 목록 추가
+    term_type: Optional[str] = None # 용어 타입 추가 (예: PERSON, LOCATION, GENERAL_TERM)
     category: Optional[str] = None # 예: "인물", "장소", "아이템", "설정"
     importance: Optional[int] = None # 1-10
     sourceSegmentTextPreview: Optional[str] = None # 추출된 원본 세그먼트 미리보기
     isSpoiler: Optional[bool] = False
-    source_language: Optional[str] = None # 로어북 키워드의 원본 언어 (예: "en", "ja", "ko")
+    source_language: Optional[str] = None # 용어 키워드의 원본 언어 (예: "en", "ja", "ko")
     # 추가 필드 가능
 
 @dataclass
-class LorebookExtractionProgressDTO: # 기존 PronounExtractionProgressDTO 와 유사하게
+class GlossaryExtractionProgressDTO: # 클래스명 변경 LorebookExtractionProgressDTO -> GlossaryExtractionProgressDTO
     """
-    로어북 추출 작업의 진행 상황을 나타내는 DTO입니다.
+    용어집 추출 작업의 진행 상황을 나타내는 DTO입니다.
     """
     total_segments: int
     processed_segments: int
     current_status_message: str
     extracted_entries_count: int = 0
+
+
 
 # --- 설정 관련 DTO (필요시) ---
 @dataclass
@@ -116,23 +120,25 @@ if __name__ == '__main__':
     )
     print(f"번역 진행: {progress1}")
 
-    lorebook_entry_example = LorebookEntryDTO(
+    glossary_entry_example = GlossaryEntryDTO( # 변수명 및 클래스명 변경
         keyword="아르카나 스톤",
         description_ko="고대 유물, 소유자에게 막대한 힘을 부여함",
+        aliases=["마법석", "신비의 돌"], # 별칭 예시 추가
+        term_type="ITEM", # 용어 타입 예시 추가
         category="아이템",
         importance=9,
         isSpoiler=True,
         source_language="ko"
     )
-    print(f"로어북 항목 예시: {lorebook_entry_example}")
+    print(f"용어집 항목 예시: {glossary_entry_example}") # 출력 메시지 변경
 
-    lorebook_progress = LorebookExtractionProgressDTO(
+    glossary_progress = GlossaryExtractionProgressDTO( # 변수명 및 클래스명 변경
         total_segments=100,
         processed_segments=30,
         current_status_message="세그먼트 31/100 분석 중...",
         extracted_entries_count=15
     )
-    print(f"로어북 추출 진행: {lorebook_progress}")
+    print(f"용어집 추출 진행: {glossary_progress}") # 출력 메시지 변경
 
     config_display = AppConfigDisplayDTO(
         model_name="gemini-2.0-flash", 

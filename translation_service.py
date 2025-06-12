@@ -20,7 +20,7 @@ try:
     from .logger_config import setup_logger
     from .exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
     from .chunk_service import ChunkService
-    # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다.
+    # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다. # 로어북 -> 용어집
     # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다.
     # from google.genai import types as genai_types 
     from .dtos import LorebookEntryDTO # 로어북 DTO 임포트
@@ -37,18 +37,18 @@ except ImportError:
     from logger_config import setup_logger
     from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
     from chunk_service import ChunkService
-    from dtos import LorebookEntryDTO # 로어북 DTO 임포트
+    from dtos import GlossaryEntryDTO as LorebookEntryDTO # 로어북 DTO 임포트 (GlossaryEntryDTO로 변경되었으나, 호환성을 위해 LorebookEntryDTO로 alias)
     # from google.genai import types as genai_types # Fallback import
 
 logger = setup_logger(__name__)
 
-def _format_lorebook_for_prompt(
+def _format_glossary_for_prompt( # 함수명 변경
     lorebook_entries: List[LorebookEntryDTO],
     max_entries: int,
     max_chars: int
 ) -> str:
     if not lorebook_entries:
-        return "로어북 컨텍스트 없음"
+        return "용어집 컨텍스트 없음" # 메시지 변경
 
     selected_entries_str = []
     current_chars = 0
@@ -76,8 +76,11 @@ def _format_lorebook_for_prompt(
         
         details_str = ", ".join(details_parts)
         # 로어북 항목의 원본 언어 정보를 프롬프트에 포함
+        # GlossaryEntryDTO에 aliases 필드가 있다면 여기에 추가 가능
+        aliases_str = f" (별칭: {', '.join(entry.aliases)})" if hasattr(entry, 'aliases') and entry.aliases else ""
         lang_info = f" (lang: {entry.source_language})" if entry.source_language else ""
-        entry_str = f"- {entry.keyword}{lang_info}: {entry.description_ko} ({details_str})"
+        entry_str = f"- {entry.keyword}{aliases_str}{lang_info}: {entry.description_ko} ({details_str})"
+
         
         
         
@@ -90,7 +93,7 @@ def _format_lorebook_for_prompt(
         entries_count += 1
     
     if not selected_entries_str:
-        return "로어북 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)"
+        return "용어집 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)" # 메시지 변경
         
     return "\n".join(selected_entries_str)
 
@@ -102,12 +105,12 @@ class TranslationService:
         self.lorebook_entries_for_injection: List[LorebookEntryDTO] = [] # For new lorebook injection
 
         if self.config.get("enable_dynamic_lorebook_injection", False):
-            self._load_lorebook_data()
-            logger.info("동적 로어북 주입 활성화됨. 로어북 데이터 로드 시도.")
+            self._load_glossary_data() # 함수명 변경
+            logger.info("동적 용어집 주입 활성화됨. 용어집 데이터 로드 시도.") # 메시지 변경
         else:
-            logger.info("동적 로어북 주입 비활성화됨. 로어북 컨텍스트 없이 번역합니다.")
+            logger.info("동적 용어집 주입 비활성화됨. 용어집 컨텍스트 없이 번역합니다.") # 메시지 변경
 
-    def _load_lorebook_data(self):
+    def _load_glossary_data(self): # 함수명 변경
         # 통합된 로어북 경로 사용
         lorebook_json_path_str = self.config.get("lorebook_json_path")
         if lorebook_json_path_str and os.path.exists(lorebook_json_path_str):
@@ -121,6 +124,8 @@ class TranslationService:
                                 entry = LorebookEntryDTO(
                                     keyword=item_dict.get("keyword", ""), # 원본 키워드 가져오기
                                     description_ko=item_dict.get("description_ko", ""), # 'description_ko' 키에서 설명 가져오기
+                                    aliases=item_dict.get("aliases", []), # 별칭 로드
+                                    term_type=item_dict.get("term_type"), # 타입 로드
                                     category=item_dict.get("category"),
                                     importance=int(item_dict.get("importance", 0)) if item_dict.get("importance") is not None else None,
                                     sourceSegmentTextPreview=item_dict.get("sourceSegmentTextPreview"),
@@ -130,19 +135,19 @@ class TranslationService:
                                 if entry.keyword and entry.description_ko: # 필수 필드 확인
                                     self.lorebook_entries_for_injection.append(entry)
                                 else:
-                                    logger.warning(f"로어북 항목에 필수 필드(keyword 또는 description_ko) 값이 비어있음: {item_dict}") # FIX: Updated message
+                                    logger.warning(f"용어집 항목에 필수 필드(keyword 또는 description_ko) 값이 비어있음: {item_dict}") # 메시지 변경
                             except (TypeError, ValueError) as e_dto:
-                                logger.warning(f"로어북 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")
+                                logger.warning(f"용어집 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}") # 메시지 변경
                         else:
-                            logger.warning(f"잘못된 로어북 항목 형식 (딕셔너리가 아니거나 필수 키 'keyword' 또는 'description_ko' 누락) 건너뜀: {item_dict}") # FIX: Updated message
-                    logger.info(f"{len(self.lorebook_entries_for_injection)}개의 로어북 항목을 로드했습니다: {lorebook_json_path}")
+                            logger.warning(f"잘못된 용어집 항목 형식 (딕셔너리가 아니거나 필수 키 'keyword' 또는 'description_ko' 누락) 건너뜀: {item_dict}") # 메시지 변경
+                    logger.info(f"{len(self.lorebook_entries_for_injection)}개의 용어집 항목을 로드했습니다: {lorebook_json_path}") # 메시지 변경
                 else:
-                    logger.error(f"로어북 JSON 파일이 리스트 형식이 아닙니다: {lorebook_json_path}, 타입: {type(raw_data)}")
+                    logger.error(f"용어집 JSON 파일이 리스트 형식이 아닙니다: {lorebook_json_path}, 타입: {type(raw_data)}") # 메시지 변경
             except Exception as e:
-                logger.error(f"로어북 JSON 파일 처리 중 예상치 못한 오류 ({lorebook_json_path}): {e}", exc_info=True)
+                logger.error(f"용어집 JSON 파일 처리 중 예상치 못한 오류 ({lorebook_json_path}): {e}", exc_info=True) # 메시지 변경
                 self.lorebook_entries_for_injection = []
         else:
-            logger.info(f"로어북 JSON 파일({lorebook_json_path_str})이 설정되지 않았거나 존재하지 않습니다. 동적 주입을 위해 로어북을 사용하지 않습니다.")
+            logger.info(f"용어집 JSON 파일({lorebook_json_path_str})이 설정되지 않았거나 존재하지 않습니다. 동적 주입을 위해 용어집을 사용하지 않습니다.") # 메시지 변경
             self.lorebook_entries_for_injection = []
 
     def _construct_prompt(self, chunk_text: str) -> str:
@@ -163,12 +168,12 @@ class TranslationService:
         current_source_lang_for_lorebook_filtering: Optional[str] = None
 
         if config_source_lang == "auto":
-            logger.info(f"번역 출발 언어 설정: 'auto'. LLM이 프롬프트 내에서 언어를 감지하고 로어북을 적용하도록 합니다.")
+            logger.info(f"번역 출발 언어 설정: 'auto'. LLM이 프롬프트 내에서 언어를 감지하고 용어집을 적용하도록 합니다.") # 메시지 변경
             # current_source_lang_for_lorebook_filtering는 None으로 유지하거나 "auto"로 설정.
             # 로어북 필터링은 LLM의 역할이 됩니다.
         elif config_source_lang and isinstance(config_source_lang, str) and config_source_lang.strip(): # Specific language code provided
             current_source_lang_for_lorebook_filtering = config_source_lang
-            logger.info(f"명시적 번역 출발 언어 '{current_source_lang_for_lorebook_filtering}' 사용. 로어북도 이 언어 기준으로 필터링됩니다.")
+            logger.info(f"명시적 번역 출발 언어 '{current_source_lang_for_lorebook_filtering}' 사용. 용어집도 이 언어 기준으로 필터링됩니다.") # 메시지 변경
         else: # config_source_lang is None, empty string, or not "auto"
             current_source_lang_for_lorebook_filtering = config_fallback_lang
             logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_lorebook_filtering}'를 로어북 필터링에 사용.")
@@ -184,43 +189,50 @@ class TranslationService:
             if config_source_lang == "auto":
                 # "auto" 모드: LLM이 언어를 감지하고 로어북을 필터링하도록 지시.
                 # Python에서는 키워드 기반으로만 필터링하거나, 모든 로어북 항목을 전달.
-                # 여기서는 키워드 기반 필터링만 수행하고, LLM이 언어 필터링을 하도록 프롬프트에 명시.
-                logger.info("자동 언어 감지 모드: 로어북은 키워드 일치로 필터링 후 LLM에 전달. LLM이 언어 기반 추가 필터링 수행.")
+                # 여기서는 키워드 및 별칭 기반 필터링만 수행하고, LLM이 언어 필터링을 하도록 프롬프트에 명시.
+                logger.info("자동 언어 감지 모드: 용어집은 키워드/별칭 일치로 필터링 후 LLM에 전달. LLM이 언어 기반 추가 필터링 수행.") # 메시지 변경
                 for entry in self.lorebook_entries_for_injection:
-                    if entry.keyword.lower() in chunk_text_lower:
+                    # 키워드 또는 별칭 중 하나라도 청크에 포함되면 관련 항목으로 간주
+                    entry_keywords_to_check = [entry.keyword.lower()]
+                    if hasattr(entry, 'aliases') and entry.aliases:
+                        entry_keywords_to_check.extend([alias.lower() for alias in entry.aliases])
+                    
+                    if any(kw in chunk_text_lower for kw in entry_keywords_to_check):
                         relevant_entries_for_chunk.append(entry)
             else:
                 # 명시적 언어 설정 모드: Python에서 언어 및 키워드 기반으로 필터링.
-                logger.info(f"명시적 언어 모드 ('{current_source_lang_for_lorebook_filtering}'): 로어북을 언어 및 키워드 기준으로 필터링.")
+                logger.info(f"명시적 언어 모드 ('{current_source_lang_for_lorebook_filtering}'): 용어집을 언어 및 키워드/별칭 기준으로 필터링.") # 메시지 변경
                 for entry in self.lorebook_entries_for_injection:
                     # 로어북 항목의 언어와 현재 번역 출발 언어가 일치하는지 확인
                     if entry.source_language and \
                        current_source_lang_for_lorebook_filtering and \
                        entry.source_language.lower() != current_source_lang_for_lorebook_filtering.lower():
-                        logger.debug(f"로어북 항목 '{entry.keyword}' 건너뜀: 언어 불일치 (로어북: {entry.source_language}, 번역 출발: {current_source_lang_for_lorebook_filtering}).")
+                        logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 언어 불일치 (용어집: {entry.source_language}, 번역 출발: {current_source_lang_for_lorebook_filtering}).") # 메시지 변경
                         continue
 
-                    if entry.keyword.lower() in chunk_text_lower:
+                    entry_keywords_to_check = [entry.keyword.lower()]
+                    if hasattr(entry, 'aliases') and entry.aliases:
+                        entry_keywords_to_check.extend([alias.lower() for alias in entry.aliases])
+
+                    if any(kw in chunk_text_lower for kw in entry_keywords_to_check):
                         relevant_entries_for_chunk.append(entry)
             
-            logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 로어북 항목 발견.")
+            logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 용어집 항목 발견.") # 메시지 변경
 
             # 1.b. Format the relevant entries for the prompt
             max_entries = self.config.get("max_lorebook_entries_per_chunk_injection", 3)
             max_chars = self.config.get("max_lorebook_chars_per_chunk_injection", 500)
             
-            formatted_lorebook_context = _format_lorebook_for_prompt(
+            formatted_lorebook_context = _format_glossary_for_prompt( # 함수명 변경
                 relevant_entries_for_chunk, max_entries, max_chars # Pass only relevant entries
             )
             
             # Check if actual content was formatted (not just "없음" messages)
-            if formatted_lorebook_context != "로어북 컨텍스트 없음" and \
-               formatted_lorebook_context != "로어북 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)":
-                logger.info(f"API 요청에 동적 로어북 컨텍스트 주입됨. 내용 일부: {formatted_lorebook_context[:100]}...")
+            if formatted_lorebook_context != "용어집 컨텍스트 없음" and \
+               formatted_lorebook_context != "용어집 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)": # 메시지 변경
+                logger.info(f"API 요청에 동적 용어집 컨텍스트 주입됨. 내용 일부: {formatted_lorebook_context[:100]}...") # 메시지 변경
                 # 주입된 로어북 키워드 로깅
-                injected_keywords = [entry.keyword for entry in relevant_entries_for_chunk if entry.keyword.lower() in chunk_text_lower]
-                if injected_keywords:
-                    logger.info(f"  🔑 주입된 로어북 키워드: {', '.join(injected_keywords)}")
+                # 상세 로깅은 _format_glossary_for_prompt 내부 또는 호출부에서 처리 가능
             else:
                 logger.debug(f"동적 로어북 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_lorebook_context}")
             final_prompt = final_prompt.replace("{{lorebook_context}}", formatted_lorebook_context)
@@ -626,7 +638,7 @@ if __name__ == '__main__':
     # 테스트용 로어북 파일 생성
     test_lorebook_data = [
         {"keyword": "Alice", "description": "주인공 앨리스", "category": "인물", "importance": 10, "isSpoiler": False},
-        {"keyword": "Bob", "description": "앨리스의 친구 밥", "category": "인물", "importance": 8, "isSpoiler": False}
+        {"keyword": "Bob", "description": "앨리스의 친구 밥", "aliases": ["Bobby", "롭"], "category": "인물", "importance": 8, "isSpoiler": False}
     ]
     from file_handler import write_json_file, delete_file # write_csv_file -> write_json_file
     test_lorebook_file = Path("test_lorebook.json")
