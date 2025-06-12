@@ -71,8 +71,8 @@ class SimpleGlossaryService:
         # 경량화된 서비스에서는 사용자가 번역 목표 언어를 명시적으로 제공한다고 가정
         # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "en" (영어)를 사용.
         # 실제 구현에서는 이 부분을 동적으로 설정해야 함.
-        target_lang_code = self.config.get("glossary_target_language_code", "en")
-        target_lang_name = self.config.get("glossary_target_language_name", "English")
+        target_lang_code = self.config.get("glossary_target_language_code", "ko")
+        target_lang_name = self.config.get("glossary_target_language_name", "Korean")
 
         prompt = base_template.replace("{target_lang_code}", target_lang_code)
         prompt = prompt.replace("{target_lang_name}", target_lang_name)
