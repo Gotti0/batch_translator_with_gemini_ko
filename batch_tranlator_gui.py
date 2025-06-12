@@ -1383,7 +1383,7 @@ class BatchTranslatorGUI:
         def _extraction_task_wrapper():
             try:
                 if app_service:
-                    result_json_path = app_service.extract_glossary( # Method name changed                      
+                    result_json_path = app_service.extract_lorebook( # Method name changed
                         input_file,
                         progress_callback=self._update_glossary_extraction_progress, # Callback changed                      
                         seed_glossary_path=app_service.config.get("glossary_json_path") # Use current glossary as seed                   
