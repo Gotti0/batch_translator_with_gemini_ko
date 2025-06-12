@@ -399,12 +399,8 @@ class BatchTranslatorGUI:
             
 
             # For priority_settings, ai_prompt_template, conflict_resolution_prompt_template - ScrolledText
-            self.glossary_chunk_size_entry.delete(0, tk.END) # Widget name changed
-            if hasattr(self, 'glossary_chunk_size_entry'): # Check if widget exists
-                self.glossary_chunk_size_entry.insert(0, str(config.get("glossary_chunk_size", 8000))) # Key changed
+            # self.glossary_chunk_size_entry was removed, so no UI load needed.
 
-
-            
             # Dynamic Lorebook Injection Settings
             self.enable_dynamic_glossary_injection_var.set(config.get("enable_dynamic_glossary_injection", False)) # Key changed, var name changed
             self.max_glossary_entries_injection_entry.delete(0, tk.END) # Widget name changed
@@ -1145,9 +1141,8 @@ class BatchTranslatorGUI:
             "glossary_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()), # Key changed
             "glossary_extraction_temperature": self.extraction_temp_scale.get(), # Key changed
             "glossary_sampling_method": self.glossary_sampling_method_combobox.get(), # Key and widget name changed
-            "glossary_max_chars_per_entry": int(self.glossary_max_chars_entry.get() or "200"), # Key and widget name changed
-            "glossary_keyword_sensitivity": self.glossary_keyword_sensitivity_combobox.get(), # Key and widget name changed
-            "glossary_chunk_size": int(self.glossary_chunk_size_entry.get() or "8000"), # Key and widget name changed
+            "glossary_max_chars_per_entry": int(self.glossary_max_chars_entry.get() or "200"), # Key and widget name changed - This was removed in _create_glossary_widgets, should be removed here too if not used.
+            "glossary_keyword_sensitivity": self.glossary_keyword_sensitivity_combobox.get(), # Key and widget name changed - This was removed in _create_glossary_widgets, should be removed here too if not used.
                 
                 # Dynamic lorebook injection settings
                 "enable_dynamic_glossary_injection": self.enable_dynamic_glossary_injection_var.get(), # Key and var name changed

@@ -289,11 +289,11 @@ class AppService:
             # 2. 설정 파일의 novel_language (통합됨)
             # 3. None (SimpleGlossaryService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
             lang_code_for_extraction = novel_language_code or self.config.get("novel_language") # 통합된 설정 사용
-            result_path = self.glossary_service.extract_and_save_lorebook( # Method changed
-                file_content, # Pass content directly
-                input_file_path, 
-                lang_code_for_extraction, # 결정된 언어 코드 전달
-                progress_callback, # 콜백 위치 변경
+            # lang_code_for_extraction은 SimpleGlossaryService.extract_and_save_glossary에서 직접 사용되지 않음.
+            result_path = self.glossary_service.extract_and_save_glossary(
+                novel_text_content=file_content,
+                input_file_path_for_naming=input_file_path,
+                progress_callback=progress_callback,
                 seed_lorebook_path=seed_lorebook_path # 시드 로어북 경로 전달
             )
             logger.info(f"로어북 추출 완료. 결과 파일: {result_path}") # Message updated
