@@ -255,18 +255,20 @@ class BatchTranslatorGUI:
         
         # 스크롤 가능한 프레임들로 탭 생성
         self.settings_scroll = ScrollableFrame(self.notebook)
-        self.lorebook_scroll = ScrollableFrame(self.notebook) # Renamed from pronouns_scroll
+        self.glossary_scroll = ScrollableFrame(self.notebook) # Renamed from lorebook_scroll
         self.log_tab = ttk.Frame(self.notebook, padding="10")  # 로그 탭은 기존 유지
         
         # 탭 추가
         self.notebook.add(self.settings_scroll.main_frame, text='설정 및 번역')
-        self.notebook.add(self.lorebook_scroll.main_frame, text='로어북 관리') # Tab text changed
+        self.notebook.add(self.glossary_scroll.main_frame, text='용어집 관리') # Tab text changed
+        
         self.notebook.add(self.log_tab, text='실행 로그')
         self.notebook.pack(expand=True, fill='both')
         
         # 위젯 생성 (스크롤 가능한 프레임 사용)
         self._create_settings_widgets()
-        self._create_lorebook_widgets() # Renamed from _create_pronouns_widgets
+        self._create_glossary_widgets() # Renamed from _create_lorebook_widgets
+        
         self._create_log_widgets()
 
         if self.app_service:
@@ -383,39 +385,43 @@ class BatchTranslatorGUI:
                 logger.warning(f"Prompts 타입이 예상과 다릅니다 ({type(prompts_val)}). 기본 프롬프트 사용.")
             
             # Lorebook specific settings
-            lorebook_json_path_val = config.get("lorebook_json_path") # Removed fallback to pronouns_csv
-            logger.debug(f"Config에서 가져온 lorebook_json_path: {lorebook_json_path_val}")
-            self.lorebook_json_path_entry.delete(0, tk.END)
-            self.lorebook_json_path_entry.insert(0, lorebook_json_path_val if lorebook_json_path_val is not None else "")
+            glossary_json_path_val = config.get("glossary_json_path") # Key changed
+            logger.debug(f"Config에서 가져온 glossary_json_path: {glossary_json_path_val}")
+            self.glossary_json_path_entry.delete(0, tk.END) # Widget name changed
+            self.glossary_json_path_entry.insert(0, glossary_json_path_val if glossary_json_path_val is not None else "")
 
-            sample_ratio = config.get("lorebook_sampling_ratio", 25.0)
+            sample_ratio = config.get("glossary_sampling_ratio", 25.0) # Key changed
             self.sample_ratio_scale.set(sample_ratio)
             self.sample_ratio_label.config(text=f"{sample_ratio:.1f}%")
             
-            max_entries_segment = config.get("lorebook_max_entries_per_segment", 5)
+            max_entries_segment = config.get("glossary_max_entries_per_segment", 5) # Key changed
+            
             self.max_entries_per_segment_spinbox.set(str(max_entries_segment))
 
-            self.lorebook_sampling_method_combobox.set(config.get("lorebook_sampling_method", "uniform"))
-            self.lorebook_max_chars_entry.delete(0, tk.END)
-            self.lorebook_max_chars_entry.insert(0, str(config.get("lorebook_max_chars_per_entry", 200)))
-            self.lorebook_keyword_sensitivity_combobox.set(config.get("lorebook_keyword_sensitivity", "medium"))
+            self.glossary_sampling_method_combobox.set(config.get("glossary_sampling_method", "uniform")) # Key changed, widget name changed
+            self.glossary_max_chars_entry.delete(0, tk.END) # Widget name changed
+            self.glossary_max_chars_entry.insert(0, str(config.get("glossary_max_chars_per_entry", 200))) # Key changed
+            self.glossary_keyword_sensitivity_combobox.set(config.get("glossary_keyword_sensitivity", "medium")) # Key changed, widget name changed
+            
             # For priority_settings, ai_prompt_template, conflict_resolution_prompt_template - ScrolledText
-            self.lorebook_priority_text.delete('1.0', tk.END)
-            self.lorebook_priority_text.insert('1.0', json.dumps(config.get("lorebook_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2))
-            self.lorebook_chunk_size_entry.delete(0, tk.END)
-            if hasattr(self, 'lorebook_chunk_size_entry'): # Check if widget exists
-                self.lorebook_chunk_size_entry.insert(0, str(config.get("lorebook_chunk_size", 8000)))
+            self.glossary_priority_text.delete('1.0', tk.END) # Widget name changed
+            self.glossary_priority_text.insert('1.0', json.dumps(config.get("glossary_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2)) # Key changed
+            self.glossary_chunk_size_entry.delete(0, tk.END) # Widget name changed
+            if hasattr(self, 'glossary_chunk_size_entry'): # Check if widget exists
+                self.glossary_chunk_size_entry.insert(0, str(config.get("glossary_chunk_size", 8000))) # Key changed
+
 
             
             # Dynamic Lorebook Injection Settings
-            self.enable_dynamic_lorebook_injection_var.set(config.get("enable_dynamic_lorebook_injection", False))
-            self.max_lorebook_entries_injection_entry.delete(0, tk.END)
-            self.max_lorebook_entries_injection_entry.insert(0, str(config.get("max_lorebook_entries_per_chunk_injection", 3)))
-            self.max_lorebook_chars_injection_entry.delete(0, tk.END) # 이 UI 요소는 유지
-            self.max_lorebook_chars_injection_entry.insert(0, str(config.get("max_lorebook_chars_per_chunk_injection", 500))) # 이 UI 요소는 유지
+            self.enable_dynamic_glossary_injection_var.set(config.get("enable_dynamic_glossary_injection", False)) # Key changed, var name changed
+            self.max_glossary_entries_injection_entry.delete(0, tk.END) # Widget name changed
+            self.max_glossary_entries_injection_entry.insert(0, str(config.get("max_glossary_entries_per_chunk_injection", 3))) # Key changed
+            self.max_glossary_chars_injection_entry.delete(0, tk.END) # Widget name changed
+            self.max_glossary_chars_injection_entry.insert(0, str(config.get("max_glossary_chars_per_chunk_injection", 500))) # Key changed
             # lorebook_json_path_for_injection_entry 관련 UI 로드 코드는 제거 (아래 _create_settings_widgets 에서 해당 UI 요소 제거됨)
 
-            extraction_temp = config.get("lorebook_extraction_temperature", 0.2)
+            extraction_temp = config.get("glossary_extraction_temperature", 0.2) # Key changed
+            
             self.extraction_temp_scale.set(extraction_temp)
             self.extraction_temp_label.config(text=f"{extraction_temp:.2f}")
 
@@ -649,43 +655,46 @@ class BatchTranslatorGUI:
         self._toggle_content_safety_details() # Set initial state and text
 
         # 동적 로어북 주입 설정
-        dynamic_lorebook_outer_frame = ttk.LabelFrame(settings_frame, text="동적 로어북 주입 설정", padding="10")
-        dynamic_lorebook_outer_frame.pack(fill="x", padx=5, pady=5)
+        dynamic_glossary_outer_frame = ttk.LabelFrame(settings_frame, text="동적 용어집 주입 설정", padding="10") # Text changed
+        dynamic_glossary_outer_frame.pack(fill="x", padx=5, pady=5)
 
-        self.dynamic_lorebook_expanded_var = tk.BooleanVar(value=True)
-        self.dynamic_lorebook_toggle_button = ttk.Checkbutton(
-            dynamic_lorebook_outer_frame,
-            variable=self.dynamic_lorebook_expanded_var,
-            command=self._toggle_dynamic_lorebook_details
+        self.dynamic_glossary_expanded_var = tk.BooleanVar(value=True) # Var name changed
+        self.dynamic_glossary_toggle_button = ttk.Checkbutton( # Widget name changed
+            dynamic_glossary_outer_frame,
+            variable=self.dynamic_glossary_expanded_var, # Var name changed
+            command=self._toggle_dynamic_glossary_details # Command changed
         )
-        Tooltip(self.dynamic_lorebook_toggle_button, "번역 시 동적으로 로어북 내용을 프롬프트에 주입하는 기능의 세부 설정을 보거나 숨깁니다.")
-        self.dynamic_lorebook_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        Tooltip(self.dynamic_glossary_toggle_button, "번역 시 동적으로 용어집 내용을 프롬프트에 주입하는 기능의 세부 설정을 보거나 숨깁니다.") # Text changed
+        self.dynamic_glossary_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
 
-        self.dynamic_lorebook_details_frame = ttk.Frame(dynamic_lorebook_outer_frame)
-        self.dynamic_lorebook_details_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+        self.dynamic_glossary_details_frame = ttk.Frame(dynamic_glossary_outer_frame) # Widget name changed
+        self.dynamic_glossary_details_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
 
-        self.enable_dynamic_lorebook_injection_var = tk.BooleanVar()
-        self.enable_dynamic_lorebook_injection_check = ttk.Checkbutton(
-            self.dynamic_lorebook_details_frame, # Parent changed
-            text="동적 로어북 주입 활성화",
-            variable=self.enable_dynamic_lorebook_injection_var
+        self.enable_dynamic_glossary_injection_var = tk.BooleanVar() # Var name changed
+        self.enable_dynamic_glossary_injection_check = ttk.Checkbutton( # Widget name changed
+            self.dynamic_glossary_details_frame, # Parent changed
+            text="동적 용어집 주입 활성화", # Text changed
+            variable=self.enable_dynamic_glossary_injection_var # Var name changed
+        
         )
-        Tooltip(self.enable_dynamic_lorebook_injection_check, "번역 시 로어북 탭에서 설정된 로어북 JSON 파일의 내용을\n프롬프트에 동적으로 주입하여 번역 일관성을 높입니다.")
-        self.enable_dynamic_lorebook_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
+        Tooltip(self.enable_dynamic_glossary_injection_check, "번역 시 용어집 탭에서 설정된 용어집 JSON 파일의 내용을\n프롬프트에 동적으로 주입하여 번역 일관성을 높입니다.") # Text changed
+        self.enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
 
-        ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 항목 수:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 항목 수:"), "하나의 번역 청크에 주입될 로어북 항목의 최대 개수입니다.")
-        self.max_lorebook_entries_injection_entry = ttk.Entry(self.dynamic_lorebook_details_frame, width=5) # Parent changed
-        self.max_lorebook_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        Tooltip(self.max_lorebook_entries_injection_entry, "최대 주입 항목 수를 입력하세요.")
+        ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 항목 수:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 항목 수:"), "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.") # Text changed
+        self.max_glossary_entries_injection_entry = ttk.Entry(self.dynamic_glossary_details_frame, width=5) # Widget name changed, Parent changed
+        self.max_glossary_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        Tooltip(self.max_glossary_entries_injection_entry, "최대 주입 항목 수를 입력하세요.")
 
-        ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 문자 수:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(ttk.Label(self.dynamic_lorebook_details_frame, text="청크당 최대 주입 문자 수:"), "하나의 번역 청크에 주입될 로어북 내용의 최대 총 문자 수입니다.")
-        self.max_lorebook_chars_injection_entry = ttk.Entry(self.dynamic_lorebook_details_frame, width=10) # Parent changed
-        self.max_lorebook_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
-        Tooltip(self.max_lorebook_chars_injection_entry, "최대 주입 문자 수를 입력하세요.")
+        ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 문자 수:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 문자 수:"), "하나의 번역 청크에 주입될 용어집 내용의 최대 총 문자 수입니다.") # Text changed
+        self.max_glossary_chars_injection_entry = ttk.Entry(self.dynamic_glossary_details_frame, width=10) # Widget name changed, Parent changed
+        self.max_glossary_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        Tooltip(self.max_glossary_chars_injection_entry, "최대 주입 문자 수를 입력하세요.")
 
-        self._toggle_dynamic_lorebook_details() # Set initial state and text
+        self._toggle_dynamic_glossary_details() # Set initial state and text, function name changed
+
+
 
         # 주입용 로어북 JSON 경로 입력 필드는 "로어북 관리" 탭의 경로를 사용하므로 여기서는 제거합니다.
         # 액션 버튼들
@@ -728,13 +737,15 @@ class BatchTranslatorGUI:
             self.content_safety_details_frame.grid_remove()
             self.content_safety_toggle_button.config(text="▼ 세부 설정 보기")
 
-    def _toggle_dynamic_lorebook_details(self):
-        if self.dynamic_lorebook_expanded_var.get():
-            self.dynamic_lorebook_details_frame.grid()
-            self.dynamic_lorebook_toggle_button.config(text="▲ 세부 설정 숨기기")
+    def _toggle_dynamic_glossary_details(self): # Function name changed
+        if self.dynamic_glossary_expanded_var.get(): # Var name changed
+            self.dynamic_glossary_details_frame.grid() # Widget name changed
+            self.dynamic_glossary_toggle_button.config(text="▲ 세부 설정 숨기기") # Widget name changed
+        
         else:
-            self.dynamic_lorebook_details_frame.grid_remove()
-            self.dynamic_lorebook_toggle_button.config(text="▼ 세부 설정 보기")
+            self.dynamic_glossary_details_frame.grid_remove() # Widget name changed
+            self.dynamic_glossary_toggle_button.config(text="▼ 세부 설정 보기") # Widget name changed
+
 
     def _browse_service_account_file(self):
         filepath = filedialog.askopenfilename(
@@ -764,38 +775,43 @@ class BatchTranslatorGUI:
         logger.debug(f"Vertex 필드 상태: {vertex_related_state}, API 키 필드 상태: {api_related_state}")
 
 
-    def _create_lorebook_widgets(self): # Renamed from _create_pronouns_widgets
+    def _create_glossary_widgets(self): # Renamed from _create_lorebook_widgets
         # 스크롤 가능한 프레임의 내부 프레임 사용
-        lorebook_frame = self.lorebook_scroll.scrollable_frame # Renamed
+        glossary_frame = self.glossary_scroll.scrollable_frame # Renamed
+
         
         # 로어북 JSON 파일 설정
-        path_frame = ttk.LabelFrame(lorebook_frame, text="로어북 JSON 파일", padding="10") # Text changed
+        path_frame = ttk.LabelFrame(glossary_frame, text="용어집 JSON 파일", padding="10") # Text changed
+        
         path_frame.pack(fill="x", padx=5, pady=5)
         
         ttk.Label(path_frame, text="JSON 파일 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w") # Text changed
-        self.lorebook_json_path_entry = ttk.Entry(path_frame, width=50) # Renamed
-        self.lorebook_json_path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        Tooltip(self.lorebook_json_path_entry, "사용할 로어북 JSON 파일의 경로입니다.\n추출 기능을 사용하면 자동으로 채워지거나, 직접 입력/선택할 수 있습니다.")
-        self.browse_lorebook_json_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_lorebook_json) # Renamed
-        self.browse_lorebook_json_button.grid(row=0, column=2, padx=5, pady=5)
+        self.glossary_json_path_entry = ttk.Entry(path_frame, width=50) # Renamed
+        self.glossary_json_path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.glossary_json_path_entry, "사용할 용어집 JSON 파일의 경로입니다.\n추출 기능을 사용하면 자동으로 채워지거나, 직접 입력/선택할 수 있습니다.") # Text changed
+        self.browse_glossary_json_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_glossary_json) # Renamed
+        self.browse_glossary_json_button.grid(row=0, column=2, padx=5, pady=5)
         
 
-        extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 로어북 추출", command=self._extract_lorebook_thread) # Text and command changed
+        extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 용어집 추출", command=self._extract_glossary_thread) # Text and command changed
         extract_button.grid(row=2, column=0, columnspan=3, padx=5, pady=10)
-        Tooltip(extract_button, "'설정 및 번역' 탭에서 선택된 입력 파일을 분석하여 로어북을 추출하고, 그 결과를 아래 텍스트 영역에 표시합니다.")
+        Tooltip(extract_button, "'설정 및 번역' 탭에서 선택된 입력 파일을 분석하여 용어집을 추출하고, 그 결과를 아래 텍스트 영역에 표시합니다.") # Text changed
         
-        self.lorebook_progress_label = ttk.Label(path_frame, text="로어북 추출 대기 중...") # Renamed
-        self.lorebook_progress_label.grid(row=3, column=0, columnspan=3, padx=5, pady=2)
-        Tooltip(self.lorebook_progress_label, "로어북 추출 작업의 진행 상태를 표시합니다.")
+        self.glossary_progress_label = ttk.Label(path_frame, text="용어집 추출 대기 중...") # Renamed
+        self.glossary_progress_label.grid(row=3, column=0, columnspan=3, padx=5, pady=2)
+        Tooltip(self.glossary_progress_label, "용어집 추출 작업의 진행 상태를 표시합니다.") # Text changed
+
 
         # 로어북 추출 설정 프레임
-        extraction_settings_frame = ttk.LabelFrame(lorebook_frame, text="로어북 추출 설정", padding="10") # Text changed
+        extraction_settings_frame = ttk.LabelFrame(glossary_frame, text="용어집 추출 설정", padding="10") # Text changed
+        
         extraction_settings_frame.pack(fill="x", padx=5, pady=5)
         
         # 샘플링 비율 설정 (lorebook_sampling_ratio)
         ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):"), "로어북 추출 시 전체 텍스트 중 분석할 비율입니다.\n100%로 설정하면 전체 텍스트를 분석합니다.")
+        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):"), "용어집 추출 시 전체 텍스트 중 분석할 비율입니다.\n100%로 설정하면 전체 텍스트를 분석합니다.") # Text changed
         
+
         sample_ratio_frame = ttk.Frame(extraction_settings_frame)
         sample_ratio_frame.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
         
@@ -808,15 +824,17 @@ class BatchTranslatorGUI:
             command=self._update_sample_ratio_label
         )
         self.sample_ratio_scale.pack(side="left", padx=(0,10))
-        Tooltip(self.sample_ratio_scale, "샘플링 비율을 조절합니다 (5.0% ~ 100.0%).")
+        Tooltip(self.sample_ratio_scale, "용어집 추출 샘플링 비율을 조절합니다 (5.0% ~ 100.0%).") # Text changed
         
+
         self.sample_ratio_label = ttk.Label(sample_ratio_frame, text="25.0%", width=8)
         self.sample_ratio_label.pack(side="left")
         Tooltip(self.sample_ratio_label, "현재 설정된 샘플링 비율입니다.")
         
         # 도움말 레이블
-        ttk.Label(extraction_settings_frame, 
-                text="전체 텍스트에서 로어북 추출에 사용할 세그먼트 비율", # Text changed
+        ttk.Label(extraction_settings_frame,
+                text="전체 텍스트에서 용어집 추출에 사용할 세그먼트 비율", # Text changed
+                
                 font=("Arial", 8), 
                 foreground="gray").grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
         
@@ -827,7 +845,8 @@ class BatchTranslatorGUI:
         max_entries_segment_frame = ttk.Frame(extraction_settings_frame)
         max_entries_segment_frame.grid(row=2, column=1, columnspan=2, padx=5, pady=(15,5), sticky="ew")
         
-        self.max_entries_per_segment_spinbox = ttk.Spinbox( # Renamed
+        self.max_entries_per_segment_spinbox = ttk.Spinbox(
+            
             max_entries_segment_frame,
             from_=1,
             to=20, # Adjusted range
@@ -837,48 +856,55 @@ class BatchTranslatorGUI:
             validatecommand=(self.master.register(self._validate_max_entries_segment), '%P') # Validation changed
         )
         self.max_entries_per_segment_spinbox.pack(side="left", padx=(0,10))
-        Tooltip(self.max_entries_per_segment_spinbox, "세그먼트 당 추출할 최대 항목 수를 설정합니다 (1 ~ 20).")
+        Tooltip(self.max_entries_per_segment_spinbox, "용어집 추출 시 세그먼트 당 최대 항목 수를 설정합니다 (1 ~ 20).") # Text changed
+        
         self.max_entries_per_segment_spinbox.set("5")  # 기본값
         
-        self.max_entries_per_segment_label = ttk.Label(max_entries_segment_frame, text="개 항목", width=8) # Renamed
+        self.max_entries_per_segment_label = ttk.Label(max_entries_segment_frame, text="개 항목", width=8)
+        
         self.max_entries_per_segment_label.pack(side="left")
         Tooltip(self.max_entries_per_segment_label, "현재 설정된 세그먼트 당 최대 항목 수입니다.")
 
         # New Lorebook settings
         ttk.Label(extraction_settings_frame, text="샘플링 방식:").grid(row=6, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 방식:"), "텍스트에서 로어북 추출을 위해 세그먼트를 선택하는 방식입니다.\nuniform: 균등 간격, random: 무작위 선택.")
-        self.lorebook_sampling_method_combobox = ttk.Combobox(extraction_settings_frame, values=["uniform", "random"], width=15)
-        self.lorebook_sampling_method_combobox.grid(row=6, column=1, padx=5, pady=5, sticky="w")
-        self.lorebook_sampling_method_combobox.set("uniform")
-        Tooltip(self.lorebook_sampling_method_combobox, "샘플링 방식을 선택하세요.")
+        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 방식:"), "텍스트에서 용어집 추출을 위해 세그먼트를 선택하는 방식입니다.\nuniform: 균등 간격, random: 무작위 선택.") # Text changed
+        self.glossary_sampling_method_combobox = ttk.Combobox(extraction_settings_frame, values=["uniform", "random"], width=15) # Widget name changed
+        self.glossary_sampling_method_combobox.grid(row=6, column=1, padx=5, pady=5, sticky="w")
+        self.glossary_sampling_method_combobox.set("uniform")
+        Tooltip(self.glossary_sampling_method_combobox, "샘플링 방식을 선택하세요.")
+
 
         ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:").grid(row=7, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:"), "추출된 각 로어북 항목 설명의 최대 글자 수입니다.")
-        self.lorebook_max_chars_entry = ttk.Entry(extraction_settings_frame, width=10)
-        self.lorebook_max_chars_entry.grid(row=7, column=1, padx=5, pady=5, sticky="w")
-        self.lorebook_max_chars_entry.insert(0, "200")
-        Tooltip(self.lorebook_max_chars_entry, "항목 당 최대 글자 수를 입력하세요.")
+        Tooltip(ttk.Label(extraction_settings_frame, text="항목 당 최대 글자 수:"), "추출된 각 용어집 항목 설명의 최대 글자 수입니다.") # Text changed
+        self.glossary_max_chars_entry = ttk.Entry(extraction_settings_frame, width=10) # Widget name changed
+        self.glossary_max_chars_entry.grid(row=7, column=1, padx=5, pady=5, sticky="w")
+        self.glossary_max_chars_entry.insert(0, "200")
+        Tooltip(self.glossary_max_chars_entry, "항목 당 최대 글자 수를 입력하세요.")
+
 
         ttk.Label(extraction_settings_frame, text="키워드 민감도:").grid(row=8, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="키워드 민감도:"), "로어북 키워드 추출 시 민감도입니다.\nhigh: 더 많은 키워드, medium: 중간, low: 적은 키워드.")
-        self.lorebook_keyword_sensitivity_combobox = ttk.Combobox(extraction_settings_frame, values=["low", "medium", "high"], width=15)
-        self.lorebook_keyword_sensitivity_combobox.grid(row=8, column=1, padx=5, pady=5, sticky="w")
-        self.lorebook_keyword_sensitivity_combobox.set("medium")
-        Tooltip(self.lorebook_keyword_sensitivity_combobox, "키워드 추출 민감도를 선택하세요.")
+        Tooltip(ttk.Label(extraction_settings_frame, text="키워드 민감도:"), "용어집 키워드 추출 시 민감도입니다.\nhigh: 더 많은 키워드, medium: 중간, low: 적은 키워드.") # Text changed
+        self.glossary_keyword_sensitivity_combobox = ttk.Combobox(extraction_settings_frame, values=["low", "medium", "high"], width=15) # Widget name changed
+        self.glossary_keyword_sensitivity_combobox.grid(row=8, column=1, padx=5, pady=5, sticky="w")
+        self.glossary_keyword_sensitivity_combobox.set("medium")
+        Tooltip(self.glossary_keyword_sensitivity_combobox, "키워드 추출 민감도를 선택하세요.")
 
-        ttk.Label(extraction_settings_frame, text="로어북 세그먼트 크기:").grid(row=9, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="로어북 세그먼트 크기:"), "로어북 추출을 위해 텍스트를 나누는 단위(세그먼트)의 크기입니다.")
-        self.lorebook_chunk_size_entry = ttk.Entry(extraction_settings_frame, width=10)
-        self.lorebook_chunk_size_entry.grid(row=9, column=1, padx=5, pady=5, sticky="w")
-        self.lorebook_chunk_size_entry.insert(0, "8000")
-        Tooltip(self.lorebook_chunk_size_entry, "로어북 세그먼트 크기를 입력하세요.")
+        ttk.Label(extraction_settings_frame, text="용어집 세그먼트 크기:").grid(row=9, column=0, padx=5, pady=5, sticky="w") # Text changed
+        Tooltip(ttk.Label(extraction_settings_frame, text="용어집 세그먼트 크기:"), "용어집 추출을 위해 텍스트를 나누는 단위(세그먼트)의 크기입니다.") # Text changed
+        self.glossary_chunk_size_entry = ttk.Entry(extraction_settings_frame, width=10) # Widget name changed
+        self.glossary_chunk_size_entry.grid(row=9, column=1, padx=5, pady=5, sticky="w")
+        self.glossary_chunk_size_entry.insert(0, "8000")
+        Tooltip(self.glossary_chunk_size_entry, "용어집 세그먼트 크기를 입력하세요.") # Text changed
+
+
 
         ttk.Label(extraction_settings_frame, text="우선순위 설정 (JSON):").grid(row=10, column=0, padx=5, pady=5, sticky="nw")
-        self.lorebook_priority_text = scrolledtext.ScrolledText(extraction_settings_frame, width=40, height=5, wrap=tk.WORD)
-        self.lorebook_priority_text.grid(row=10, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
-        self.lorebook_priority_text.insert('1.0', json.dumps({"character": 5, "worldview": 5, "story_element": 5}, indent=2))
-        Tooltip(self.lorebook_priority_text, "로어북 항목 추출 시 우선순위를 JSON 형식으로 설정합니다.\n예: {\"인물\": 10, \"장소\": 5}")
+        self.glossary_priority_text = scrolledtext.ScrolledText(extraction_settings_frame, width=40, height=5, wrap=tk.WORD) # Widget name changed
+        self.glossary_priority_text.grid(row=10, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        self.glossary_priority_text.insert('1.0', json.dumps({"character": 5, "worldview": 5, "story_element": 5}, indent=2))
+        Tooltip(self.glossary_priority_text, "용어집 항목 추출 시 우선순위를 JSON 형식으로 설정합니다.\n예: {\"인물\": 10, \"장소\": 5}") # Text changed
         
+
         # 도움말 레이블
         ttk.Label(extraction_settings_frame, 
                 text="번역 시 프롬프트에 포함할 최대 고유명사 개수", 
@@ -893,17 +919,18 @@ class BatchTranslatorGUI:
             variable=self.advanced_var,
             command=self._toggle_advanced_settings
         )
-        Tooltip(advanced_check, "로어북 추출에 사용될 고급 설정을 표시하거나 숨깁니다.")
+        Tooltip(advanced_check, "용어집 추출에 사용될 고급 설정을 표시하거나 숨깁니다.") # Text changed
+        
         advanced_check.grid(row=4, column=0, columnspan=3, padx=5, pady=(15,5), sticky="w")
         
         # 고급 설정 프레임 (초기에는 숨김)
         self.advanced_frame = ttk.Frame(extraction_settings_frame)
         self.advanced_frame.grid(row=5, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
         
-        # 온도 설정 (고유명사 추출용)
+        # 온도 설정 (용어집 추출용)        
         ttk.Label(self.advanced_frame, text="추출 온도:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(self.advanced_frame, text="추출 온도:"), "로어북 추출 시 모델 응답의 무작위성입니다.\n낮을수록 일관적, 높을수록 다양하지만 덜 정확할 수 있습니다.")
-        
+        Tooltip(ttk.Label(self.advanced_frame, text="추출 온도:"), "용어집 추출 시 모델 응답의 무작위성입니다.\n낮을수록 일관적, 높을수록 다양하지만 덜 정확할 수 있습니다.") # Text changed
+    
         self.extraction_temp_scale = ttk.Scale(
             self.advanced_frame,
             from_=0.0,
@@ -913,98 +940,114 @@ class BatchTranslatorGUI:
             command=self._update_extraction_temp_label
         )
         self.extraction_temp_scale.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        Tooltip(self.extraction_temp_scale, "로어북 추출 온도를 조절합니다 (0.0 ~ 1.0).")
+        Tooltip(self.extraction_temp_scale, "용어집 추출 온도를 조절합니다 (0.0 ~ 1.0).") # Text changed
+        
         self.extraction_temp_scale.set(0.2)  # 기본값
         
         self.extraction_temp_label = ttk.Label(self.advanced_frame, text="0.20", width=6)
         self.extraction_temp_label.grid(row=0, column=2, padx=5, pady=5)
-        Tooltip(self.extraction_temp_label, "현재 설정된 로어북 추출 온도입니다.")
+        Tooltip(self.extraction_temp_label, "현재 설정된 용어집 추출 온도입니다.") # Text changed
+        
+
         
         # 초기에는 고급 설정 숨김
         self.advanced_frame.grid_remove()
 
         # 액션 버튼 프레임 추가
-        lorebook_action_frame = ttk.Frame(lorebook_frame, padding="10") # Renamed
-        lorebook_action_frame.pack(fill="x", padx=5, pady=5)
+        glossary_action_frame = ttk.Frame(glossary_frame, padding="10") # Renamed
+        glossary_action_frame.pack(fill="x", padx=5, pady=5)
         
+
         # 설정 저장 버튼
-        self.save_lorebook_settings_button = ttk.Button( # Renamed
-            lorebook_action_frame, 
-            text="로어북 설정 저장", # Text changed
-            command=self._save_lorebook_settings # Command changed
+        self.save_glossary_settings_button = ttk.Button( # Renamed
+            glossary_action_frame,
+            text="용어집 설정 저장", # Text changed
+            command=self._save_glossary_settings # Command changed
         )
-        Tooltip(self.save_lorebook_settings_button, "현재 로어북 탭의 설정을 config.json 파일에 저장합니다.")
-        self.save_lorebook_settings_button.pack(side="left", padx=5)
+        Tooltip(self.save_glossary_settings_button, "현재 용어집 탭의 설정을 config.json 파일에 저장합니다.") # Text changed
+        self.save_glossary_settings_button.pack(side="left", padx=5)
         
+
         # 설정 초기화 버튼
-        self.reset_lorebook_settings_button = ttk.Button( # Renamed
-            lorebook_action_frame, 
+        self.reset_glossary_settings_button = ttk.Button( # Renamed
+            glossary_action_frame, 
             text="기본값으로 초기화", 
-            command=self._reset_lorebook_settings # Command changed
+            command=self._reset_glossary_settings # Command changed
         )
-        Tooltip(self.reset_lorebook_settings_button, "로어북 탭의 모든 설정을 프로그램 기본값으로 되돌립니다.")
-        self.reset_lorebook_settings_button.pack(side="left", padx=5)
+        Tooltip(self.reset_glossary_settings_button, "용어집 탭의 모든 설정을 프로그램 기본값으로 되돌립니다.") # Text changed
+        self.reset_glossary_settings_button.pack(side="left", padx=5)
+        
+
         
         # 실시간 미리보기 버튼
-        self.preview_lorebook_settings_button = ttk.Button( # Renamed
-            lorebook_action_frame, 
+        self.preview_glossary_settings_button = ttk.Button( # Renamed
+            glossary_action_frame,
             text="설정 미리보기", 
-            command=self._preview_lorebook_settings # Command changed
+            command=self._preview_glossary_settings # Command changed
         )
-        Tooltip(self.preview_lorebook_settings_button, "현재 로어북 설정이 실제 추출에 미칠 영향을 간략하게 미리봅니다.")
-        self.preview_lorebook_settings_button.pack(side="right", padx=5)
+        Tooltip(self.preview_glossary_settings_button, "현재 용어집 설정이 실제 추출에 미칠 영향을 간략하게 미리봅니다.") # Text changed
+        self.preview_glossary_settings_button.pack(side="right", padx=5)
+
+
 
         # 상태 표시 레이블
-        self.lorebook_status_label = ttk.Label( # Renamed
-            lorebook_action_frame, 
-            text="⏸️ 설정 변경 대기 중...", 
+        self.glossary_status_label = ttk.Label( # Renamed
+            glossary_action_frame,
+
             font=("Arial", 9),
             foreground="gray"
         )
-        Tooltip(self.lorebook_status_label, "로어북 설정 변경 및 저장 상태를 표시합니다.")
-        self.lorebook_status_label.pack(side="bottom", pady=5)
+        Tooltip(self.glossary_status_label, "용어집 설정 변경 및 저장 상태를 표시합니다.") # Text changed
+        self.glossary_status_label.pack(side="bottom", pady=5)
+
+
+
+        
 
         # Lorebook Display Area
-        lorebook_display_frame = ttk.LabelFrame(lorebook_frame, text="추출된 로어북 (JSON)", padding="10")
-        lorebook_display_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        Tooltip(lorebook_display_frame, "추출되거나 불러온 로어북의 내용이 JSON 형식으로 표시됩니다.")
+        glossary_display_frame = ttk.LabelFrame(glossary_frame, text="추출된 용어집 (JSON)", padding="10") # Text changed
+        glossary_display_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(glossary_display_frame, "추출되거나 불러온 용어집의 내용이 JSON 형식으로 표시됩니다.") # Text changed
 
-        self.lorebook_display_text = scrolledtext.ScrolledText(lorebook_display_frame, wrap=tk.WORD, height=10, width=70)
-        self.lorebook_display_text.pack(fill="both", expand=True, padx=5, pady=5)
-        Tooltip(self.lorebook_display_text, "로어북 내용입니다. 직접 편집은 불가능하며, 'JSON 저장'으로 파일 저장 후 수정할 수 있습니다.")
+        self.glossary_display_text = scrolledtext.ScrolledText(glossary_display_frame, wrap=tk.WORD, height=10, width=70) # Widget name changed
+        self.glossary_display_text.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(self.glossary_display_text, "용어집 내용입니다. 직접 편집은 불가능하며, 'JSON 저장'으로 파일 저장 후 수정할 수 있습니다.") # Text changed
 
-        lorebook_display_buttons_frame = ttk.Frame(lorebook_display_frame)
-        lorebook_display_buttons_frame.pack(fill="x", pady=5)
+        glossary_display_buttons_frame = ttk.Frame(glossary_display_frame) # Widget name changed
+        glossary_display_buttons_frame.pack(fill="x", pady=5)
 
-        self.load_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="로어북 불러오기", command=self._load_lorebook_to_display)
-        self.load_lorebook_button.pack(side="left", padx=5)
-        Tooltip(self.load_lorebook_button, "기존 로어북 JSON 파일을 불러와 아래 텍스트 영역에 표시합니다.")
+        self.load_glossary_button = ttk.Button(glossary_display_buttons_frame, text="용어집 불러오기", command=self._load_glossary_to_display) # Widget name, text, command changed
+        self.load_glossary_button.pack(side="left", padx=5)
+        Tooltip(self.load_glossary_button, "기존 용어집 JSON 파일을 불러와 아래 텍스트 영역에 표시합니다.") # Text changed
 
-        self.copy_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="JSON 복사", command=self._copy_lorebook_json)
-        self.copy_lorebook_button.pack(side="left", padx=5)
-        Tooltip(self.copy_lorebook_button, "아래 텍스트 영역에 표시된 로어북 JSON 내용을 클립보드에 복사합니다.")
+        self.copy_glossary_button = ttk.Button(glossary_display_buttons_frame, text="JSON 복사", command=self._copy_glossary_json) # Widget name, command changed
+        self.copy_glossary_button.pack(side="left", padx=5)
+        Tooltip(self.copy_glossary_button, "아래 텍스트 영역에 표시된 용어집 JSON 내용을 클립보드에 복사합니다.") # Text changed
 
-        self.save_displayed_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="JSON 저장", command=self._save_displayed_lorebook_json)
-        self.save_displayed_lorebook_button.pack(side="left", padx=5)
-        Tooltip(self.save_displayed_lorebook_button, "아래 텍스트 영역에 표시된 로어북 JSON 내용을 새 파일로 저장합니다.")
+        self.save_displayed_glossary_button = ttk.Button(glossary_display_buttons_frame, text="JSON 저장", command=self._save_displayed_glossary_json) # Widget name, command changed
+        self.save_displayed_glossary_button.pack(side="left", padx=5)
+        Tooltip(self.save_displayed_glossary_button, "아래 텍스트 영역에 표시된 용어집 JSON 내용을 새 파일로 저장합니다.") # Text changed
 
-        self.edit_lorebook_button = ttk.Button(lorebook_display_buttons_frame, text="로어북 편집", command=self._open_lorebook_editor)
-        self.edit_lorebook_button.pack(side="left", padx=5)
-        Tooltip(self.edit_lorebook_button, "표시된 로어북 내용을 별도의 편집기 창에서 수정합니다.")
+        self.edit_glossary_button = ttk.Button(glossary_display_buttons_frame, text="용어집 편집", command=self._open_glossary_editor) # Widget name, text, command changed
+        self.edit_glossary_button.pack(side="left", padx=5)
+        Tooltip(self.edit_glossary_button, "표시된 용어집 내용을 별도의 편집기 창에서 수정합니다.") # Text changed
 
 
 
 
         # 설정 변경 감지 이벤트 바인딩
-        self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_lorebook_setting_changed) # Changed
-        self.max_entries_per_segment_spinbox.bind("<KeyRelease>", self._on_lorebook_setting_changed) # Changed
-        self.extraction_temp_scale.bind("<ButtonRelease-1>", self._on_lorebook_setting_changed) # Changed
+        self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_glossary_setting_changed) # Changed
+        self.max_entries_per_segment_spinbox.bind("<KeyRelease>", self._on_glossary_setting_changed) # Changed
+        self.extraction_temp_scale.bind("<ButtonRelease-1>", self._on_glossary_setting_changed) # Changed
+        
         # Bindings for new lorebook settings
-        self.lorebook_sampling_method_combobox.bind("<<ComboboxSelected>>", self._on_lorebook_setting_changed)
-        self.lorebook_max_chars_entry.bind("<KeyRelease>", self._on_lorebook_setting_changed)
-        self.lorebook_keyword_sensitivity_combobox.bind("<<ComboboxSelected>>", self._on_lorebook_setting_changed)
-        self.lorebook_chunk_size_entry.bind("<KeyRelease>", self._on_lorebook_setting_changed)
-        self.lorebook_priority_text.bind("<KeyRelease>", self._on_lorebook_setting_changed)
+        self.glossary_sampling_method_combobox.bind("<<ComboboxSelected>>", self._on_glossary_setting_changed) # Widget name, command changed
+        self.glossary_max_chars_entry.bind("<KeyRelease>", self._on_glossary_setting_changed) # Widget name, command changed
+        self.glossary_keyword_sensitivity_combobox.bind("<<ComboboxSelected>>", self._on_glossary_setting_changed) # Widget name, command changed
+        self.glossary_chunk_size_entry.bind("<KeyRelease>", self._on_glossary_setting_changed) # Widget name, command changed
+        self.glossary_priority_text.bind("<KeyRelease>", self._on_glossary_setting_changed) # Widget name, command changed
+
+
 
     def _create_log_widgets(self):
         self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD, state=tk.DISABLED, height=20)
@@ -1101,11 +1144,14 @@ class BatchTranslatorGUI:
             p = Path(filepath)
             app_service_instance = self.app_service
             suggested_output = p.parent / f"{p.stem}_translated{p.suffix}" # type: ignore
-            self.output_file_entry.delete(0, tk.END)
+            self.output_file_entry.delete(0, tk.END) # type: ignore
+            
             self.output_file_entry.insert(0, str(suggested_output))
-            suggested_lorebook_json = p.parent / f"{p.stem}{self.app_service.config.get('lorebook_output_json_filename_suffix', '_lorebook.json') if self.app_service else '_lorebook.json'}"
-            self.lorebook_json_path_entry.delete(0, tk.END) # Changed
-            self.lorebook_json_path_entry.insert(0, str(suggested_lorebook_json))
+            suggested_glossary_json = p.parent / f"{p.stem}{self.app_service.config.get('glossary_output_json_filename_suffix', '_glossary.json') if self.app_service else '_glossary.json'}" # Key changed
+            self.glossary_json_path_entry.delete(0, tk.END) # Changed
+            self.glossary_json_path_entry.insert(0, str(suggested_glossary_json))
+
+
 
     def _browse_output_file(self):
         filepath = filedialog.asksaveasfilename(title="출력 파일 선택", defaultextension=".txt", filetypes=(("텍스트 파일", "*.txt"), ("모든 파일", "*.*")))
@@ -1113,20 +1159,24 @@ class BatchTranslatorGUI:
             self.output_file_entry.delete(0, tk.END)
             self.output_file_entry.insert(0, filepath)
 
-    def _browse_lorebook_json(self): # Renamed
+    def _browse_glossary_json(self): # Renamed
+        
         initial_dir = ""
         input_file_path = self.input_file_entry.get()
         if input_file_path and Path(input_file_path).exists():
             initial_dir = str(Path(input_file_path).parent)
         
         filepath = filedialog.askopenfilename(
-            title="로어북 JSON 파일 선택",  # Text changed
+           title="용어집 JSON 파일 선택",  # Text changed
+            
             filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*")), # Type changed
             initialdir=initial_dir
             )
         if filepath:
-            self.lorebook_json_path_entry.delete(0, tk.END) # Changed
-            self.lorebook_json_path_entry.insert(0, filepath)
+            self.glossary_json_path_entry.delete(0, tk.END) # Changed
+            self.glossary_json_path_entry.insert(0, filepath)
+
+
 
     def _get_config_from_ui(self) -> Dict[str, Any]:
         prompt_content = self.prompt_text.get("1.0", tk.END).strip()
@@ -1173,18 +1223,20 @@ class BatchTranslatorGUI:
             "novel_language": self.novel_language_entry.get().strip() or "auto",
             "novel_language_fallback": self.novel_language_fallback_entry.get().strip() or "ja",
             # Lorebook settings
-            "lorebook_json_path": self.lorebook_json_path_entry.get().strip() or None,
-            "lorebook_sampling_ratio": self.sample_ratio_scale.get(),
-            "lorebook_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()),
-            "lorebook_extraction_temperature": self.extraction_temp_scale.get(),
-            "lorebook_sampling_method": self.lorebook_sampling_method_combobox.get(),
-            "lorebook_max_chars_per_entry": int(self.lorebook_max_chars_entry.get() or "200"),
-            "lorebook_keyword_sensitivity": self.lorebook_keyword_sensitivity_combobox.get(),
-            "lorebook_chunk_size": int(self.lorebook_chunk_size_entry.get() or "8000"),
+            "glossary_json_path": self.glossary_json_path_entry.get().strip() or None, # Key and widget name changed
+            "glossary_sampling_ratio": self.sample_ratio_scale.get(), # Key changed
+            "glossary_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()), # Key changed
+            "glossary_extraction_temperature": self.extraction_temp_scale.get(), # Key changed
+            "glossary_sampling_method": self.glossary_sampling_method_combobox.get(), # Key and widget name changed
+            "glossary_max_chars_per_entry": int(self.glossary_max_chars_entry.get() or "200"), # Key and widget name changed
+            "glossary_keyword_sensitivity": self.glossary_keyword_sensitivity_combobox.get(), # Key and widget name changed
+            "glossary_chunk_size": int(self.glossary_chunk_size_entry.get() or "8000"), # Key and widget name changed
+                
                 # Dynamic lorebook injection settings
-                "enable_dynamic_lorebook_injection": self.enable_dynamic_lorebook_injection_var.get(),
-                "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"), # 이 설정은 유지
-                "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500"),
+                "enable_dynamic_glossary_injection": self.enable_dynamic_glossary_injection_var.get(), # Key and var name changed
+                "max_glossary_entries_per_chunk_injection": int(self.max_glossary_entries_injection_entry.get() or "3"), # Key and widget name changed
+                "max_glossary_chars_per_chunk_injection": int(self.max_glossary_chars_injection_entry.get() or "500"), # Key and widget name changed
+                
                 # lorebook_json_path_for_injection 은 lorebook_json_path 로 통합되었으므로 여기서 제거
             # Content Safety Retry settings 
             # type: ignore
@@ -1195,13 +1247,17 @@ class BatchTranslatorGUI:
 
         }
         try:
-            config_data["lorebook_priority_settings"] = json.loads(self.lorebook_priority_text.get("1.0", tk.END).strip() or "{}")
+            config_data["glossary_priority_settings"] = json.loads(self.glossary_priority_text.get("1.0", tk.END).strip() or "{}") # Key and widget name changed
+        
         except json.JSONDecodeError:
-            messagebox.showwarning("입력 오류", "로어북 우선순위 설정이 유효한 JSON 형식이 아닙니다. 기본값으로 유지됩니다.")
+            messagebox.showwarning("입력 오류", "용어집 우선순위 설정이 유효한 JSON 형식이 아닙니다. 기본값으로 유지됩니다.") # Text changed
+            
             if self.app_service and self.app_service.config_manager:
-                config_data["lorebook_priority_settings"] = self.app_service.config_manager.get_default_config().get("lorebook_priority_settings")
+                config_data["glossary_priority_settings"] = self.app_service.config_manager.get_default_config().get("glossary_priority_settings") # Key changed                           
             else: # Fallback if app_service or config_manager is None
-                config_data["lorebook_priority_settings"] = {"character": 5, "worldview": 5, "story_element": 5} # Hardcoded default
+                config_data["glossary_priority_settings"] = {"character": 5, "worldview": 5, "story_element": 5} # Hardcoded default
+        
+
         
         return config_data
 
@@ -1381,15 +1437,18 @@ class BatchTranslatorGUI:
         else:
             self._log_message("실행 중인 번역 작업이 없습니다.")
 
-    def _update_lorebook_extraction_progress(self, dto: LorebookExtractionProgressDTO): # Renamed and DTO changed
+    def _update_glossary_extraction_progress(self, dto: GlossaryExtractionProgressDTO): # Renamed and DTO changed
+        
         def _update():
             if not self.master.winfo_exists(): return
             msg = f"{dto.current_status_message} ({dto.processed_segments}/{dto.total_segments}, 추출 항목: {dto.extracted_entries_count})" # DTO fields changed
-            self.lorebook_progress_label.config(text=msg) # Changed
+            self.glossary_progress_label.config(text=msg) # Changed
+        
         if self.master.winfo_exists():
             self.master.after(0, _update)
 
-    def _extract_lorebook_thread(self): # Renamed
+    def _extract_glossary_thread(self): # Renamed
+        
         app_service = self.app_service
         if not app_service:
             messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
@@ -1411,55 +1470,64 @@ class BatchTranslatorGUI:
             if not app_service.gemini_client:
                  if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. 계속 진행하시겠습니까?"):
                     return
+                 
+            # type: ignore
+
         except ValueError as ve:
              messagebox.showerror("입력 오류", f"설정값 오류: {ve}")
              return
         except Exception as e:
-            messagebox.showerror("오류", f"로어북 추출 시작 전 설정 오류: {e}") # Text changed
-            self._log_message(f"로어북 추출 시작 전 설정 오류: {e}", "ERROR", exc_info=True) # Text changed
+            messagebox.showerror("오류", f"용어집 추출 시작 전 설정 오류: {e}") # Text changed
+            self._log_message(f"용어집 추출 시작 전 설정 오류: {e}", "ERROR", exc_info=True) # Text changed
             return
 
-        self.lorebook_progress_label.config(text="로어북 추출 시작 중...") # Changed
-        self._log_message(f"로어북 추출 시작: {input_file}") # Text changed
+        self.glossary_progress_label.config(text="용어집 추출 시작 중...") # Changed
+        self._log_message(f"용어집 추출 시작: {input_file}") # Text changed
+        
+
         
         # GUI에서 직접 소설 언어를 입력받는 UI가 제거되었으므로, 항상 None을 전달하여 AppService가 설정을 따르도록 합니다.
         novel_lang_for_extraction = None
         def _extraction_task_wrapper():
             try:
                 if app_service:
-                    result_json_path = app_service.extract_lorebook( # Method name changed
+                    result_json_path = app_service.extract_glossary( # Method name changed                      
                         input_file,
-                        progress_callback=self._update_lorebook_extraction_progress, # Callback changed
-                        novel_language_code=novel_lang_for_extraction # Pass the language
+                        progress_callback=self._update_glossary_extraction_progress, # Callback changed                      
+                        seed_glossary_path=app_service.config.get("glossary_json_path") # Use current glossary as seed                   
                     )
-                    self.master.after(0, lambda: messagebox.showinfo("성공", f"로어북 추출 완료!\n결과 파일: {result_json_path}")) # Text changed
-                    self.master.after(0, lambda: self.lorebook_progress_label.config(text=f"추출 완료: {result_json_path.name}")) # Changed
-                    self.master.after(0, lambda: self._update_lorebook_json_path_entry(str(result_json_path))) # Changed
+                    self.master.after(0, lambda: messagebox.showinfo("성공", f"용어집 추출 완료!\n결과 파일: {result_json_path}")) # Text changed
+                    self.master.after(0, lambda: self.glossary_progress_label.config(text=f"추출 완료: {result_json_path.name}")) # Changed
+                    self.master.after(0, lambda: self._update_glossary_json_path_entry(str(result_json_path))) # Changed
                     # Load result to display
                     if result_json_path and result_json_path.exists(): # Check if result_json_path is not None
                         with open(result_json_path, 'r', encoding='utf-8') as f_res:
                             lore_content = f_res.read()
-                        self.master.after(0, lambda: self._display_lorebook_content(lore_content))
+                        self.master.after(0, lambda: self._display_glossary_content(lore_content)) # Function name changed
+            
             # BtgPronounException replaced with BtgBusinessLogicException as LorebookService might throw more general business logic errors
             except (BtgFileHandlerException, BtgApiClientException, BtgServiceException, BtgBusinessLogicException) as e_btg:
-                logger.error(f"로어북 추출 중 BTG 예외 발생: {e_btg}", exc_info=True) # Text changed
-                self.master.after(0, lambda: messagebox.showerror("추출 오류", f"로어북 추출 중 오류: {e_btg}")) # Text changed
-                self.master.after(0, lambda: self.lorebook_progress_label.config(text="오류 발생")) # Changed
+                logger.error(f"용어집 추출 중 BTG 예외 발생: {e_btg}", exc_info=True) # Text changed
+                self.master.after(0, lambda: messagebox.showerror("추출 오류", f"용어집 추출 중 오류: {e_btg}")) # Text changed
+                self.master.after(0, lambda: self.glossary_progress_label.config(text="오류 발생")) # Changed
             except Exception as e_unknown: 
-                logger.error(f"로어북 추출 중 알 수 없는 예외 발생: {e_unknown}", exc_info=True) # Text changed
-                self.master.after(0, lambda: messagebox.showerror("알 수 없는 오류", f"로어북 추출 중 예상치 못한 오류: {e_unknown}")) # Text changed
-                self.master.after(0, lambda: self.lorebook_progress_label.config(text="알 수 없는 오류 발생")) # Changed
+                logger.error(f"용어집 추출 중 알 수 없는 예외 발생: {e_unknown}", exc_info=True) # Text changed
+                self.master.after(0, lambda: messagebox.showerror("알 수 없는 오류", f"용어집 추출 중 예상치 못한 오류: {e_unknown}")) # Text changed
+                self.master.after(0, lambda: self.glossary_progress_label.config(text="알 수 없는 오류 발생")) # Changed
             finally:
-                self._log_message("로어북 추출 스레드 종료.") # Text changed
+                self._log_message("용어집 추출 스레드 종료.") # Text changed
 
         thread = threading.Thread(target=_extraction_task_wrapper, daemon=True)
         thread.start()
 
-    def _update_lorebook_json_path_entry(self, path_str: str): # Renamed
-        self.lorebook_json_path_entry.delete(0, tk.END) # Changed
-        self.lorebook_json_path_entry.insert(0, path_str)
+    def _update_glossary_json_path_entry(self, path_str: str): # Renamed
+        self.glossary_json_path_entry.delete(0, tk.END) # Changed
+        self.glossary_json_path_entry.insert(0, path_str)
+        
         if self.app_service:
-            self.app_service.config["lorebook_json_path"] = path_str # type: ignore
+            self.app_service.config["glossary_json_path"] = path_str # type: ignore # Key changed
+
+
 
     def _on_closing(self):
         app_service = self.app_service
@@ -1553,7 +1621,8 @@ class BatchTranslatorGUI:
             # 추정 정보를 툴팁이나 레이블로 표시
             estimate_text = f"예상 분석 청크: {estimated_sample_chunks}/{estimated_chunks}"
             
-            # 기존 라벨이 있다면 업데이트, 없다면 생성
+            # 기존 레이블이 있다면 업데이트, 없다면 생성
+            
             # if hasattr(self, 'sampling_estimate_label'):
             #     self.sampling_estimate_label.config(text=estimate_text)
             
@@ -1561,10 +1630,12 @@ class BatchTranslatorGUI:
         except Exception:
             pass  # 추정 실패 시 무시
 
-    def _save_lorebook_settings(self): # Renamed
+    def _save_glossary_settings(self): # Renamed
+        
         """로어북 관련 설정만 저장"""
         app_service = self.app_service
-        if not app_service:
+        if not app_service: # type: ignore
+
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             return
         
@@ -1573,73 +1644,73 @@ class BatchTranslatorGUI:
             current_config = app_service.config.copy()
             
             # 고유명사 관련 설정만 업데이트
-            lorebook_config = self._get_lorebook_config_from_ui() # Changed
-            current_config.update(lorebook_config)
+            glossary_config = self._get_glossary_config_from_ui() # Changed
+            current_config.update(glossary_config)
+            
             # type: ignore
             # 설정 저장
             success = self.app_service.save_app_config(current_config)
             
             if success:
-                messagebox.showinfo("성공", "로어북 설정이 저장되었습니다.") # Text changed
-                self._log_message("로어북 설정 저장 완료") # Text changed
-                
+                messagebox.showinfo("성공", "용어집 설정이 저장되었습니다.") # Text changed
+                self._log_message("용어집 설정 저장 완료") # Text changed                                
                 # 상태 레이블 업데이트
-                self._update_lorebook_status_label("✅ 설정 저장됨") # Changed
+                self._update_glossary_status_label("✅ 설정 저장됨") # Changed           
             else:
                 messagebox.showerror("오류", "설정 저장에 실패했습니다.")
                 
         except Exception as e:
             messagebox.showerror("오류", f"설정 저장 중 오류: {e}")
-            self._log_message(f"로어북 설정 저장 오류: {e}", "ERROR") # Text changed
+            self._log_message(f"용어집 설정 저장 오류: {e}", "ERROR") # Text changed
 
-    def _get_lorebook_config_from_ui(self) -> Dict[str, Any]: # Renamed
+    def _get_glossary_config_from_ui(self) -> Dict[str, Any]: # Renamed        
         """UI에서 로어북 관련 설정만 추출"""
         app_service = self.app_service
         if not app_service:
-            logger.error("AppService not initialized in _get_lorebook_config_from_ui")
+            logger.error("AppService not initialized in _get_glossary_config_from_ui") # Text changed
+            
             return {}
         try:
             config = {
-                "lorebook_json_path": self.lorebook_json_path_entry.get().strip() or None, # Changed
-                "lorebook_sampling_ratio": self.sample_ratio_scale.get(),
-                "lorebook_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()), # Changed
-                "lorebook_extraction_temperature": self.extraction_temp_scale.get(),
-                "lorebook_sampling_method": self.lorebook_sampling_method_combobox.get(),
-                "lorebook_max_chars_per_entry": int(self.lorebook_max_chars_entry.get() or "200"),
-                "lorebook_keyword_sensitivity": self.lorebook_keyword_sensitivity_combobox.get(),
-                "lorebook_chunk_size": int(self.lorebook_chunk_size_entry.get() or "8000"),
+                "glossary_json_path": self.glossary_json_path_entry.get().strip() or None, # Key and widget name changed
+                "glossary_sampling_ratio": self.sample_ratio_scale.get(), # Key changed
+                "glossary_max_entries_per_segment": int(self.max_entries_per_segment_spinbox.get()), # Key changed
+                "glossary_extraction_temperature": self.extraction_temp_scale.get(), # Key changed
+                "glossary_sampling_method": self.glossary_sampling_method_combobox.get(), # Key and widget name changed
+                "glossary_max_chars_per_entry": int(self.glossary_max_chars_entry.get() or "200"), # Key and widget name changed
+                "glossary_keyword_sensitivity": self.glossary_keyword_sensitivity_combobox.get(), # Key and widget name changed
+                "glossary_chunk_size": int(self.glossary_chunk_size_entry.get() or "8000"), # Key and widget name changed               
                 # Dynamic lorebook injection settings
-                "enable_dynamic_lorebook_injection": self.enable_dynamic_lorebook_injection_var.get(),
-                "max_lorebook_entries_per_chunk_injection": int(self.max_lorebook_entries_injection_entry.get() or "3"),
-                "max_lorebook_chars_per_chunk_injection": int(self.max_lorebook_chars_injection_entry.get() or "500")
-
+                "enable_dynamic_glossary_injection": self.enable_dynamic_glossary_injection_var.get(), # Key and var name changed
+                "max_glossary_entries_per_chunk_injection": int(self.max_glossary_entries_injection_entry.get() or "3"), # Key and widget name changed
+                "max_glossary_chars_per_chunk_injection": int(self.max_glossary_chars_injection_entry.get() or "500") # Key and widget name changed
             }
             try:
-                config["lorebook_priority_settings"] = json.loads(self.lorebook_priority_text.get("1.0", tk.END).strip() or "{}")
+                config["glossary_priority_settings"] = json.loads(self.glossary_priority_text.get("1.0", tk.END).strip() or "{}") # Key and widget name changed           
             except json.JSONDecodeError:
                 # Use existing config value if UI is invalid, or default if not available
                 default_priority = {"character": 5, "worldview": 5, "story_element": 5} # Hardcoded default
                 if app_service and app_service.config_manager:
-                    config["lorebook_priority_settings"] = app_service.config.get("lorebook_priority_settings", 
-                                                                                app_service.config_manager.get_default_config().get("lorebook_priority_settings", default_priority))
+                    config["glossary_priority_settings"] = app_service.config.get("glossary_priority_settings",  # Key changed
+                                                                             app_service.config_manager.get_default_config().get("glossary_priority_settings", default_priority)) # Key changed
                 else:
-                    config["lorebook_priority_settings"] = default_priority
-                self._log_message("로어북 우선순위 JSON 파싱 오류. 기존/기본값 사용.", "WARNING")
+                    config["glossary_priority_settings"] = default_priority # Key changed
+                self._log_message("용어집 우선순위 JSON 파싱 오류. 기존/기본값 사용.", "WARNING") # Text changed
 
             return {k: v for k, v in config.items() if v is not None}
         except Exception as e:
-            raise ValueError(f"로어북 설정 값 오류: {e}") # Text changed
+            raise ValueError(f"용어집 설정 값 오류: {e}") # Text changed
 
-    def _reset_lorebook_settings(self): # Renamed
+    def _reset_glossary_settings(self): # Renamed      
         """로어북 설정을 기본값으로 초기화"""
         app_service = self.app_service
         if not app_service or not app_service.config_manager:
             messagebox.showerror("오류", "AppService 또는 ConfigManager가 초기화되지 않았습니다.")
             return # type: ignore
         
-        result = messagebox.askyesno(
+        result = messagebox.askyesno( # type: ignor            
             "설정 초기화", 
-            "로어북 설정을 기본값으로 초기화하시겠습니까?" # Text changed
+            "용어집 설정을 기본값으로 초기화하시겠습니까?" # Text changed     
         )
         
         if result:
@@ -1647,31 +1718,30 @@ class BatchTranslatorGUI:
                 # 기본값 로드
                 default_config = app_service.config_manager.get_default_config()
                 # UI에 기본값 적용
-                self.sample_ratio_scale.set(default_config.get("lorebook_sampling_ratio", 25.0))
-                self.max_entries_per_segment_spinbox.set(str(default_config.get("lorebook_max_entries_per_segment", 5)))
-                self.extraction_temp_scale.set(default_config.get("lorebook_extraction_temperature", 0.2))
-                
+                self.sample_ratio_scale.set(default_config.get("glossary_sampling_ratio", 25.0)) # Key changed
+                self.max_entries_per_segment_spinbox.set(str(default_config.get("glossary_max_entries_per_segment", 5))) # Key changed
+                self.extraction_temp_scale.set(default_config.get("glossary_extraction_temperature", 0.2)) # Key changed                       
                 # Reset new lorebook fields
-                self.lorebook_sampling_method_combobox.set(default_config.get("lorebook_sampling_method", "uniform"))
-                self.lorebook_max_chars_entry.delete(0, tk.END)
-                self.lorebook_max_chars_entry.insert(0, str(default_config.get("lorebook_max_chars_per_entry", 200)))
-                self.lorebook_keyword_sensitivity_combobox.set(default_config.get("lorebook_keyword_sensitivity", "medium"))
-                self.lorebook_chunk_size_entry.delete(0, tk.END)
-                self.lorebook_chunk_size_entry.insert(0, str(default_config.get("lorebook_chunk_size", 8000)))
-                self.lorebook_priority_text.delete('1.0', tk.END)
-                self.lorebook_priority_text.insert('1.0', json.dumps(default_config.get("lorebook_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2))
+                self.glossary_sampling_method_combobox.set(default_config.get("glossary_sampling_method", "uniform")) # Key and widget name changed
+                self.glossary_max_chars_entry.delete(0, tk.END) # Widget name changed
+                self.glossary_max_chars_entry.insert(0, str(default_config.get("glossary_max_chars_per_entry", 200))) # Key changed
+                self.glossary_keyword_sensitivity_combobox.set(default_config.get("glossary_keyword_sensitivity", "medium")) # Key and widget name changed
+                self.glossary_chunk_size_entry.delete(0, tk.END) # Widget name changed
+                self.glossary_chunk_size_entry.insert(0, str(default_config.get("glossary_chunk_size", 8000))) # Key changed
+                self.glossary_priority_text.delete('1.0', tk.END) # Widget name changed
+                self.glossary_priority_text.insert('1.0', json.dumps(default_config.get("glossary_priority_settings", {"character": 5, "worldview": 5, "story_element": 5}), indent=2)) # Key changed
                 
                 # 레이블 업데이트
                 self._update_sample_ratio_label(str(self.sample_ratio_scale.get()))
                 self._update_extraction_temp_label(str(self.extraction_temp_scale.get()))
                 
-                self._update_lorebook_status_label("🔄 기본값으로 초기화됨") # Changed
-                self._log_message("로어북 설정이 기본값으로 초기화되었습니다.") # Text changed
-                
+                self._update_glossary_status_label("🔄 기본값으로 초기화됨") # Changed
+                self._log_message("용어집 설정이 기본값으로 초기화되었습니다.") # Text changed
+                              
             except Exception as e:
                 messagebox.showerror("오류", f"기본값 로드 중 오류: {e}")
 
-    def _preview_lorebook_settings(self): # Renamed
+    def _preview_glossary_settings(self): # Renamed        
         """현재 설정의 예상 효과 미리보기"""
         try:
             input_file = self.input_file_entry.get()
@@ -1679,6 +1749,7 @@ class BatchTranslatorGUI:
                 messagebox.showwarning("파일 없음", "입력 파일을 선택해주세요.")
                 return
             
+            # type: ignore
             # 현재 설정 값들
             sample_ratio = self.sample_ratio_scale.get()
             max_entries_segment = int(self.max_entries_per_segment_spinbox.get()) # Changed
@@ -1692,7 +1763,7 @@ class BatchTranslatorGUI:
             
             # 미리보기 정보 표시
             preview_msg = (
-                f"📊 로어북 추출 설정 미리보기\n\n" # Text changed
+                f"📊 용어집 추출 설정 미리보기\n\n" # Text changed               
                 f"📁 입력 파일: {Path(input_file).name}\n"
                 f"📏 파일 크기: {file_size:,} 바이트\n"
                 f"🧩 예상 청크 수: {estimated_chunks:,}개\n"
@@ -1706,61 +1777,63 @@ class BatchTranslatorGUI:
         except Exception as e:
             messagebox.showerror("오류", f"미리보기 생성 중 오류: {e}")
 
-    def _update_lorebook_status_label(self, message: str): # Renamed
+    def _update_glossary_status_label(self, message: str): # Renamed       
         """로어북 설정 상태 업데이트"""
-        if hasattr(self, 'lorebook_status_label'): # Changed
-            self.lorebook_status_label.config(text=message) # Changed
-            
+        if hasattr(self, 'glossary_status_label'): # Changed
+            self.glossary_status_label.config(text=message) # Changed
+                       
             # 3초 후 기본 메시지로 복귀
-            self.master.after(3000, lambda: self.lorebook_status_label.config( # Changed
+            self.master.after(3000, lambda: self.glossary_status_label.config( # Changed             
                 text="⏸️ 설정 변경 대기 중..."
             ))
 
-    def _on_lorebook_setting_changed(self, event=None): # Renamed
+    def _on_glossary_setting_changed(self, event=None): # Renamed      
         """로어북 설정이 변경될 때 호출"""
-        self._update_lorebook_status_label("⚠️ 설정이 변경됨 (저장 필요)") # Changed
+        self._update_glossary_status_label("⚠️ 설정이 변경됨 (저장 필요)") # Changed
         
         # 저장 버튼 강조
-        if hasattr(self, 'save_lorebook_settings_button'): # Changed
-            self.save_lorebook_settings_button.config(style="Accent.TButton") # Changed
+        if hasattr(self, 'save_glossary_settings_button'): # Changed
+            self.save_glossary_settings_button.config(style="Accent.TButton") # Changed
 
-    def _display_lorebook_content(self, content: str):
-        self.lorebook_display_text.config(state=tk.NORMAL)
-        self.lorebook_display_text.delete('1.0', tk.END)
-        self.lorebook_display_text.insert('1.0', content)
-        self.lorebook_display_text.config(state=tk.DISABLED)
+    def _display_glossary_content(self, content: str): # Renamed
+        self.glossary_display_text.config(state=tk.NORMAL) # Widget name changed
+        self.glossary_display_text.delete('1.0', tk.END)
+        self.glossary_display_text.insert('1.0', content)
+        self.glossary_display_text.config(state=tk.DISABLED)
 
-    def _load_lorebook_to_display(self):
-        filepath = filedialog.askopenfilename(title="로어북 JSON 파일 선택", filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*")))
+    def _load_glossary_to_display(self): # Renamed
+        filepath = filedialog.askopenfilename(title="용어집 JSON 파일 선택", filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*"))) # Text changed
+        
         if filepath:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     content = f.read()
-                self._display_lorebook_content(content)
-                self.lorebook_json_path_entry.delete(0, tk.END)
-                self.lorebook_json_path_entry.insert(0, filepath)
-                self._log_message(f"로어북 파일 로드됨: {filepath}")
+                self._display_glossary_content(content) # Function name changed
+                self.glossary_json_path_entry.delete(0, tk.END) # Widget name changed
+                self.glossary_json_path_entry.insert(0, filepath)
+                self._log_message(f"용어집 파일 로드됨: {filepath}") # Text changed
+            
             except Exception as e:
-                messagebox.showerror("오류", f"로어북 파일 로드 실패: {e}")
-                self._log_message(f"로어북 파일 로드 실패: {e}", "ERROR")
+                messagebox.showerror("오류", f"용어집 파일 로드 실패: {e}") # Text changed
+                self._log_message(f"용어집 파일 로드 실패: {e}", "ERROR") # Text changed
 
-    def _copy_lorebook_json(self):
-        content = self.lorebook_display_text.get('1.0', tk.END).strip()
+    def _copy_glossary_json(self): # Renamed
+        content = self.glossary_display_text.get('1.0', tk.END).strip() # Widget name changed      
         if content:
             self.master.clipboard_clear()
             self.master.clipboard_append(content)
-            messagebox.showinfo("성공", "로어북 JSON 내용이 클립보드에 복사되었습니다.")
-            self._log_message("로어북 JSON 클립보드에 복사됨.")
+            messagebox.showinfo("성공", "용어집 JSON 내용이 클립보드에 복사되었습니다.") # Text changed
+            self._log_message("용어집 JSON 클립보드에 복사됨.") # Text changed        
         else:
             messagebox.showwarning("경고", "복사할 내용이 없습니다.")
 
-    def _save_displayed_lorebook_json(self):
-        content = self.lorebook_display_text.get('1.0', tk.END).strip()
+    def _save_displayed_glossary_json(self): # Renamed
+        content = self.glossary_display_text.get('1.0', tk.END).strip() # Widget name changed       
         if not content:
             messagebox.showwarning("경고", "저장할 내용이 없습니다.")
             return
         
-        filepath = filedialog.asksaveasfilename(title="로어북 JSON으로 저장", defaultextension=".json", filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*")))
+        filepath = filedialog.asksaveasfilename(title="용어집 JSON으로 저장", defaultextension=".json", filetypes=(("JSON 파일", "*.json"), ("모든 파일", "*.*"))) # Text changed    
         if filepath:
             try:
                 with open(filepath, 'w', encoding='utf-8') as f:
@@ -1768,59 +1841,62 @@ class BatchTranslatorGUI:
                 messagebox.showinfo("성공", f"로어북이 성공적으로 저장되었습니다: {filepath}")
                 self._log_message(f"표시된 로어북 저장됨: {filepath}")
             except Exception as e:
-                messagebox.showerror("오류", f"로어북 저장 실패: {e}")
-                self._log_message(f"표시된 로어북 저장 실패: {e}", "ERROR")
+                messagebox.showerror("오류", f"용어집 저장 실패: {e}") # Text changed
+                self._log_message(f"표시된 용어집 저장 실패: {e}", "ERROR") # Text changed
 
-    def _open_lorebook_editor(self):
-        current_json_str = self.lorebook_display_text.get('1.0', tk.END).strip()
+    def _open_glossary_editor(self): # Renamed
+        current_json_str = self.glossary_display_text.get('1.0', tk.END).strip() # Widget name changed       
         if not current_json_str:
-            if not messagebox.askyesno("로어북 비어있음", "표시된 로어북 내용이 없습니다. 새 로어북을 만드시겠습니까?"):
+            if not messagebox.askyesno("용어집 비어있음", "표시된 용어집 내용이 없습니다. 새 용어집을 만드시겠습니까?"): # Text changed
                 return
-            current_json_str = "[]" # 새 로어북을 위한 빈 리스트
+            current_json_str = "[]" # 새 용어집을 위한 빈 리스트
 
         try:
             # JSON 유효성 검사
             json.loads(current_json_str)
         except json.JSONDecodeError as e:
-            messagebox.showerror("JSON 오류", f"로어북 내용이 유효한 JSON 형식이 아닙니다: {e}")
+            messagebox.showerror("JSON 오류", f"용어집 내용이 유효한 JSON 형식이 아닙니다: {e}") # Text changed           
             return
 
-        editor_window = LorebookEditorWindow(self.master, current_json_str, self._handle_lorebook_editor_save)
+        editor_window = GlossaryEditorWindow(self.master, current_json_str, self._handle_glossary_editor_save) # Class and callback changed       
         editor_window.grab_set() # Modal-like behavior
 
-    def _handle_lorebook_editor_save(self, updated_json_str: str):
-        self._display_lorebook_content(updated_json_str)
-        self._log_message("로어북 편집기에서 변경 사항이 적용되었습니다.")
+    def _handle_glossary_editor_save(self, updated_json_str: str): # Renamed
+        self._display_glossary_content(updated_json_str) # Function name changed
+        self._log_message("용어집 편집기에서 변경 사항이 적용되었습니다.") # Text changed      
         # Optionally, ask user if they want to save to the file now
-        if messagebox.askyesno("파일 저장 확인", "편집된 로어북을 현재 설정된 JSON 파일 경로에 저장하시겠습니까?"):
-            lorebook_file_path = self.lorebook_json_path_entry.get()
-            if lorebook_file_path:
+        if messagebox.askyesno("파일 저장 확인", "편집된 용어집을 현재 설정된 JSON 파일 경로에 저장하시겠습니까?"): # Text changed
+            glossary_file_path = self.glossary_json_path_entry.get() # Widget name changed
+            if glossary_file_path:
                 try:
-                    with open(lorebook_file_path, 'w', encoding='utf-8') as f:
+                    with open(glossary_file_path, 'w', encoding='utf-8') as f:
+                        
                         f.write(updated_json_str)
-                    messagebox.showinfo("저장 완료", f"로어북이 '{lorebook_file_path}'에 저장되었습니다.")
-                    self._log_message(f"편집된 로어북 파일 저장됨: {lorebook_file_path}")
+                    messagebox.showinfo("저장 완료", f"용어집이 '{glossary_file_path}'에 저장되었습니다.") # Text changed
+                    self._log_message(f"편집된 용어집 파일 저장됨: {glossary_file_path}") # Text changed
+                
                 except Exception as e:
-                    messagebox.showerror("파일 저장 오류", f"로어북 파일 저장 실패: {e}")
-                    self._log_message(f"편집된 로어북 파일 저장 실패: {e}", "ERROR")
+                    messagebox.showerror("파일 저장 오류", f"용어집 파일 저장 실패: {e}") # Text changed
+                    self._log_message(f"편집된 용어집 파일 저장 실패: {e}", "ERROR") # Text changed
+            
             else:
-                messagebox.showwarning("경로 없음", "로어북 JSON 파일 경로가 설정되지 않았습니다. 'JSON 저장' 버튼을 사용하거나 경로를 설정해주세요.")
+                messagebox.showwarning("경로 없음", "용어집 JSON 파일 경로가 설정되지 않았습니다. 'JSON 저장' 버튼을 사용하거나 경로를 설정해주세요.") # Text changed
 
 
-class LorebookEditorWindow(tk.Toplevel):
-    def __init__(self, master, lorebook_json_str: str, save_callback: Callable[[str], None]):
+class GlossaryEditorWindow(tk.Toplevel): # Class name changed
+    def __init__(self, master, glossary_json_str: str, save_callback: Callable[[str], None]): # Parameter name changed      
         super().__init__(master)
-        self.title("로어북 편집기")
+        self.title("용어집 편집기") # Text changed
         self.geometry("800x600")
         self.save_callback = save_callback
 
         try:
-            self.lorebook_data: List[Dict[str, Any]] = json.loads(lorebook_json_str)
-            if not isinstance(self.lorebook_data, list): # Ensure it's a list
-                raise ValueError("Lorebook data must be a list of entries.")
+            self.glossary_data: List[Dict[str, Any]] = json.loads(glossary_json_str) # Var name changed
+            if not isinstance(self.glossary_data, list): # Ensure it's a list
+                raise ValueError("Glossary data must be a list of entries.") # Text changed      
         except (json.JSONDecodeError, ValueError) as e:
-            messagebox.showerror("데이터 오류", f"로어북 데이터를 불러오는 중 오류 발생: {e}", parent=self)
-            self.lorebook_data = [] # Fallback to empty list
+            messagebox.showerror("데이터 오류", f"용어집 데이터를 불러오는 중 오류 발생: {e}", parent=self) # Text changed
+            self.glossary_data = [] # Fallback to empty list, var name changed
 
         self.current_selection_index: Optional[int] = None
 
@@ -1849,11 +1925,13 @@ class LorebookEditorWindow(tk.Toplevel):
         fields = {
             "keyword": {"label": "키워드:", "widget": ttk.Entry, "height": 1},
             "description_ko": {"label": "설명 (KO):", "widget": tk.Text, "height": 5},
+            "aliases": {"label": "별칭 (쉼표로 구분):", "widget": ttk.Entry, "height": 1}, # New field
+            "term_type": {"label": "타입:", "widget": ttk.Entry, "height": 1}, # New field
             "category": {"label": "카테고리:", "widget": ttk.Entry, "height": 1},
             "importance": {"label": "중요도 (1-10):", "widget": ttk.Spinbox, "height": 1, "extra_args": {"from_": 0, "to": 10}},
             "source_language": {"label": "원본 언어:", "widget": ttk.Entry, "height": 1},
             "sourceSegmentTextPreview": {"label": "원본 미리보기:", "widget": tk.Text, "height": 3, "readonly": True},
-        }
+        } # Added aliases and term_type
         self.entry_widgets: Dict[str, Union[ttk.Entry, tk.Text, ttk.Spinbox, ttk.Checkbutton]] = {}
 
         for i, (field_name, config) in enumerate(fields.items()):
@@ -1882,7 +1960,7 @@ class LorebookEditorWindow(tk.Toplevel):
         ttk.Button(buttons_frame, text="취소", command=self.destroy).pack(side=tk.RIGHT)
 
         self._populate_listbox()
-        if self.lorebook_data:
+        if self.glossary_data: # Var name changed            
             self.listbox.selection_set(0)
             self._load_entry_to_fields(0)
         else:
@@ -1890,18 +1968,27 @@ class LorebookEditorWindow(tk.Toplevel):
 
     def _populate_listbox(self):
         self.listbox.delete(0, tk.END)
-        for i, entry in enumerate(self.lorebook_data):
+        for i, entry in enumerate(self.glossary_data): # Var name changed          
             self.listbox.insert(tk.END, f"{i:03d}: {entry.get('keyword', 'N/A')}")
 
     def _on_listbox_select(self, event):
         selection = self.listbox.curselection()
         if selection:
-            self._save_current_entry() # Save previous entry before loading new one
-            self.current_selection_index = selection[0]
-            self._load_entry_to_fields(self.current_selection_index)
+            # Save current entry only if an item was previously selected
+            if self.current_selection_index is not None:
+                if not self._save_current_entry(): # If save fails (e.g. validation)
+                    # Optionally, prevent selection change or re-select previous
+                    # For now, we allow selection change but the invalid data might not be saved.
+                    # self.listbox.selection_clear(0, tk.END)
+                    # self.listbox.selection_set(self.current_selection_index)
+                    pass # Let it proceed, user might fix it later or discard
+            new_index = selection[0]
+            self._load_entry_to_fields(new_index)
+
+
 
     def _load_entry_to_fields(self, index: int):
-        if not (0 <= index < len(self.lorebook_data)):
+        if not (0 <= index < len(self.glossary_data)): # Var name changed           
             self._clear_entry_fields()
             return
 
@@ -1909,11 +1996,14 @@ class LorebookEditorWindow(tk.Toplevel):
         for field_name, widget in self.entry_widgets.items():
             value = entry.get(field_name)
             if isinstance(widget, tk.Text):
-                widget.config(state=tk.NORMAL)
+                is_readonly = widget.cget("state") == tk.DISABLED
+                if is_readonly: widget.config(state=tk.NORMAL)             
                 widget.delete('1.0', tk.END)
                 widget.insert('1.0', str(value) if value is not None else "")
-                if field_name == "sourceSegmentTextPreview": # Make readonly field disabled after insert
-                    widget.config(state=tk.DISABLED)
+                if is_readonly: widget.config(state=tk.DISABLED)
+            elif field_name == "aliases" and isinstance(value, list): # Handle aliases list
+                widget.delete(0, tk.END)
+                widget.insert(0, ", ".join(value) if value else "")
             elif isinstance(widget, ttk.Entry):
                 widget.delete(0, tk.END)
                 widget.insert(0, str(value) if value is not None else "")
@@ -1926,10 +2016,10 @@ class LorebookEditorWindow(tk.Toplevel):
     def _clear_entry_fields(self):
         for field_name, widget in self.entry_widgets.items():
             if isinstance(widget, tk.Text):
-                widget.config(state=tk.NORMAL)
+                is_readonly = widget.cget("state") == tk.DISABLED
+                if is_readonly: widget.config(state=tk.NORMAL)
                 widget.delete('1.0', tk.END)
-                if field_name == "sourceSegmentTextPreview":
-                     widget.config(state=tk.DISABLED)
+                if is_readonly: widget.config(state=tk.DISABLED)
             elif isinstance(widget, ttk.Entry):
                 widget.delete(0, tk.END)
             elif isinstance(widget, ttk.Spinbox):
@@ -1937,27 +2027,23 @@ class LorebookEditorWindow(tk.Toplevel):
             elif isinstance(widget, ttk.Checkbutton):
                 self.is_spoiler_var.set(False)
         self.current_selection_index = None
-        self.entry_widgets["keyword"].focus_set()
+        if "keyword" in self.entry_widgets:
+            self.entry_widgets["keyword"].focus_set()
 
-    def _save_current_entry(self):
-        if self.current_selection_index is None or not (0 <= self.current_selection_index < len(self.lorebook_data)):
-            # This case might happen if "새 항목" was clicked and then "현재 항목 저장"
-            # Or if list is empty. For new item, keyword is crucial.
-            keyword = self.entry_widgets["keyword"].get().strip()
-            if not keyword:
-                # messagebox.showwarning("경고", "새 항목을 저장하려면 키워드를 입력해야 합니다.", parent=self)
-                return False # Indicate save failed or was not applicable
-            # This implies creating a new entry if keyword is present but no selection
-            # For simplicity, we'll handle explicit new entry creation via _add_new_entry
-            return True # Or False, depending on desired behavior for "save current" with no selection
+    def _save_current_entry(self) -> bool: # Added return type
+        if self.current_selection_index is None or not (0 <= self.current_selection_index < len(self.glossary_data)): # Var name changed
+            return True # Nothing to save if no valid selection
 
         index_to_save = self.current_selection_index
-        if not (0 <= index_to_save < len(self.lorebook_data)): return True # Should not happen
+        if not (0 <= index_to_save < len(self.glossary_data)): return True # Var name changed
 
         updated_entry: Dict[str, Any] = {}
         for field_name, widget_instance in self.entry_widgets.items():
             if isinstance(widget_instance, tk.Text):
                 updated_entry[field_name] = widget_instance.get('1.0', tk.END).strip()
+            elif field_name == "aliases" and isinstance(widget_instance, ttk.Entry): # Handle aliases
+                aliases_str = widget_instance.get().strip()
+                updated_entry[field_name] = [alias.strip() for alias in aliases_str.split(',') if alias.strip()]
             elif isinstance(widget_instance, ttk.Entry):
                 updated_entry[field_name] = widget_instance.get().strip()
             elif isinstance(widget_instance, ttk.Spinbox):
@@ -1973,24 +2059,26 @@ class LorebookEditorWindow(tk.Toplevel):
             self.entry_widgets["keyword"].focus_set()
             return False
 
-        self.lorebook_data[index_to_save] = updated_entry
+        self.glossary_data[index_to_save] = updated_entry # Var name changed
         self._populate_listbox() # Refresh listbox in case keyword changed
         self.listbox.selection_set(index_to_save) # Re-select
-        # logger.debug(f"Entry at index {index_to_save} saved: {updated_entry}")
         return True
 
     def _add_new_entry(self):
-        self._save_current_entry() # Save any pending changes to the currently selected item
+        if self.current_selection_index is not None: # If an item is selected
+            if not self._save_current_entry(): # Try to save it first
+                return # Don't add new if save failed (e.g. validation)
+        
         self._clear_entry_fields()
         # Create a new blank entry and add it to the data
         new_entry_template = {
-            "keyword": "", "description_ko": "", "category": "",
-            "importance": 0, "isSpoiler": False, "source_language": "",
-            "sourceSegmentTextPreview": "새 항목"
+            "keyword": "", "description_ko": "", "aliases": [], "term_type": "",
+            "category": "", "importance": 0, "isSpoiler": False,
+            "source_language": "", "sourceSegmentTextPreview": "새 항목"
         }
-        self.lorebook_data.append(new_entry_template)
+        self.glossary_data.append(new_entry_template) # Var name changed
         self._populate_listbox()
-        new_index = len(self.lorebook_data) - 1
+        new_index = len(self.glossary_data) - 1 # Var name changed
         self.listbox.selection_set(new_index)
         self.listbox.see(new_index)
         self._load_entry_to_fields(new_index)
@@ -2001,26 +2089,24 @@ class LorebookEditorWindow(tk.Toplevel):
             messagebox.showwarning("경고", "삭제할 항목을 선택하세요.", parent=self)
             return
 
-        if messagebox.askyesno("삭제 확인", f"'{self.lorebook_data[self.current_selection_index].get('keyword')}' 항목을 정말 삭제하시겠습니까?", parent=self):
-            del self.lorebook_data[self.current_selection_index]
+        if messagebox.askyesno("삭제 확인", f"'{self.glossary_data[self.current_selection_index].get('keyword')}' 항목을 정말 삭제하시겠습니까?", parent=self): # Var name changed
+            del self.glossary_data[self.current_selection_index] # Var name changed
             self._populate_listbox()
             self._clear_entry_fields()
-            if self.lorebook_data: # If list is not empty, select first item
+            if self.glossary_data: # If list is not empty, select first item # Var name changed
                 self.listbox.selection_set(0)
                 self._load_entry_to_fields(0)
 
     def _save_and_close(self):
-        if not self._save_current_entry(): # Try to save the currently edited/new item
-            # If save failed (e.g. keyword missing for a new item not yet fully committed)
-            # and user wants to close, ask for confirmation
-            if not messagebox.askokcancel("저장 오류", "현재 항목 저장에 실패했습니다 (예: 키워드 누락). 저장하지 않고 닫으시겠습니까?", parent=self):
-                 return
+        if self.current_selection_index is not None: # If an item is selected or was being edited
+            if not self._save_current_entry(): # Try to save the currently edited/new item
+                if not messagebox.askokcancel("저장 오류", "현재 항목 저장에 실패했습니다 (예: 키워드 누락). 저장하지 않고 닫으시겠습니까?", parent=self):
+                    return
 
         # Filter out any entries that might have been added but left with an empty keyword
-        # This can happen if "새 항목" is clicked, then "저장하고 닫기" without filling the keyword.
-        self.lorebook_data = [entry for entry in self.lorebook_data if entry.get("keyword", "").strip()]
+        self.glossary_data = [entry for entry in self.glossary_data if entry.get("keyword", "").strip()] # Var name changed
 
-        final_json_str = json.dumps(self.lorebook_data, indent=2, ensure_ascii=False)
+        final_json_str = json.dumps(self.glossary_data, indent=2, ensure_ascii=False) # Var name changed
         self.save_callback(final_json_str)
         self.destroy()
 
