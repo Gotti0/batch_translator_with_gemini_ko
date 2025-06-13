@@ -316,7 +316,7 @@ class TranslationService:
             # API에 전달할 contents 구성: List[Content] 형태
             api_prompt_for_gemini_client = list(prefill_cached_history) # 복사해서 사용
             api_prompt_for_gemini_client.append(
-                genai_types.Content(role="user", parts=[genai_types.Part.from_text(current_chunk_user_prompt_str)])
+                genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=str(current_chunk_user_prompt_str))]) # 명시적으로 text= 사용 및 str() 변환
             )
             logger.debug(f"프리필 모드: 시스템 지침='{api_system_instruction[:50]}...', contents 개수={len(api_prompt_for_gemini_client)}")
 

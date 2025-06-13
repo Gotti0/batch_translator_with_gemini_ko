@@ -397,7 +397,7 @@ class GeminiClient:
         
         if isinstance(prompt, str):
             # 단일 문자열 프롬프트는 사용자 역할의 단일 Content 객체로 변환
-            final_sdk_contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(prompt)])]
+            final_sdk_contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=prompt)])] # 명시적으로 text= 사용
         elif isinstance(prompt, list) and all(isinstance(item, genai_types.Content) for item in prompt):
             final_sdk_contents = prompt # 이미 List[Content] 형태이면 그대로 사용
         else:
@@ -466,7 +466,7 @@ class GeminiClient:
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
 
                     # system_instruction을 Part 객체로 변환 (None 또는 빈 문자열인 경우 None으로)
-                    effective_system_instruction = genai_types.Part.from_text(system_instruction_text) if system_instruction_text and system_instruction_text.strip() else None
+                    effective_system_instruction = genai_types.Part.from_text(text=system_instruction_text) if system_instruction_text and system_instruction_text.strip() else None # 명시적으로 text= 사용
 
                     text_content_from_api: Optional[str] = None
                     if stream:
