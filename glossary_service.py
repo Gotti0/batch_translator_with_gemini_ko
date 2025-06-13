@@ -76,7 +76,7 @@ class SimpleGlossaryService:
 
         prompt = base_template.replace("{target_lang_code}", target_lang_code)
         prompt = prompt.replace("{target_lang_name}", target_lang_name)
-        prompt = base_template.replace("{novelText}", segment_text)
+        prompt = prompt.replace("{novelText}", segment_text) # 수정: base_template 대신 prompt 사용
         return prompt
 
     def _parse_raw_glossary_items_to_dto( # 함수명 변경
