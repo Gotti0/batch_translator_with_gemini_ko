@@ -1778,8 +1778,13 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         listbox_frame = ttk.Frame(main_frame)
         listbox_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
 
-        self.listbox = tk.Listbox(listbox_frame, width=30, exportselection=False)
+        self.listbox_scrollbar = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL)
+        self.listbox_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.listbox = tk.Listbox(listbox_frame, width=30, height=20, exportselection=False, yscrollcommand=self.listbox_scrollbar.set)
         self.listbox.pack(side=tk.TOP, fill=tk.Y, expand=True)
+        self.listbox_scrollbar.config(command=self.listbox.yview)
+
         self.listbox.bind("<<ListboxSelect>>", self._on_listbox_select)
 
         listbox_buttons_frame = ttk.Frame(listbox_frame)
@@ -1819,8 +1824,8 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         # Bottom: Save/Cancel buttons
         buttons_frame = ttk.Frame(self, padding="10")
         buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Button(buttons_frame, text="변경사항 저장 후 닫기", command=self._save_and_close).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(buttons_frame, text="현재 항목 저장", command=self._save_current_entry).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(buttons_frame, text="변경사항 저장 후 닫기", command=self._save_and_close).pack(side=tk.RIGHT, padx=5) # type: ignore
+        ttk.Button(buttons_frame, text="현재 항목 저장", command=self._save_current_entry_button_action).pack(side=tk.RIGHT, padx=5)
         ttk.Button(buttons_frame, text="취소", command=self.destroy).pack(side=tk.RIGHT)
 
         self._populate_listbox()
@@ -1837,19 +1842,31 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
 
     def _on_listbox_select(self, event):
         selection = self.listbox.curselection()
-        if selection:
-            # Save current entry only if an item was previously selected
+        if not selection:
+            # 사용자가 리스트박스의 빈 공간을 클릭하여 선택이 해제된 경우
             if self.current_selection_index is not None:
-                if not self._save_current_entry(): # If save fails (e.g. validation)
-                    # Optionally, prevent selection change or re-select previous
-                    # For now, we allow selection change but the invalid data might not be saved.
-                    # self.listbox.selection_clear(0, tk.END)
-                    # self.listbox.selection_set(self.current_selection_index)
-                    pass # Let it proceed, user might fix it later or discard
-            new_index = selection[0]
-            self._load_entry_to_fields(new_index)
+                self._save_current_entry() # Save data of the item that was deselected
+            self._clear_entry_fields()
+            self.current_selection_index = None # Update state
+            return
 
 
+        # 여기까지 왔다면, selection이 비어있지 않음
+        new_index = selection[0] 
+
+
+        # If there was a previously selected item and it's different from the new one
+        if self.current_selection_index is not None and self.current_selection_index != new_index:
+            if not self._save_current_entry(): # Save the old item's data
+                # If save failed (e.g. validation), revert selection to the old item
+                if self.current_selection_index is not None: # Ensure index is valid
+                    self.listbox.selection_set(self.current_selection_index) # type: ignore              
+                # Do not proceed to load the new_index if saving the old one failed.
+                return 
+        
+        # Load the newly selected item's data into entry fields
+        self._load_entry_to_fields(new_index)
+        # self.current_selection_index is updated inside _load_entry_to_fields
 
     def _load_entry_to_fields(self, index: int):
         if not (0 <= index < len(self.glossary_data)): # Var name changed           
@@ -1890,6 +1907,14 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         if "keyword" in self.entry_widgets:
             self.entry_widgets["keyword"].focus_set()
 
+    def _save_current_entry_button_action(self):
+        idx = self.current_selection_index
+        if idx is not None:
+            if self._save_current_entry(): # _save_current_entry now doesn't re-select
+                # After saving, ensure the (potentially updated) item remains selected
+                self.listbox.selection_set(idx)
+                self.listbox.see(idx) # Ensure it's visible
+
     def _save_current_entry(self) -> bool: # Added return type
         if self.current_selection_index is None or not (0 <= self.current_selection_index < len(self.glossary_data)): # Var name changed
             return True # Nothing to save if no valid selection
@@ -1915,9 +1940,19 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
             self.entry_widgets["keyword"].focus_set()
             return False
 
+        # Get the old display text from the listbox before updating the data
+        # This is to check if the listbox item's text actually needs to be changed
+        old_listbox_text = self.listbox.get(index_to_save)
+
         self.glossary_data[index_to_save] = updated_entry # Var name changed
-        self._populate_listbox() # Refresh listbox in case keyword changed
-        self.listbox.selection_set(index_to_save) # Re-select
+        
+        # Update only the specific listbox item if its display text changed
+        new_listbox_text = f"{index_to_save:03d}: {updated_entry.get('keyword', 'N/A')}"
+        if old_listbox_text != new_listbox_text:
+            self.listbox.delete(index_to_save)
+            self.listbox.insert(index_to_save, new_listbox_text)
+
+        # REMOVED: self.listbox.selection_set(index_to_save) # Re-select
         return True
 
     def _add_new_entry(self):
