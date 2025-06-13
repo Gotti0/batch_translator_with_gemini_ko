@@ -430,8 +430,39 @@ class GeminiClient:
 
                     # generation_config 및 safety_settings 준비
                     final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
+                    
+
+                    # 항상 BLOCK_NONE으로 안전 설정 강제 적용
+                    # 사용자가 safety_settings_list_of_dicts를 제공하더라도 무시됩니다.
+                    
                     if safety_settings_list_of_dicts:
-                        final_generation_config_params['safety_settings'] = safety_settings_list_of_dicts
+                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 BLOCK_NONE으로 강제 적용되어 무시됩니다.")
+
+                    forced_safety_settings = [
+                        genai_types.SafetySetting(
+                            category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        genai_types.SafetySetting(
+                            category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        genai_types.SafetySetting(
+                            category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        genai_types.SafetySetting(
+                            category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        genai_types.SafetySetting(
+                            category=genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                    ]
+                    final_generation_config_params['safety_settings'] = forced_safety_settings
+                    
+
                     
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
 
