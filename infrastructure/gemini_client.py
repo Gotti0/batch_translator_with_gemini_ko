@@ -7,7 +7,7 @@ import re
 import json
 from pathlib import Path
 import threading # Added for thread safety
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Iterable, Optional, Union, List
 
 # Google 관련 imports
 from google import genai
