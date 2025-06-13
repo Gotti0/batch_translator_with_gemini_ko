@@ -437,6 +437,14 @@ class GeminiClient:
                     if safety_settings_list_of_dicts:
                         logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 BLOCK_NONE으로 강제 적용되어 무시됩니다.")
 
+                    # system_instruction을 GenerateContentConfig에 포함
+                    if system_instruction_text and system_instruction_text.strip():
+                        final_generation_config_params['system_instruction'] = system_instruction_text
+                    elif 'system_instruction' in final_generation_config_params and not (system_instruction_text and system_instruction_text.strip()):
+                         # generation_config_dict에 system_instruction이 있었는데, system_instruction_text가 비어있으면 제거
+                         del final_generation_config_params['system_instruction']
+                    
+
                     forced_safety_settings = [
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
@@ -465,16 +473,14 @@ class GeminiClient:
                     
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
 
-                    # system_instruction을 Part 객체로 변환 (None 또는 빈 문자열인 경우 None으로)
-                    effective_system_instruction = genai_types.Part.from_text(text=system_instruction_text) if system_instruction_text and system_instruction_text.strip() else None # 명시적으로 text= 사용
-
+                    
                     text_content_from_api: Optional[str] = None
                     if stream:
                         response = self.client.models.generate_content_stream(
                             model=effective_model_name,
                             contents=final_sdk_contents,
-                            config=sdk_generation_config, 
-                            system_instruction=effective_system_instruction
+                            config=sdk_generation_config
+                            # system_instruction 파라미터 제거
                         )
                         aggregated_parts = []
                         for chunk_response in response:
@@ -493,9 +499,9 @@ class GeminiClient:
                         response = self.client.models.generate_content(
                             model=effective_model_name,
                             contents=final_sdk_contents,
-                            config=sdk_generation_config, 
-                            system_instruction=effective_system_instruction
-                        )
+                            config=sdk_generation_config
++                            # system_instruction 파라미터 제거
+                         )
                        
                         if self._is_content_safety_error(response=response):
                             raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
