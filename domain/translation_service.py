@@ -295,9 +295,16 @@ class TranslationService:
             else:
                 prefill_cached_history = []
                 for item in prefill_cached_history_raw:
-                    if isinstance(item, dict) and "role" in item and "parts" in item and isinstance(item.get("parts"), list):
+                    if isinstance(item, dict) and "role" in item and "parts" in item:
+                        raw_parts = item.get("parts")
                         # parts 내부의 문자열들을 Part 객체로 변환
-                        sdk_parts = [genai_types.Part.from_text(part_str) for part_str in item["parts"] if isinstance(part_str, str)]
+                        sdk_parts = []
+                        if isinstance(raw_parts, list):
+                            for part_item in raw_parts:
+                                if isinstance(part_item, str):
+                                    sdk_parts.append(genai_types.Part.from_text(text=part_item)) # 명시적으로 text= 사용
+                                elif isinstance(part_item, genai_types.Part): # 이미 Part 객체인 경우
+                                    sdk_parts.append(part_item)
                         if sdk_parts: # 유효한 part가 있는 경우에만 추가
                             prefill_cached_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
                     else:
