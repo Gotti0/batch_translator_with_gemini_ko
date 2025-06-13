@@ -100,8 +100,8 @@ class ConfigManager:
             # 경량화된 용어집 관련 기본 설정
             "glossary_json_path": None, # 용어집 파일 경로
             "glossary_output_json_filename_suffix": "_simple_glossary.json", # 파일명 접미사
-            "glossary_target_language_code": "en", # 용어집 추출 시 번역 목표 언어 코드 (예시)
-            "glossary_target_language_name": "English", # 용어집 추출 시 번역 목표 언어 이름 (예시)
+            "glossary_target_language_code": "ko", # 용어집 추출 시 번역 목표 언어 코드 (예시)
+            "glossary_target_language_name": "Korean", # 용어집 추출 시 번역 목표 언어 이름 (예시)
             "glossary_extraction_temperature": 0.3, # 경량화된 용어집 추출 온도
             "glossary_sampling_ratio": 10.0, # 경량화된 용어집 샘플링 비율
             "glossary_max_total_entries": 500, # 경량화된 용어집 최대 항목 수
@@ -270,7 +270,7 @@ if __name__ == '__main__':
     assert config2["novel_language_fallback"] == "en_gb"
     # 로어북 기본 설정값 확인
     assert config2.get("glossary_sampling_ratio") == 25.0 # 저장 시점의 값 유지 (get_default_config 변경과 무관)
-    assert config2.get("glossary_target_language_code") == "en" # 기본값 확인
+    assert config2.get("glossary_target_language_code") == "ko" # 기본값 확인
     assert config2.get("glossary_output_json_filename_suffix") == "_simple_glossary.json" # 기본값 확인
     assert config2["requests_per_minute"] == 30
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
