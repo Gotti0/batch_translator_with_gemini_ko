@@ -315,7 +315,7 @@ class SimpleGlossaryService:
                                         target_language=item_dict.get("target_language", ""),
                                         occurrence_count=int(item_dict.get("occurrence_count", 0))
                                     )
-                                    if entry.keyword and entry.description_ko:
+                                    if entry.keyword and entry.translated_keyword:
                                         seed_entries.append(entry)
                                 except (TypeError, ValueError) as e_dto:
                                     logger.warning(f"시드 용어집 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")

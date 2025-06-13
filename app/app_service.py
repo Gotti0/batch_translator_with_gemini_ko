@@ -273,10 +273,10 @@ class AppService:
         # For CLI, tqdm is handled in the CLI module itself.
     ) -> Path:
         if not self.glossary_service: # Changed from pronoun_service
-            logger.error("로어북 추출 서비스 실패: 서비스가 초기화되지 않았습니다.") # Message updated
-            raise BtgServiceException("로어북 추출 서비스가 초기화되지 않았습니다. 설정을 확인하세요.") # Message updated
+            logger.error("용어집 추출 서비스 실패: 서비스가 초기화되지 않았습니다.") # Message updated
+            raise BtgServiceException("용어집 추출 서비스가 초기화되지 않았습니다. 설정을 확인하세요.") # Message updated
         
-        logger.info(f"용어집 추출 서비스 시작: {input_file_path}, 시드 파일: {seed_glossary_path}") # Message updated
+        logger.info(f"용어집 추출 서비스 시작: {input_file_path}, 시드 파일: {seed_glossary_path}")  
         try:
             file_content = read_text_file(input_file_path)
             if not file_content:

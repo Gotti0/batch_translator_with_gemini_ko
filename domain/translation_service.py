@@ -122,7 +122,7 @@ class TranslationService:
                                 logger.warning(f"용어집 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}") # 메시지 변경
                         else:
                             logger.warning(f"잘못된 용어집 항목 형식 (딕셔너리가 아니거나 필수 키 'keyword' 또는 'description_ko' 누락) 건너뜀: {item_dict}") # 메시지 변경
-                    logger.info(f"{len(self.lorebook_entries_for_injection)}개의 용어집 항목을 로드했습니다: {lorebook_json_path}") # 메시지 변경
+                    logger.info(f"{len(self.glossary_entries_for_injection)}개의 용어집 항목을 로드했습니다: {lorebook_json_path}") # 메시지 변경
                 else: # type: ignore
                     logger.error(f"용어집 JSON 파일이 리스트 형식이 아닙니다: {lorebook_json_path}, 타입: {type(raw_data)}") # 메시지 변경
             except Exception as e:
