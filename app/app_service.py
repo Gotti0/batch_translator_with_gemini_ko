@@ -352,6 +352,7 @@ class AppService:
             max_split_attempts = self.config.get("max_content_safety_split_attempts", 3)
             min_chunk_size = self.config.get("min_content_safety_chunk_size", 100)
             model_name = self.config.get("model_name", "gemini-2.0-flash")
+            system_instruction = self.config.get("system_instruction", "") # AppService 레벨에서는 직접 사용하지 않음. TranslationService가 config에서 읽음.
             
             logger.debug(f"  ⚙️ 번역 설정: 모델={model_name}, 안전재시도={use_content_safety_retry}")
             if use_content_safety_retry:

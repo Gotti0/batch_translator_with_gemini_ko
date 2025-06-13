@@ -371,6 +371,14 @@ class BatchTranslatorGUI:
             self.novel_language_fallback_entry.insert(0, novel_lang_fallback_val)
             logger.debug(f"Config에서 가져온 novel_language_fallback: {novel_lang_fallback_val}")
 
+            # System Instruction
+            system_instruction_val = config.get("system_instruction", "")
+            logger.debug(f"Config에서 가져온 system_instruction: '{str(system_instruction_val)[:100]}...', 타입: {type(system_instruction_val)}")
+            self.system_instruction_text.delete('1.0', tk.END)
+            if isinstance(system_instruction_val, str):
+                self.system_instruction_text.insert('1.0', system_instruction_val)
+            else: # 기본값 또는 빈 문자열 처리
+                self.system_instruction_text.insert('1.0', self.app_service.config_manager.get_default_config().get("system_instruction", ""))
 
             prompts_val = config.get("prompts", "") 
             logger.debug(f"Config에서 가져온 prompts: '{str(prompts_val)[:100]}...', 타입: {type(prompts_val)}")
@@ -597,10 +605,21 @@ class BatchTranslatorGUI:
         self.novel_language_fallback_entry.insert(0, "ja")
         Tooltip(self.novel_language_fallback_entry, "폴백 언어 코드를 입력하세요.")
         ttk.Label(language_settings_frame, text="(예: ko, ja, en)").grid(row=1, column=2, padx=5, pady=5, sticky="w")
-        
-        # 번역 프롬프트
-        prompt_frame = ttk.LabelFrame(settings_frame, text="번역 프롬프트", padding="10")
+
+        # 시스템 지침 및 번역 프롬프트 프레임
+        prompt_frame = ttk.LabelFrame(settings_frame, text="프롬프트 설정", padding="10")
         prompt_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # 시스템 지침
+        system_instruction_label = ttk.Label(prompt_frame, text="시스템 지침 (System Instruction):")
+        system_instruction_label.pack(anchor="w", padx=5, pady=(5,0))
+        Tooltip(system_instruction_label, "모델의 전반적인 역할이나 행동을 정의하는 시스템 레벨 지침입니다.")
+        self.system_instruction_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=5, width=70)
+        self.system_instruction_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # 번역 프롬프트 (기존 Chat Prompt 역할)
+        chat_prompt_label = ttk.Label(prompt_frame, text="번역 프롬프트 (Chat/User Prompt):")
+        chat_prompt_label.pack(anchor="w", padx=5, pady=(10,0))
         Tooltip(prompt_frame, "번역 모델에 전달할 프롬프트입니다.\n{{slot}}은 번역할 텍스트 청크로 대체됩니다.\n{{glossary_context}}는 용어집 내용으로 대체됩니다.")
         self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=8, width=70)
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
@@ -1094,6 +1113,7 @@ class BatchTranslatorGUI:
 
     def _get_config_from_ui(self) -> Dict[str, Any]:
         prompt_content = self.prompt_text.get("1.0", tk.END).strip()
+        system_instruction_content = self.system_instruction_text.get("1.0", tk.END).strip()
         use_vertex = self.use_vertex_ai_var.get()
 
         api_keys_str = self.api_keys_text.get("1.0", tk.END).strip()
@@ -1134,6 +1154,7 @@ class BatchTranslatorGUI:
             "max_workers": max_workers_val, 
             "requests_per_minute": rpm_val,
             "prompts": prompt_content,
+            "system_instruction": system_instruction_content,
             "novel_language": self.novel_language_entry.get().strip() or "auto",
             "novel_language_fallback": self.novel_language_fallback_entry.get().strip() or "ja",
             # Lorebook settings

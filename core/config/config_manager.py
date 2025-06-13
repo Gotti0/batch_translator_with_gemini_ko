@@ -43,9 +43,10 @@ class ConfigManager:
             "gcp_project": None,
             "gcp_location": None,
             "auth_credentials": "", 
+            "system_instruction": "", # 시스템 지침 기본값 추가
             "requests_per_minute": 60, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
             "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
-            "novel_language_fallback": "ja", # 자동 감지 실패 시 사용할 폴백 언어
+            "novel_language_fallback": "zh", # 자동 감지 실패 시 사용할 폴백 언어
             "model_name": "gemini-2.0-flash",
             "temperature": 0.7,
             "top_p": 0.9, # type: ignore
@@ -191,6 +192,10 @@ class ConfigManager:
             if "prompts" in config_data and isinstance(config_data["prompts"], tuple):
                 config_data["prompts"] = config_data["prompts"][0] if config_data["prompts"] else ""
 
+            # system_instruction도 문자열로 저장 (tuple일 경우 첫 번째 요소 사용)
+            if "system_instruction" in config_data and isinstance(config_data["system_instruction"], tuple):
+                config_data["system_instruction"] = config_data["system_instruction"][0] if config_data["system_instruction"] else ""
+
             if "api_keys" in config_data and config_data["api_keys"]:
                 if not config_data.get("api_key") or config_data["api_key"] != config_data["api_keys"][0]:
                     config_data["api_key"] = config_data["api_keys"][0]
@@ -231,6 +236,7 @@ if __name__ == '__main__':
     assert config1["api_keys"] == [] 
     assert config1["service_account_file_path"] is None
     assert config1["use_vertex_ai"] is False
+    assert config1["system_instruction"] == "" # 기본 시스템 지침 확인
     assert config1["novel_language"] == "auto" # Changed from ko to auto to match new default
     assert config1["novel_language_fallback"] == "ja"
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
@@ -245,6 +251,7 @@ if __name__ == '__main__':
     config_to_save["service_account_file_path"] = "path/to/vertex_sa.json"
     config_to_save["use_vertex_ai"] = True
     config_to_save["gcp_project"] = "test-project"
+    config_to_save["system_instruction"] = "You are a helpful assistant." # 시스템 지침 설정
     config_to_save["model_name"] = "gemini-pro-custom"
     config_to_save["novel_language"] = "en"
     config_to_save["novel_language_fallback"] = "en_gb"
@@ -265,6 +272,7 @@ if __name__ == '__main__':
     assert config2["service_account_file_path"] == "path/to/vertex_sa.json"
     assert config2["use_vertex_ai"] is True
     assert config2["gcp_project"] == "test-project"
+    assert config2["system_instruction"] == "You are a helpful assistant." # 저장된 시스템 지침 확인
     assert config2["model_name"] == "gemini-pro-custom"
     assert config2["novel_language"] == "en"
     assert config2["novel_language_fallback"] == "en_gb"

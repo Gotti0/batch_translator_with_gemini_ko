@@ -271,7 +271,11 @@ class TranslationService:
         logger.debug(f"번역 길이 검증 통과: 원본 길이 {original_len}, 번역 길이 {translated_len} (비율: {ratio:.2f})")
 
     def translate_text(self, text_chunk: str, stream: bool = False) -> str:
-        """기존 translate_text 메서드 (수정 없음)"""
+        """
+        주어진 텍스트 청크를 번역합니다.
+        system_instruction은 config에서 가져와 GeminiClient에 전달합니다.
+        chat_prompt (user prompt)는 _construct_prompt를 통해 구성됩니다.
+        """
         if not text_chunk.strip():
             logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
@@ -282,6 +286,8 @@ class TranslationService:
         try:
             logger.debug(f"Gemini API 호출 시작. 모델: {self.config.get('model_name')}")
             
+            system_instruction = self.config.get("system_instruction", "")
+
             translated_text_from_api = self.gemini_client.generate_text( # Renamed variable
                 prompt=prompt,
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
@@ -289,7 +295,8 @@ class TranslationService:
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)
                 },
-                stream=stream # 스트리밍 매개변수 전달
+                system_instruction_text=system_instruction, # 시스템 지침 전달
+                stream=stream 
             )
 
             if translated_text_from_api is None:

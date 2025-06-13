@@ -393,10 +393,8 @@ class GeminiClient:
         
         final_contents: List[Union[str, genai_types.Part]] = [] # genai_types.Part 사용
         if system_instruction_text:
-            # 신 SDK에서 시스템 프롬프트를 contents의 일부로 전달하는 방식이 있다면 여기에 구현
-            # 예: final_contents.append(genai_types.Part(text=system_instruction_text, role="system")) (SDK가 지원한다면)
-            logger.warning("system_instruction_text는 현재 client.models.generate_content에서 직접 지원되지 않을 수 있습니다. 프롬프트에 포함시켜주세요.")
-        
+            logger.debug(f"System instruction이 제공되었습니다: {system_instruction_text[:100]}...")
+            # system_instruction_text는 generate_content 호출 시 system_instruction 매개변수로 전달됩니다.
         if isinstance(prompt, str):
             final_contents.append(prompt)
         elif isinstance(prompt, list):
@@ -472,7 +470,8 @@ class GeminiClient:
                         response = self.client.models.generate_content_stream(
                             model=effective_model_name,
                             contents=final_contents,
-                            config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                                         
+                            config=sdk_generation_config, 
+                            system_instruction=system_instruction_text
                         )
                         aggregated_parts = []
                         for chunk_response in response:
@@ -491,7 +490,8 @@ class GeminiClient:
                         response = self.client.models.generate_content(
                             model=effective_model_name,
                             contents=final_contents,
-                            config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                        
+                            config=sdk_generation_config, 
+                            system_instruction=system_instruction_text
                         )
                        
                         if self._is_content_safety_error(response=response):
