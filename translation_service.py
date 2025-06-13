@@ -25,7 +25,7 @@ try:
     # from google.genai import types as genai_types 
     from .dtos import LorebookEntryDTO # 로어북 DTO 임포트
 except ImportError:
-    from gemini_client import (
+    from gemini_client import ( # type: ignore
         GeminiClient,
         GeminiContentSafetyException,
         GeminiRateLimitException,
@@ -33,11 +33,11 @@ except ImportError:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from file_handler import read_json_file # JSON 로딩을 위해 추가
-    from logger_config import setup_logger
-    from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
-    from chunk_service import ChunkService
-    from dtos import GlossaryEntryDTO as LorebookEntryDTO # 로어북 DTO 임포트 (GlossaryEntryDTO로 변경되었으나, 호환성을 위해 LorebookEntryDTO로 alias)
+    from file_handler import read_json_file # type: ignore # JSON 로딩을 위해 추가
+    from logger_config import setup_logger # type: ignore
+    from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException # type: ignore
+    from chunk_service import ChunkService # type: ignore
+    from dtos import GlossaryEntryDTO as LorebookEntryDTO # type: ignore # 로어북 DTO 임포트 (GlossaryEntryDTO로 변경되었으나, 호환성을 위해 LorebookEntryDTO로 alias)
     # from google.genai import types as genai_types # Fallback import
 
 logger = setup_logger(__name__)
@@ -84,7 +84,7 @@ class TranslationService:
         self.gemini_client = gemini_client
         self.config = config
         self.chunk_service = ChunkService()
-        self.lorebook_entries_for_injection: List[LorebookEntryDTO] = [] # For new lorebook injection
+        self.glossary_entries_for_injection: List[GlossaryEntryDTO] = [] # Renamed and type changed
 
         if self.config.get("enable_dynamic_glossary_injection", False): # Key changed
             self._load_glossary_data() # 함수명 변경
@@ -93,8 +93,8 @@ class TranslationService:
             logger.info("동적 용어집 주입 비활성화됨. 용어집 컨텍스트 없이 번역합니다.") # 메시지 변경
 
     def _load_glossary_data(self): # 함수명 변경
-        # 통합된 로어북 경로 사용
-        lorebook_json_path_str = self.config.get("glossary_json_path") # Key changed
+        # 통합된 용어집 경로 사용
+        lorebook_json_path_str = self.config.get("glossary_json_path")
         if lorebook_json_path_str and os.path.exists(lorebook_json_path_str):
             lorebook_json_path = Path(lorebook_json_path_str)
             try:
@@ -107,7 +107,7 @@ class TranslationService:
                            "source_language" in item_dict and \
                            "target_language" in item_dict:
                             try:
-                                entry = LorebookEntryDTO( # LorebookEntryDTO는 GlossaryEntryDTO의 alias
+                                entry = GlossaryEntryDTO( # Explicitly use GlossaryEntryDTO
                                     keyword=item_dict.get("keyword", ""),
                                     translated_keyword=item_dict.get("translated_keyword", ""),
                                     source_language=item_dict.get("source_language", ""),
@@ -115,7 +115,7 @@ class TranslationService:
                                     occurrence_count=int(item_dict.get("occurrence_count", 0))
                                 )
                                 if all([entry.keyword, entry.translated_keyword, entry.source_language, entry.target_language]): # 필수 필드 확인
-                                    self.lorebook_entries_for_injection.append(entry)
+                                    self.glossary_entries_for_injection.append(entry)
                                 else:
                                     logger.warning(f"경량 용어집 항목에 필수 필드 누락: {item_dict}")
                             except (TypeError, ValueError) as e_dto:
@@ -123,14 +123,14 @@ class TranslationService:
                         else:
                             logger.warning(f"잘못된 용어집 항목 형식 (딕셔너리가 아니거나 필수 키 'keyword' 또는 'description_ko' 누락) 건너뜀: {item_dict}") # 메시지 변경
                     logger.info(f"{len(self.lorebook_entries_for_injection)}개의 용어집 항목을 로드했습니다: {lorebook_json_path}") # 메시지 변경
-                else:
+                else: # type: ignore
                     logger.error(f"용어집 JSON 파일이 리스트 형식이 아닙니다: {lorebook_json_path}, 타입: {type(raw_data)}") # 메시지 변경
             except Exception as e:
                 logger.error(f"용어집 JSON 파일 처리 중 예상치 못한 오류 ({lorebook_json_path}): {e}", exc_info=True) # 메시지 변경
-                self.lorebook_entries_for_injection = []
+                self.glossary_entries_for_injection = []
         else:
             logger.info(f"용어집 JSON 파일({lorebook_json_path_str})이 설정되지 않았거나 존재하지 않습니다. 동적 주입을 위해 용어집을 사용하지 않습니다.") # 메시지 변경
-            self.lorebook_entries_for_injection = []
+            self.glossary_entries_for_injection = []
 
     def _construct_prompt(self, chunk_text: str) -> str:
         prompt_template = self.config.get("prompts", "Translate to Korean: {{slot}}")
@@ -139,33 +139,33 @@ class TranslationService:
 
         final_prompt = prompt_template
 
-        # Determine the source language for the current chunk to filter lorebook entries
+        # Determine the source language for the current chunk to filter glossary entries
         config_source_lang = self.config.get("novel_language") # 통합된 설정 사용
         # Fallback language from config, with a hardcoded default if the config key itself is missing
         config_fallback_lang = self.config.get("novel_language_fallback", "ja") # 통합된 폴백 설정 사용
 
-        # "auto" 모드일 때, LLM이 언어를 감지하고 로어북을 필터링하도록 프롬프트가 구성됩니다.
+        # "auto" 모드일 때, LLM이 언어를 감지하고 용어집을 필터링하도록 프롬프트가 구성됩니다.
         # Python 단에서 current_source_lang_for_translation을 확정하지 않습니다.
-        # 로깅이나 특정 조건부 로직을 위해선 여전히 필요할 수 있으나, 로어북 필터링은 LLM으로 넘어갑니다.
-        current_source_lang_for_lorebook_filtering: Optional[str] = None
+        # 로깅이나 특정 조건부 로직을 위해선 여전히 필요할 수 있으나, 용어집 필터링은 LLM으로 넘어갑니다.
+        current_source_lang_for_glossary_filtering: Optional[str] = None
 
         if config_source_lang == "auto":
             logger.info(f"번역 출발 언어 설정: 'auto'. LLM이 프롬프트 내에서 언어를 감지하고 용어집을 적용하도록 합니다.") # 메시지 변경
-            # current_source_lang_for_lorebook_filtering는 None으로 유지하거나 "auto"로 설정.
-            # 로어북 필터링은 LLM의 역할이 됩니다.
+            # current_source_lang_for_glossary_filtering는 None으로 유지하거나 "auto"로 설정.
+            # 용어집 필터링은 LLM의 역할이 됩니다.
         elif config_source_lang and isinstance(config_source_lang, str) and config_source_lang.strip(): # Specific language code provided
-            current_source_lang_for_lorebook_filtering = config_source_lang
-            logger.info(f"명시적 번역 출발 언어 '{current_source_lang_for_lorebook_filtering}' 사용. 용어집도 이 언어 기준으로 필터링됩니다.") # 메시지 변경
+            current_source_lang_for_glossary_filtering = config_source_lang
+            logger.info(f"명시적 번역 출발 언어 '{current_source_lang_for_glossary_filtering}' 사용. 용어집도 이 언어 기준으로 필터링됩니다.") # 메시지 변경
         else: # config_source_lang is None, empty string, or not "auto"
-            current_source_lang_for_lorebook_filtering = config_fallback_lang
-            logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_lorebook_filtering}'를 로어북 필터링에 사용.")
+            current_source_lang_for_glossary_filtering = config_fallback_lang
+            logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_glossary_filtering}'를 용어집 필터링에 사용.")
 
-        # 1. Dynamic Lorebook Injection
+        # 1. Dynamic Glossary Injection
         if self.config.get("enable_dynamic_glossary_injection", False) and \
-           self.lorebook_entries_for_injection and \
+           self.glossary_entries_for_injection and \
            "{{glossary_context}}" in final_prompt: # Placeholder changed
             
-            relevant_entries_for_chunk: List[LorebookEntryDTO] = []
+            relevant_entries_for_chunk: List[GlossaryEntryDTO] = []
             chunk_text_lower = chunk_text.lower() # For case-insensitive keyword matching
             # 최종 번역 목표 언어 (예: "ko")
             # 이 설정은 config.json 또는 다른 방식으로 제공되어야 합니다.
@@ -175,23 +175,23 @@ class TranslationService:
                 # "auto" 모드: 청크의 언어는 LLM이 감지.
                 # 용어집 항목의 target_language가 최종 번역 목표 언어와 일치하는 것만 고려.
                 # source_language 필터링은 LLM의 문맥 이해에 맡기거나, 여기서 간단한 키워드 매칭만 수행.
-                logger.info(f"자동 언어 감지 모드: 용어집은 키워드 일치 및 최종 목표 언어({final_target_lang}) 일치로 필터링 후 LLM에 전달.")
-                for entry in self.lorebook_entries_for_injection:
+                logger.info(f"자동 언어 감지 모드: 용어집은 키워드 일치 및 최종 목표 언어({final_target_lang}) 일치로 필터링 후 LLM에 전달.") # 메시지 변경
+                for entry in self.glossary_entries_for_injection:
                     if entry.target_language.lower() == final_target_lang and \
                        entry.keyword.lower() in chunk_text_lower:
                         relevant_entries_for_chunk.append(entry)
             else:
                 # 명시적 언어 설정 모드: Python에서 언어 및 키워드 기반으로 필터링.
-                logger.info(f"명시적 언어 모드 ('{current_source_lang_for_lorebook_filtering}'): 용어집을 출발어/도착어 및 키워드 기준으로 필터링.")
-                for entry in self.lorebook_entries_for_injection:
+                logger.info(f"명시적 언어 모드 ('{current_source_lang_for_glossary_filtering}'): 용어집을 출발어/도착어 및 키워드 기준으로 필터링.") # 메시지 변경
+                for entry in self.glossary_entries_for_injection:
                     if entry.source_language and \
-                       current_source_lang_for_lorebook_filtering and \
-                       entry.source_language.lower() == current_source_lang_for_lorebook_filtering.lower() and \
+                       current_source_lang_for_glossary_filtering and \
+                       entry.source_language.lower() == current_source_lang_for_glossary_filtering.lower() and \
                        entry.target_language.lower() == final_target_lang and \
                        entry.keyword.lower() in chunk_text_lower:
                         relevant_entries_for_chunk.append(entry)
-                    elif not (entry.source_language and current_source_lang_for_lorebook_filtering and entry.source_language.lower() == current_source_lang_for_lorebook_filtering.lower()):
-                        logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 출발 언어 불일치 (용어집SL: {entry.source_language}, 청크SL: {current_source_lang_for_lorebook_filtering}).")
+                    elif not (entry.source_language and current_source_lang_for_glossary_filtering and entry.source_language.lower() == current_source_lang_for_glossary_filtering.lower()):
+                        logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 출발 언어 불일치 (용어집SL: {entry.source_language}, 청크SL: {current_source_lang_for_glossary_filtering}).")
                     elif not (entry.target_language.lower() == final_target_lang):
                         logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 도착 언어 불일치 (용어집TL: {entry.target_language}, 최종TL: {final_target_lang}).")
                         continue
@@ -202,22 +202,22 @@ class TranslationService:
             max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) # Key changed
             max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500) # Key changed
             
-            formatted_lorebook_context = _format_glossary_for_prompt( # 함수명 변경
+            formatted_glossary_context = _format_glossary_for_prompt( # 함수명 변경
                 relevant_entries_for_chunk, max_entries, max_chars # Pass only relevant entries
             )
             
             # Check if actual content was formatted (not just "없음" messages)
-            if not formatted_lorebook_context.startswith("용어집 컨텍스트 없음"): # Check simplified
-                logger.info(f"API 요청에 동적 용어집 컨텍스트 주입됨. 내용 일부: {formatted_lorebook_context[:100]}...") # 메시지 변경
-                # 주입된 로어북 키워드 로깅
+            if not formatted_glossary_context.startswith("용어집 컨텍스트 없음"): # Check simplified
+                logger.info(f"API 요청에 동적 용어집 컨텍스트 주입됨. 내용 일부: {formatted_glossary_context[:100]}...") # 메시지 변경
+                # 주입된 용어집 키워드 로깅
                 # 상세 로깅은 _format_glossary_for_prompt 내부 또는 호출부에서 처리 가능
             else:
-                logger.debug(f"동적 로어북 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_lorebook_context}")
-            final_prompt = final_prompt.replace("{{glossary_context}}", formatted_lorebook_context) # Placeholder changed
+                logger.debug(f"동적 용어집 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_glossary_context}")
+            final_prompt = final_prompt.replace("{{glossary_context}}", formatted_glossary_context) # Placeholder changed
         else:
             if "{{glossary_context}}" in final_prompt: # Placeholder changed
                  final_prompt = final_prompt.replace("{{glossary_context}}", "용어집 컨텍스트 없음 (주입 비활성화 또는 해당 항목 없음)") # Placeholder changed
-                 logger.debug("동적 로어북 주입 비활성화 또는 플레이스홀더 부재로 '컨텍스트 없음' 메시지 사용.")
+                 logger.debug("동적 용어집 주입 비활성화 또는 플레이스홀더 부재로 '컨텍스트 없음' 메시지 사용.")
         
         # 3. Main content slot - This should be done *after* all other placeholders are processed.
         final_prompt = final_prompt.replace("{{slot}}", chunk_text)
@@ -602,38 +602,38 @@ if __name__ == '__main__':
 
     sample_config_base = {
         "model_name": "gemini-1.5-flash", "temperature": 0.7, "top_p": 0.9,
-        "prompts": "다음 텍스트를 한국어로 번역해주세요. 로어북 컨텍스트: {{lorebook_context}}\n\n번역할 텍스트:\n{{slot}}",
-        "enable_dynamic_lorebook_injection": True, # 테스트를 위해 활성화
-        "lorebook_json_path": "test_lorebook.json", # 통합된 로어북 경로
-        "max_lorebook_entries_per_chunk_injection": 3,
-        "max_lorebook_chars_per_chunk_injection": 200,
+        "prompts": "다음 텍스트를 한국어로 번역해주세요. 용어집 컨텍스트: {{glossary_context}}\n\n번역할 텍스트:\n{{slot}}",
+        "enable_dynamic_glossary_injection": True, # 테스트를 위해 활성화
+        "glossary_json_path": "test_glossary.json", # 통합된 용어집 경로
+        "max_glossary_entries_per_chunk_injection": 3,
+        "max_glossary_chars_per_chunk_injection": 200,
     }
 
-    # 1. 로어북 주입 테스트
-    print("\n--- 1. 로어북 주입 번역 테스트 ---")
+    # 1. 용어집 주입 테스트
+    print("\n--- 1. 용어집 주입 번역 테스트 ---")
     config1 = sample_config_base.copy()
     
-    # 테스트용 로어북 파일 생성
-    test_lorebook_data = [
-        {"keyword": "Alice", "description": "주인공 앨리스", "category": "인물", "importance": 10, "isSpoiler": False},
-        {"keyword": "Bob", "description": "앨리스의 친구 밥", "aliases": ["Bobby", "롭"], "category": "인물", "importance": 8, "isSpoiler": False}
+    # 테스트용 용어집 파일 생성
+    test_glossary_data = [
+        {"keyword": "Alice", "translated_keyword": "앨리스", "source_language": "en", "target_language": "ko", "occurrence_count": 10},
+        {"keyword": "Bob", "translated_keyword": "밥", "source_language": "en", "target_language": "ko", "occurrence_count": 8}
     ]
     from file_handler import write_json_file, delete_file # write_csv_file -> write_json_file
-    test_lorebook_file = Path("test_lorebook.json")
-    if test_lorebook_file.exists(): delete_file(test_lorebook_file)
-    write_json_file(test_lorebook_file, test_lorebook_data)
+    test_glossary_file = Path(config1["glossary_json_path"]) # Use path from config
+    if test_glossary_file.exists(): delete_file(test_glossary_file)
+    write_json_file(test_glossary_file, test_glossary_data)
 
     gemini_client_instance = MockGeminiClient(auth_credentials="dummy_api_key")
     translation_service1 = TranslationService(gemini_client_instance, config1)
     text_to_translate1 = "Hello Alice, how are you Bob?"
     try:
         translated1 = translation_service1.translate_text(text_to_translate1)
-        print(f"원본: {text_to_translate1}")
-        print(f"번역 결과: {translated1}")
+        print(f"  원본: {text_to_translate1}")
+        print(f"  번역 결과: {translated1}")
     except Exception as e:
-        print(f"테스트 1 오류: {e}")
+        print(f"  테스트 1 오류: {e}")
     finally:
-        if test_lorebook_file.exists(): delete_file(test_lorebook_file)
+        if test_glossary_file.exists(): delete_file(test_glossary_file)
 
     # 2. 로어북 비활성화 테스트
     print("\n--- 2. 로어북 비활성화 테스트 ---")

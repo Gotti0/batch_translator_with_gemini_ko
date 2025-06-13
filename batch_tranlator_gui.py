@@ -600,7 +600,7 @@ class BatchTranslatorGUI:
         # 번역 프롬프트
         prompt_frame = ttk.LabelFrame(settings_frame, text="번역 프롬프트", padding="10")
         prompt_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        Tooltip(prompt_frame, "번역 모델에 전달할 프롬프트입니다.\n{{slot}}은 번역할 텍스트 청크로 대체됩니다.\n{{lorebook_context}}는 로어북 내용으로 대체됩니다.")
+        Tooltip(prompt_frame, "번역 모델에 전달할 프롬프트입니다.\n{{slot}}은 번역할 텍스트 청크로 대체됩니다.\n{{glossary_context}}는 용어집 내용으로 대체됩니다.")
         self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=8, width=70)
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
         
@@ -1348,7 +1348,7 @@ class BatchTranslatorGUI:
 
         input_file = self.input_file_entry.get() # This should be the source novel file
         if not input_file:
-            messagebox.showwarning("경고", "고유명사를 추출할 입력 파일을 먼저 선택해주세요.")
+            messagebox.showwarning("경고", "용어집을 추출할 입력 파일을 먼저 선택해주세요.")          
             return
         if not Path(input_file).exists():
             messagebox.showerror("오류", f"입력 파일을 찾을 수 없습니다: {input_file}")
@@ -1855,7 +1855,7 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
             self._clear_entry_fields()
             return
 
-        entry = self.lorebook_data[index]
+        entry = self.glossary_data[index]
         for field_name, widget in self.entry_widgets.items():
             value = entry.get(field_name)
             if isinstance(widget, tk.Text):
@@ -1928,7 +1928,7 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         # Create a new blank entry and add it to the data
         new_entry_template = {
             "keyword": "", "translated_keyword": "", 
-+            "source_language": "", "target_language": "",
+            "source_language": "", "target_language": "",
 +            "occurrence_count": 0
         }
         self.glossary_data.append(new_entry_template) # Var name changed

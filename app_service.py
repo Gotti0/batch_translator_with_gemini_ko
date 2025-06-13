@@ -294,7 +294,7 @@ class AppService:
                 novel_text_content=file_content,
                 input_file_path_for_naming=input_file_path,
                 progress_callback=progress_callback,
-                seed_lorebook_path=seed_glossary_path # 시드 용어집 경로 전달
+                seed_glossary_path=seed_glossary_path # 시드 용어집 경로 전달
             )
             logger.info(f"용어집 추출 완료. 결과 파일: {result_path}") # Message updated
         
@@ -836,22 +836,23 @@ if __name__ == '__main__':
         "top_p": 0.9,
         "prompts": "Translate to Korean: {{slot}}",
         "chunk_size": 50, 
-        "pronouns_csv": str(test_output_dir / "sample_pronouns.csv"),
+        "glossary_json_path": str(test_output_dir / "sample_glossary.json"), # Changed from pronouns_csv
         "requests_per_minute": 60,
-        # "max_pronoun_entries": 5, # 로어북으로 대체되면서 이 설정은 직접 사용되지 않을 수 있음
-        "pronoun_sample_ratio": 100.0, 
+        # "max_glossary_entries": 5, # 용어집으로 대체되면서 이 설정은 직접 사용되지 않을 수 있음
+        "glossary_sampling_ratio": 100.0, # Changed from pronoun_sample_ratio
         "max_workers": 2 
     }
 
     with open(temp_config_path, "w", encoding="utf-8") as f:
         json.dump(sample_app_config_data, f, indent=4)
 
-    sample_pronoun_file = test_output_dir / "sample_pronouns.csv"
-    with open(sample_pronoun_file, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["외국어", "한국어", "등장횟수"]) 
-        writer.writerow(["BTG", "비티지", "10"])
-        writer.writerow(["Gemini", "제미니", "5"])
+    sample_glossary_file = test_output_dir / "sample_glossary.json" # Changed from sample_pronoun_file
+    sample_glossary_content = [
+        {"keyword": "BTG", "translated_keyword": "비티지", "source_language": "en", "target_language": "ko", "occurrence_count": 10},
+        {"keyword": "Gemini", "translated_keyword": "제미니", "source_language": "en", "target_language": "ko", "occurrence_count": 5}
+    ]
+    with open(sample_glossary_file, "w", encoding="utf-8") as f: # Changed to JSON
+        json.dump(sample_glossary_content, f, indent=4, ensure_ascii=False)
 
     temp_input_file = test_output_dir / "sample_input.txt"
     temp_input_content = (
@@ -900,23 +901,23 @@ if __name__ == '__main__':
         logger.warning("Gemini 클라이언트가 없어 모델 목록 조회 테스트를 건너뜁니다.")
 
     if app_service and app_service.glossary_service: # Changed from pronoun_service
-        print("\n--- 로어북 추출 테스트 ---") # Changed
+        print("\n--- 용어집 추출 테스트 ---") # Changed
         try:
-            def _lorebook_progress_dto_cb(dto: GlossaryExtractionProgressDTO): # Changed DTO
-                logger.debug(f"로어북 진행 DTO: {dto.processed_segments}/{dto.total_segments} - {dto.current_status_message} (추출 항목: {dto.extracted_entries_count})") # Changed fields
+            def _glossary_progress_dto_cb(dto: GlossaryExtractionProgressDTO): # Changed DTO and function name
+                logger.debug(f"용어집 진행 DTO: {dto.processed_segments}/{dto.total_segments} - {dto.current_status_message} (추출 항목: {dto.extracted_entries_count})") # Changed fields
         
             result_path = app_service.extract_glossary( # Changed method
                 temp_input_file,
-                progress_callback=_lorebook_progress_dto_cb,
-                seed_lorebook_path=None # Optionally provide a seed path for testing
+                progress_callback=_glossary_progress_dto_cb, # Changed callback
+                seed_glossary_path=sample_glossary_file # Optionally provide a seed path for testing
             )
-            logger.info(f"로어북 추출 완료, 결과 파일: {result_path}") # Changed
+            logger.info(f"용어집 추출 완료, 결과 파일: {result_path}") # Changed
         except Exception as e:
-            logger.error(f"로어북 추출 테스트 실패: {e}", exc_info=True) # Changed
+            logger.error(f"용어집 추출 테스트 실패: {e}", exc_info=True) # Changed
     else:
-        logger.warning("Lorebook 서비스가 없어 로어북 추출 테스트를 건너뜁니다.") # Changed
+        logger.warning("Glossary 서비스가 없어 용어집 추출 테스트를 건너뜁니다.") # Changed
 
-    if app_service and app_service.translation_service:
+    if app_service and app_service.translation_service and app_service.gemini_client: # Ensure client exists for translation
         print("\n--- 번역 테스트 (병렬 처리) ---")
         try:
             test_tqdm_stream = sys.stdout 

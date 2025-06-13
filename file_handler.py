@@ -304,13 +304,13 @@ if __name__ == '__main__':
     loaded_chunks = load_chunks_from_file(chunk_output_file)
     logger.info(f"로드된 청크: {loaded_chunks}")
 
-    logger.info("\n--- JSON 파일 테스트 (로어북 예시) ---")
-    lorebook_file = test_dir / "my_novel_lorebook.json"
-    sample_lorebook_data = [{"keyword": "엘리제", "description": "마법 왕국의 공주", "category": "인물"}, {"keyword": "아르카나 스톤", "description": "고대 유물", "category": "아이템"}]
-    write_json_file(lorebook_file, sample_lorebook_data)
-    loaded_lorebook = read_json_file(lorebook_file)
-    logger.info(f"로드된 로어북 데이터: {loaded_lorebook}")
-    assert loaded_lorebook == sample_lorebook_data
+    logger.info("\n--- JSON 파일 테스트 (용어집 예시) ---")
+    glossary_file = test_dir / "my_novel_glossary.json"
+    sample_glossary_data = [{"keyword": "엘리제", "translated_keyword": "Elise", "source_language": "ko", "target_language": "en", "occurrence_count": 5}, {"keyword": "아르카나 스톤", "translated_keyword": "Arcana Stone", "source_language": "ko", "target_language": "en", "occurrence_count": 10}]
+    write_json_file(glossary_file, sample_glossary_data)
+    loaded_glossary = read_json_file(glossary_file)
+    logger.info(f"로드된 용어집 데이터: {loaded_glossary}")
+    assert loaded_glossary == sample_glossary_data
 
     logger.info(f"\n테스트 완료. 결과는 '{test_dir}' 디렉토리에서 확인할 수 있습니다.")
     # import shutil

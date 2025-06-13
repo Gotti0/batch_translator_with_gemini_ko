@@ -144,7 +144,7 @@ def cli_glossary_extraction_progress_callback(dto: GlossaryExtractionProgressDTO
                 tqdm_instance.update(update_amount)
 
         if dto.current_status_message:
-            postfix_info = {"status": dto.current_status_message}
+            postfix_info = {"상태": dto.current_status_message}
             if dto.extracted_entries_count > 0: postfix_info["추출항목"] = dto.extracted_entries_count
             tqdm_instance.set_postfix(postfix_info, refresh=True)
 
@@ -181,11 +181,11 @@ def parse_arguments():
     parser.add_argument("--log_level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO', help="로그 레벨 설정 (기본값: INFO)")
     parser.add_argument("--log_file", type=Path, default=None, help="로그를 저장할 파일 경로 (기본값: btg_cli.log)")
 
-    # 로어북 추출 및 번역 시 소설/출발 언어 지정 (통합됨)
+    # 용어집 추출 및 번역 시 소설/출발 언어 지정 (통합됨)
     parser.add_argument("--novel-language", type=str, default=None, help="소설/번역 출발 언어 코드 (예: ko, en, ja, auto). config의 novel_language를 덮어씁니다.")
 
-    # 동적 로어북 주입 설정
-    dyn_glossary_group = parser.add_argument_group('Dynamic Glossary Injection Settings') # Group name changed
+    # 동적 용어집 주입 설정
+    dyn_glossary_group = parser.add_argument_group('동적 용어집 주입 설정') # Group name changed
     dyn_glossary_group.add_argument("--enable-dynamic-glossary-injection", action="store_true", help="동적 용어집 주입 기능을 활성화합니다.") # Arg name and help text changed
     dyn_glossary_group.add_argument("--max-glossary-entries-injection", type=int, help="번역 청크당 주입할 최대 용어집 항목 수 (예: 3)") # Arg name and help text changed
     dyn_glossary_group.add_argument("--max-glossary-chars-injection", type=int, help="번역 청크당 주입할 용어집의 최대 총 문자 수 (예: 500)") # Arg name and help text changed
@@ -276,8 +276,8 @@ def main():
         if args.max_glossary_chars_injection is not None: # Arg name changed
             app_service.config["max_glossary_chars_per_chunk_injection"] = args.max_glossary_chars_injection # Key changed
             cli_auth_applied = True
-        # lorebook_json_path_injection 인자는 제거되었으므로, 관련 CLI 로직도 제거합니다.
-        # 동적 주입 시에는 config.json의 "lorebook_json_path"를 사용합니다.
+        # glossary_json_path_injection 인자는 제거되었으므로, 관련 CLI 로직도 제거합니다.
+        # 동적 주입 시에는 config.json의 "glossary_json_path"를 사용합니다.
 
         # CLI 인자 --novel-language와 --novel-language-override 둘 다 novel_language 설정을 변경
         novel_lang_arg = args.novel_language or args.novel_language_override
@@ -298,10 +298,10 @@ def main():
 
         if args.seed_glossary_file:
             cli_logger.info(f"용어집 생성 시 참고할 파일: {args.seed_glossary_file}")
-            # 이 파일은 AppService.extract_lorebook 메서드에 전달되거나,
+            # 이 파일은 AppService.extract_glossary 메서드에 전달되거나,
             # ConfigManager를 통해 설정에 저장되어 SimpleGlossaryService에서 사용될 수 있습니다.
-            # 여기서는 AppService.config에 직접 저장하는 대신, extract_lorebook 호출 시 전달하는 것을 가정합니다.
-            # app_service.config["lorebook_seed_file"] = str(args.lorebook_seed_file) # 필요시 AppService에서 처리
+            # 여기서는 AppService.config에 직접 저장하는 대신, extract_glossary 호출 시 전달하는 것을 가정합니다.
+            # app_service.config["glossary_seed_file"] = str(args.seed_glossary_file) # 필요시 AppService에서 처리
             app_service.load_app_config()
         
         # type: ignore

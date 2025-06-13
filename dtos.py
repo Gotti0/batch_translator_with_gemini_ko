@@ -137,7 +137,7 @@ if __name__ == '__main__':
         temperature=0.8,
         top_p=0.9,
         chunk_size=5000,
-        pronouns_csv_path="data/my_pronouns.csv"
+        pronouns_csv_path="data/my_glossary.json" # 경로 예시 변경
     )
     print(f"애플리케이션 설정 (표시용): {config_display}")
 

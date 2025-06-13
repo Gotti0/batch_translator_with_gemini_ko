@@ -251,7 +251,7 @@ if __name__ == '__main__':
     config_to_save["max_workers"] = 4 # max_workers 값 설정
     config_to_save["requests_per_minute"] = 30 
     config_to_save["enable_dynamic_glossary_injection"] = True
-    config_to_save["glossary_json_path"] = "path/to/active_glossary.json" # 통합된 경로 사용 예시
+    config_to_save["glossary_json_path"] = "path/to/active_glossary.json"
     save_success = manager_no_file.save_config(config_to_save)
     print(f"설정 저장 성공 여부: {save_success}")
     assert save_success
@@ -268,14 +268,14 @@ if __name__ == '__main__':
     assert config2["model_name"] == "gemini-pro-custom"
     assert config2["novel_language"] == "en"
     assert config2["novel_language_fallback"] == "en_gb"
-    # 로어북 기본 설정값 확인
-    assert config2.get("glossary_sampling_ratio") == 25.0 # 저장 시점의 값 유지 (get_default_config 변경과 무관)
+    # 용어집 기본 설정값 확인
+    assert config2.get("glossary_sampling_ratio") == 10.0 # 저장 시점의 값 유지 (get_default_config 변경과 무관)
     assert config2.get("glossary_target_language_code") == "ko" # 기본값 확인
     assert config2.get("glossary_output_json_filename_suffix") == "_simple_glossary.json" # 기본값 확인
     assert config2["requests_per_minute"] == 30
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
     assert config2["enable_dynamic_glossary_injection"] is True
-    assert config2["max_glossary_entries_per_chunk_injection"] == 3 # 기본값 유지 확인
+    assert config2["max_glossary_entries_per_chunk_injection"] == 3
     assert config2["glossary_json_path"] == "path/to/active_glossary.json" # 통합된 경로 확인
 
     print("\n--- 4. 부분 설정 파일 로드 테스트 (api_key만 있고 api_keys는 없는 경우) ---")

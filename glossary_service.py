@@ -293,7 +293,7 @@ class SimpleGlossaryService:
                                   input_file_path_for_naming: Union[str, Path],
                                   # novel_language_code: Optional[str] = None, # LLM이 감지하므로 불필요
                                   progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO 변경
-                                  seed_lorebook_path: Optional[Union[str, Path]] = None # 시드 로어북 경로 추가
+                                  seed_glossary_path: Optional[Union[str, Path]] = None # 시드 용어집 경로 추가
                                  ) -> Path:
         """
         주어진 텍스트 내용에서 로어북을 추출하고 JSON 파일에 저장합니다.
@@ -304,8 +304,8 @@ class SimpleGlossaryService:
                 출력 JSON 파일 이름 생성에 사용될 원본 입력 파일 경로.
             progress_callback (Optional[Callable[[GlossaryExtractionProgressDTO], None]], optional): # DTO 변경
                 진행 상황을 알리기 위한 콜백 함수.
-            seed_lorebook_path (Optional[Union[str, Path]], optional):
-                참고할 기존 로어북 JSON 파일 경로.
+            seed_glossary_path (Optional[Union[str, Path]], optional):
+                참고할 기존 용어집 JSON 파일 경로.
 
         Returns:
             Path: 생성된 로어북 JSON 파일의 경로.
@@ -316,8 +316,8 @@ class SimpleGlossaryService:
         all_extracted_entries_from_segments: List[GlossaryEntryDTO] = [] # DTO 변경
         seed_entries: List[GlossaryEntryDTO] = [] # DTO 변경
 
-        if seed_lorebook_path:
-            seed_path_obj = Path(seed_lorebook_path)
+        if seed_glossary_path:
+            seed_path_obj = Path(seed_glossary_path)
             if seed_path_obj.exists() and seed_path_obj.is_file():
                 try:
                     logger.info(f"시드 용어집 파일 로드 중: {seed_path_obj}")
@@ -343,7 +343,7 @@ class SimpleGlossaryService:
                 except Exception as e_seed:
                     logger.error(f"시드 용어집 파일 로드 중 오류 ({seed_path_obj}): {e_seed}", exc_info=True)
             else:
-                logger.warning(f"제공된 시드 로어북 경로를 찾을 수 없거나 파일이 아닙니다: {seed_lorebook_path}")
+                logger.warning(f"제공된 시드 용어집 경로를 찾을 수 없거나 파일이 아닙니다: {seed_glossary_path}")
         
         # ChunkService를 사용하여 텍스트를 세그먼트로 분할
         # 경량화로 인해 청크 크기 설정을 단순화하거나 제거할 수 있음. 여기서는 유지.
