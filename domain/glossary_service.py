@@ -10,20 +10,20 @@ from typing import Dict, Any, Optional, List, Union, Tuple, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
-    from .gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException
-    from .file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file # read_json_file 추가
-    from .logger_config import setup_logger
-    from .chunk_service import ChunkService # ChunkService 임포트
-    from .exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException
-    from .dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO # DTO 변경
+    from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException
+    from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file
+    from infrastructure.logger_config import setup_logger
+    from utils.chunk_service import ChunkService
+    from core.exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException
+    from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO
 except ImportError:
     # 단독 실행 또는 다른 경로에서의 import를 위한 fallback
-    from gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException
-    from file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file # read_json_file 추가
-    from chunk_service import ChunkService # ChunkService 임포트
-    from logger_config import setup_logger
-    from exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException
-    from dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO
+    from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException # type: ignore
+    from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file # type: ignore
+    from utils.chunk_service import ChunkService # type: ignore
+    from infrastructure.logger_config import setup_logger # type: ignore
+    from core.exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException # type: ignore
+    from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO # type: ignore
 
 logger = setup_logger(__name__)
 

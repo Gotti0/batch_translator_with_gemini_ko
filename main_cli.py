@@ -8,6 +8,11 @@ import threading
 import logging
 import json
 
+# 프로젝트 루트 디렉토리를 sys.path에 추가 (main_gui.py와 유사하게)
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 # tqdm 및 기타 필요한 모듈 임포트
 try:
     from tqdm import tqdm
@@ -67,11 +72,11 @@ except ImportError:
 Tqdm = tqdm
 
 try:
-    from app_service import AppService
-    from dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO # DTO 변경
-    from exceptions import BtgException
-    from logger_config import setup_logger
-    from file_handler import (
+    from app.app_service import AppService
+    from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
+    from core.exceptions import BtgException
+    from infrastructure.logger_config import setup_logger
+    from infrastructure.file_handler import (
         read_text_file, get_metadata_file_path, load_metadata,
         _hash_config_for_metadata, delete_file
     )

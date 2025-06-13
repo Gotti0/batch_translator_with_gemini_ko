@@ -19,7 +19,12 @@ from google.api_core import exceptions as api_core_exceptions
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 
 
-logger = logging.getLogger(__name__) # type: ignore
+# Assuming logger_config is in infrastructure.logging
+try:
+    from ..infrastructure.logger_config import setup_logger # Relative import if logger_config is in the same parent package
+except ImportError:
+    from infrastructure.logger_config import setup_logger # Absolute for fallback or direct run
+logger = setup_logger(__name__)
 
 class GeminiApiException(Exception):
     """Gemini API 호출 관련 기본 예외 클래스"""

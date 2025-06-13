@@ -1,4 +1,5 @@
 # dtos.py
+# Path: neo_batch_translator/core/dtos.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path

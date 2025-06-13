@@ -12,13 +12,13 @@ from tqdm import tqdm # tqdm 임포트 확인
 import sys # sys 임포트 확인 (tqdm_file_stream=sys.stdout 에 사용될 수 있음)
 
 try:
-    from .logger_config import setup_logger
+    from infrastructure.logger_config import setup_logger
 except ImportError:
-    from logger_config import setup_logger
+    from infrastructure.logger_config import setup_logger
 
 try:
     # file_handler에서 필요한 함수들을 import 합니다.
-    from .file_handler import (
+    from infrastructure.file_handler import (
         read_text_file, write_text_file,
         save_chunk_with_index_to_file, get_metadata_file_path, delete_file,
         load_chunks_from_file,
@@ -27,17 +27,17 @@ try:
         _hash_config_for_metadata,
         save_merged_chunks_to_file
     )
-    from .config_manager import ConfigManager
-    from .gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
-    from .translation_service import TranslationService # Keep
-    from .glossary_service import SimpleGlossaryService 
-    from .chunk_service import ChunkService
-    from .exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
-    from .dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO # DTO 임포트 확인
-    from .post_processing_service import PostProcessingService
+    from ..core.config.config_manager import ConfigManager
+    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
+    from domain.translation_service import TranslationService
+    from domain.glossary_service import SimpleGlossaryService
+    from ..utils.chunk_service import ChunkService
+    from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
+    from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
+    from ..utils.post_processing_service import PostProcessingService
 except ImportError:
     # Fallback imports
-    from file_handler import (
+    from infrastructure.file_handler import (
         read_text_file, write_text_file,
         save_chunk_with_index_to_file, get_metadata_file_path, delete_file,
         load_chunks_from_file,
@@ -46,14 +46,14 @@ except ImportError:
         _hash_config_for_metadata,
         save_merged_chunks_to_file
     )
-    from config_manager import ConfigManager
-    from gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
-    from translation_service import TranslationService
-    from glossary_service import SimpleGlossaryService
-    from chunk_service import ChunkService
-    from exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
-    from dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO # DTO 임포트 확인
-    from post_processing_service import PostProcessingService
+    from ..core.config.config_manager import ConfigManager
+    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
+    from domain.translation_service import TranslationService
+    from domain.glossary_service import SimpleGlossaryService
+    from ..utils.chunk_service import ChunkService
+    from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
+    from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
+    from ..utils.post_processing_service import PostProcessingService
 
 logger = setup_logger(__name__)
 
@@ -106,7 +106,7 @@ class AppService:
                     sa_file_path = Path(sa_file_path_str)
                     if sa_file_path.is_file():
                         try:
-                            auth_credentials_for_gemini_client = read_text_file(sa_file_path)
+                            auth_credentials_for_gemini_client = read_text_file(sa_file_path) # file_handler is now in infrastructure.file_system
                             logger.info(f"Vertex AI 서비스 계정 파일 ('{sa_file_path}')에서 인증 정보를 로드했습니다.")
                         except Exception as e:
                             logger.error(f"Vertex AI 서비스 계정 파일 읽기 실패 ({sa_file_path}): {e}")

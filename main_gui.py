@@ -7,23 +7,24 @@ from pathlib import Path
 import sys # sys 모듈 임포트
 
 # 프로젝트 루트 디렉토리를 sys.path에 추가
-project_root = Path(__file__).resolve().parent
-sys.path.append(str(project_root))
+project_root = Path(__file__).resolve().parent.parent # Assuming this file is in neo_batch_translator/
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from typing import Optional, Dict, Any, List, Callable, Union
 from dataclasses import dataclass
 import json
 import time
-import io # tqdm import removed, io is kept as it's used by TqdmToTkinter
+import io
 import logging
 
 # 4계층 아키텍처의 AppService 및 DTOs, Exceptions 임포트
 try:
-    from app_service import AppService
-    from dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO, ModelInfoDTO # Changed LorebookExtractionProgressDTO to GlossaryExtractionProgressDTO
-    from exceptions import BtgConfigException, BtgServiceException, BtgFileHandlerException, BtgApiClientException, BtgBusinessLogicException, BtgException # BtgPronounException removed, BtgBusinessLogicException added
-    from logger_config import setup_logger
-    from file_handler import get_metadata_file_path, load_metadata, _hash_config_for_metadata, delete_file # PRONOUN_CSV_HEADER removed
+    from app.app_service import AppService
+    from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO, ModelInfoDTO
+    from core.exceptions import BtgConfigException, BtgServiceException, BtgFileHandlerException, BtgApiClientException, BtgBusinessLogicException, BtgException
+    from infrastructure.logger_config import setup_logger
+    from infrastructure.file_handler import get_metadata_file_path, load_metadata, _hash_config_for_metadata, delete_file
 except ImportError as e:
     # Critical error: GUI cannot function without these core components.
     # Print to stderr and a simple dialog if tkinter is available enough for that.

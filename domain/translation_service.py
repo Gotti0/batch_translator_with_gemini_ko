@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, List, Union
 import os
 
 try:
-    from .gemini_client import (
+    from infrastructure.gemini_client import (
         GeminiClient,
         GeminiContentSafetyException,
         GeminiRateLimitException,
@@ -16,16 +16,16 @@ try:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from .file_handler import read_json_file # JSON 로딩을 위해 추가
-    from .logger_config import setup_logger
-    from .exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
-    from .chunk_service import ChunkService
+    from infrastructure.file_handler import read_json_file
+    from infrastructure.logger_config import setup_logger
+    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
+    from utils.chunk_service import ChunkService
     # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다. # 로어북 -> 용어집
     # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다.
     # from google.genai import types as genai_types
-    from .dtos import GlossaryEntryDTO # 용어집 DTO 임포트
+    from core.dtos import GlossaryEntryDTO
 except ImportError:
-    from gemini_client import (  # type: ignore
+    from infrastructure.gemini_client import (  # type: ignore
         GeminiClient,
         GeminiContentSafetyException,
         GeminiRateLimitException,
@@ -33,11 +33,11 @@ except ImportError:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from file_handler import read_json_file  # type: ignore # JSON 로딩을 위해 추가
-    from logger_config import setup_logger  # type: ignore
-    from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException  # type: ignore
-    from chunk_service import ChunkService  # type: ignore
-    from dtos import GlossaryEntryDTO  # type: ignore # 용어집 DTO 임포트
+    from infrastructure.file_handler import read_json_file  # type: ignore
+    from infrastructure.logger_config import setup_logger  # type: ignore
+    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException  # type: ignore
+    from utils.chunk_service import ChunkService  # type: ignore
+    from core.dtos import GlossaryEntryDTO  # type: ignore
     # from google.genai import types as genai_types # Fallback import
 
 logger = setup_logger(__name__)
@@ -513,7 +513,7 @@ class TranslationService:
 if __name__ == '__main__':
     # MockGeminiClient에서 types를 사용하므로, 이 블록 내에서 임포트합니다.
     from google.genai import types as genai_types # Ensure types is imported for hints
-    
+
     print("--- TranslationService 테스트 ---")
     class MockGeminiClient(GeminiClient):
         def __init__(self, auth_credentials, project=None, location=None, requests_per_minute: Optional[int] = None):
@@ -618,7 +618,7 @@ if __name__ == '__main__':
         {"keyword": "Alice", "translated_keyword": "앨리스", "source_language": "en", "target_language": "ko", "occurrence_count": 10},
         {"keyword": "Bob", "translated_keyword": "밥", "source_language": "en", "target_language": "ko", "occurrence_count": 8}
     ]
-    from file_handler import write_json_file, delete_file # write_csv_file -> write_json_file
+    from infrastructure.file_handler import write_json_file, delete_file
     test_glossary_file = Path(config1["glossary_json_path"]) # Use path from config
     if test_glossary_file.exists(): delete_file(test_glossary_file)
     write_json_file(test_glossary_file, test_glossary_data)

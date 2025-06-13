@@ -2,7 +2,11 @@
 import re
 from typing import Dict, List, Tuple
 from pathlib import Path
-from logger_config import setup_logger
+
+try:
+    from infrastructure.logger_config import setup_logger
+except ImportError:
+    from infrastructure.logging.logger_config import setup_logger # type: ignore
 
 logger = setup_logger(__name__)
 

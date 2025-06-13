@@ -14,9 +14,9 @@ import logging # logging 모듈 임포트
 # 여기서는 logging.getLogger(__name__)만 사용해도 됩니다.
 # 단독 실행 테스트를 위해 로거를 직접 설정할 수도 있습니다.
 try:
-    from .logger_config import setup_logger
+    from ..infrastructure.logger_config import setup_logger # Relative import
 except ImportError:
-    from logger_config import setup_logger # 현재 디렉토리에서 찾기 (단독 실행 시)
+    from infrastructure.logger_config import setup_logger # Absolute for fallback
 
 logger = setup_logger(__name__) # 이 파일용 로거 인스턴스 생성
 

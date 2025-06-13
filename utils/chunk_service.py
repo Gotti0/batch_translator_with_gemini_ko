@@ -1,8 +1,13 @@
 # chunk_service.py
 from typing import List, Union, Optional
 from pathlib import Path
-from logger_config import setup_logger
-from exceptions import BtgChunkingException, BtgFileHandlerException # 파일 직접 처리 안 하므로 FileHandlerException은 불필요
+
+try:
+    from infrastructure.logger_config import setup_logger
+    from core.exceptions import BtgChunkingException
+except ImportError:
+    from infrastructure.logging.logger_config import setup_logger # type: ignore
+    from core.exceptions import BtgChunkingException # type: ignore
 
 logger = setup_logger(__name__)
 
@@ -235,4 +240,3 @@ if __name__ == '__main__':
         assert "max_chunk_size는 0보다 커야 합니다" in str(e)
 
     logger.info("\nChunkService 테스트 완료.")
-

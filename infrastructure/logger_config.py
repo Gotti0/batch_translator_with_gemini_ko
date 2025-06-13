@@ -1,4 +1,5 @@
 # logger_config.py
+# Path: neo_batch_translator/infrastructure/logging/logger_config.py
 import logging
 import sys
 from pathlib import Path

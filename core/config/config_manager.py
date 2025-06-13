@@ -5,9 +5,9 @@ from typing import Dict, Any, Optional, Union, List
 import os # os 모듈 임포트
 
 try:
-    from .file_handler import read_json_file, write_json_file
+    from infrastructure.file_handler import read_json_file, write_json_file
 except ImportError:
-    from file_handler import read_json_file, write_json_file
+    from infrastructure.file_handler import read_json_file, write_json_file
 
 
 DEFAULT_CONFIG_FILENAME = "config.json"

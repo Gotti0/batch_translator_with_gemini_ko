@@ -1,4 +1,5 @@
 # exceptions.py
+# Path: neo_batch_translator/core/exceptions.py
 
 class BtgException(Exception):
     """BTG 애플리케이션의 모든 사용자 정의 예외에 대한 기본 클래스입니다."""
