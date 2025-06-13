@@ -127,7 +127,7 @@ class SimpleGlossaryService:
         """
         prompt = self._get_glossary_extraction_prompt(segment_text)
         model_name = self.config.get("model_name", "gemini-2.0-flash")
-        generation_config = {
+        generation_config_params = { # 변수명 변경 (선택 사항이지만, 명확성을 위해)
             "temperature": self.config.get("glossary_extraction_temperature", 0.3), # 단순 추출이므로 약간 높여도 됨
             "response_mime_type": "application/json",
         }
@@ -136,7 +136,7 @@ class SimpleGlossaryService:
             response_data = self.gemini_client.generate_text(
                 prompt=prompt,
                 model_name=model_name,
-                generation_config=generation_config 
+                generation_config_dict=generation_config_params # 호출 시 인자명 수정
             )
 
             if isinstance(response_data, dict):                
