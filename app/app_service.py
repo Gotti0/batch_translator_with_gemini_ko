@@ -46,14 +46,14 @@ except ImportError:
         _hash_config_for_metadata,
         save_merged_chunks_to_file
     )
-    from ..core.config.config_manager import ConfigManager
+    from core.config.config_manager import ConfigManager
     from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
-    from ..utils.chunk_service import ChunkService
-    from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
-    from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
-    from ..utils.post_processing_service import PostProcessingService
+    from utils.chunk_service import ChunkService
+    from core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
+    from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
+    from utils.post_processing_service import PostProcessingService
 
 logger = setup_logger(__name__)
 
