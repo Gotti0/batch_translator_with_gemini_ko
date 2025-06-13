@@ -136,7 +136,7 @@ class SimpleGlossaryService:
             response_data = self.gemini_client.generate_text(
                 prompt=prompt,
                 model_name=model_name,
-                config_dict=generation_config 
+                generation_config=generation_config 
             )
 
             if isinstance(response_data, dict):                
