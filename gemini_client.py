@@ -423,20 +423,23 @@ class GeminiClient:
                     self._apply_rpm_delay() # RPM 지연 적용
                     logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
 
+                    # generation_config 및 safety_settings 준비
+                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
+                    if safety_settings_list_of_dicts:
+                        final_generation_config_params['safety_settings'] = safety_settings_list_of_dicts
+                    
+                    sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
+
+
                     text_content_from_api: Optional[str] = None
                     if stream:
                         response = self.client.models.generate_content_stream(
                             model=effective_model_name,
                             contents=final_contents,
-                            config=genai_types.GenerateContentConfig(
-                                **generation_config_dict
-                            ) if generation_config_dict else None,
-                            safety_settings=safety_settings_list_of_dicts                      
+                            generation_config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                                         
                         )
                         aggregated_parts = []
                         for chunk_response in response:
-                            if self._is_content_safety_error(response=chunk_response):
-                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림의 일부 응답 차단")
                             if hasattr(chunk_response, 'text') and chunk_response.text:
                                 aggregated_parts.append(chunk_response.text)
                             elif hasattr(chunk_response, 'candidates') and chunk_response.candidates:
@@ -445,15 +448,14 @@ class GeminiClient:
                                     # We primarily care about the content parts.
                                     if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
                                         aggregated_parts.append("".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text))
+                            if self._is_content_safety_error(response=chunk_response): # 스트림의 각 청크 응답에 대해 안전성 검사
+                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림의 일부 응답 차단")                    
                         text_content_from_api = "".join(aggregated_parts)
                     else:
                         response = self.client.models.generate_content(
                             model=effective_model_name,
                             contents=final_contents,
-                            config=genai_types.GenerateContentConfig(
-                                **generation_config_dict
-                            ) if generation_config_dict else None,
-                            safety_settings=safety_settings_list_of_dicts
+                            generation_config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                        
                         )
                        
                         if self._is_content_safety_error(response=response):
