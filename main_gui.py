@@ -7,7 +7,7 @@ from pathlib import Path
 import sys # sys 모듈 임포트
 
 # 프로젝트 루트 디렉토리를 sys.path에 추가
-project_root = Path(__file__).resolve().parent.parent # Assuming this file is in neo_batch_translator/
+project_root = Path(__file__).resolve().parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
