@@ -11,7 +11,7 @@ from typing import Dict, Any, Iterable, Optional, Union, List
 
 # Google 관련 imports
 from google import genai
-from google.genai import types as genai_types
+from google.genai import types as genai_types # ThinkingConfig 포함
 from google.genai.types import FinishReason  
 from google.genai import errors as genai_errors
 from google.auth.exceptions import GoogleAuthError, RefreshError
@@ -373,6 +373,7 @@ class GeminiClient:
         model_name: str,
         generation_config_dict: Optional[Dict[str, Any]] = None,
         safety_settings_list_of_dicts: Optional[List[Dict[str, Any]]] = None,
+        thinking_budget: Optional[int] = None, # 사고 예산 파라미터 추가
         system_instruction_text: Optional[str] = None, 
         max_retries: int = 5, 
         initial_backoff: float = 2.0,
@@ -444,6 +445,13 @@ class GeminiClient:
                          # generation_config_dict에 system_instruction이 있었는데, system_instruction_text가 비어있으면 제거
                          del final_generation_config_params['system_instruction']
                     
+                    # thinking_budget이 제공되면 thinking_config를 설정합니다.
+                    if thinking_budget is not None:
+                        final_generation_config_params['thinking_config'] = genai_types.ThinkingConfig(
+                            thinking_budget=thinking_budget
+                        )
+                        logger.info(f"Thinking budget 설정됨: {thinking_budget}")
+
 
                     forced_safety_settings = [
                         genai_types.SafetySetting(

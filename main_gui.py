@@ -60,13 +60,17 @@ class Tooltip:
         self.widget = widget
         self.text = text
         self.tooltip_window = None
-        self.id = None
-        self.x = self.y = 0
+        self.id = None # Timer ID for scheduling
+        # Store mouse coordinates from <Enter> event
+        self.enter_x_root = 0
+        self.enter_y_root = 0
         self.widget.bind("<Enter>", self.enter)
         self.widget.bind("<Leave>", self.leave)
         self.widget.bind("<ButtonPress>", self.leave) # 클릭 시에도 툴팁 숨김
-
     def enter(self, event=None):
+        if event: # Store mouse position when entering the widget
+            self.enter_x_root = event.x_root
+            self.enter_y_root = event.y_root
         self.schedule()
 
     def leave(self, event=None):
@@ -84,25 +88,10 @@ class Tooltip:
         if id:
             self.widget.after_cancel(id)
 
-    def showtip(self, event=None):
+    def showtip(self, event=None): # 'event' here is from the 'after' call, not the original mouse event
         if not self.widget.winfo_exists():
             self.hidetip()
             return
-
-        # Default internal offsets if bbox fails or is not applicable
-        # These are coordinates relative to the widget's top-left corner.
-        cursor_x_in_widget = 0
-        cursor_y_in_widget = 0
-
-        bbox = self.widget.bbox("insert") # Get bbox relative to the widget
-        if bbox:
-            # If bbox is valid, use its x,y (relative to widget's top-left)
-            cursor_x_in_widget, cursor_y_in_widget, _, _ = bbox
-        
-        # Calculate final screen coordinates for the tooltip
-        # Add widget's screen coordinates, cursor's relative coordinates, and a fixed offset
-        final_tooltip_x = self.widget.winfo_rootx() + cursor_x_in_widget + 25
-        final_tooltip_y = self.widget.winfo_rooty() + cursor_y_in_widget + 20
 
         # 이전 툴팁 창이 있다면 파괴
         if self.tooltip_window:
@@ -110,10 +99,13 @@ class Tooltip:
             self.tooltip_window = None
         
         # Create new tooltip window
-        # Ensure widget still exists before making it a master of Toplevel
         if not self.widget.winfo_exists(): # Double check, as time might have passed
             self.hidetip()
             return
+
+        # Position the tooltip relative to the mouse cursor's position at <Enter>
+        final_tooltip_x = self.enter_x_root + 15  # Offset from cursor
+        final_tooltip_y = self.enter_y_root + 10  # Offset from cursor
 
         self.tooltip_window = tk.Toplevel(self.widget)
         self.tooltip_window.wm_overrideredirect(True) 
@@ -345,6 +337,15 @@ class BatchTranslatorGUI:
                 self.top_p_scale.set(default_top_p)
                 self.top_p_label.config(text=f"{default_top_p:.2f}")
 
+            thinking_budget_val = config.get("thinking_budget") # None일 수 있음
+            logger.debug(f"Config에서 가져온 thinking_budget: {thinking_budget_val}")
+            self.thinking_budget_entry.delete(0, tk.END)
+            if thinking_budget_val is not None:
+                self.thinking_budget_entry.insert(0, str(thinking_budget_val))
+            else:
+                self.thinking_budget_entry.insert(0, "") # 비어있으면 빈 문자열로 표시
+
+
             chunk_size_val = config.get("chunk_size", 6000)
             logger.debug(f"Config에서 가져온 chunk_size: {chunk_size_val}")
             self.chunk_size_entry.delete(0, tk.END)
@@ -518,8 +519,9 @@ class BatchTranslatorGUI:
         gen_param_frame.pack(fill="x", padx=5, pady=5)
         
         # Temperature 설정
-        ttk.Label(gen_param_frame, text="Temperature:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(gen_param_frame, text="Temperature:"), "모델 응답의 무작위성 조절 (낮을수록 결정적, 높을수록 다양).")
+        temperature_param_label = ttk.Label(gen_param_frame, text="Temperature:")
+        temperature_param_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(temperature_param_label, "모델 응답의 무작위성 조절 (낮을수록 결정적, 높을수록 다양).")
         self.temperature_scale = ttk.Scale(gen_param_frame, from_=0.0, to=2.0, orient="horizontal", length=200,
                                          command=lambda v: self.temperature_label.config(text=f"{float(v):.2f}"))
         self.temperature_scale.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
@@ -528,22 +530,34 @@ class BatchTranslatorGUI:
         self.temperature_label.grid(row=0, column=2, padx=5, pady=5)
         
         # Top P 설정
-        ttk.Label(gen_param_frame, text="Top P:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(gen_param_frame, text="Top P:"), "모델이 다음 단어를 선택할 때 고려하는 확률 분포의 누적합 (낮을수록 집중적, 높을수록 다양).")
+        top_p_param_label = ttk.Label(gen_param_frame, text="Top P:")
+        top_p_param_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(top_p_param_label, "모델이 다음 단어를 선택할 때 고려하는 확률 분포의 누적합 (낮을수록 집중적, 높을수록 다양).")
         self.top_p_scale = ttk.Scale(gen_param_frame, from_=0.0, to=1.0, orient="horizontal", length=200,
                                    command=lambda v: self.top_p_label.config(text=f"{float(v):.2f}"))
         self.top_p_scale.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         Tooltip(self.top_p_scale, "Top P 값을 조절합니다 (0.0 ~ 1.0).")
         self.top_p_label = ttk.Label(gen_param_frame, text="0.00")
         self.top_p_label.grid(row=1, column=2, padx=5, pady=5)
+
+        # Thinking Budget 설정
+        thinking_budget_param_label = ttk.Label(gen_param_frame, text="Thinking Budget:")
+        thinking_budget_param_label.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(thinking_budget_param_label, "모델이 추론에 사용할 토큰 수 (Gemini 2.5 모델).\nFlash: 0-24576, Pro: 128-32768.\n비워두면 자동 또는 모델 기본값 사용.")
+        self.thinking_budget_entry = ttk.Entry(gen_param_frame, width=10)
+        self.thinking_budget_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        Tooltip(self.thinking_budget_entry, "Thinking Budget 값을 정수로 입력하세요.\nFlash 모델에서 0은 기능 비활성화입니다.\n비워두는것을 추천함")
+        
+
         
         # 파일 및 처리 설정
         file_chunk_frame = ttk.LabelFrame(settings_frame, text="파일 및 처리 설정", padding="10")
         file_chunk_frame.pack(fill="x", padx=5, pady=5)
         
         # 입력 파일
-        ttk.Label(file_chunk_frame, text="입력 파일:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(file_chunk_frame, text="입력 파일:"), "번역할 원본 텍스트 파일입니다.")
+        input_file_label_widget = ttk.Label(file_chunk_frame, text="입력 파일:")
+        input_file_label_widget.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(input_file_label_widget, "번역할 원본 텍스트 파일입니다.")       
         self.input_file_entry = ttk.Entry(file_chunk_frame, width=50)
         self.input_file_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         Tooltip(self.input_file_entry, "번역할 파일 경로를 입력하거나 '찾아보기'로 선택하세요.")
@@ -552,8 +566,9 @@ class BatchTranslatorGUI:
         Tooltip(self.browse_input_button, "번역할 입력 파일을 찾습니다.")
         
         # 출력 파일
-        ttk.Label(file_chunk_frame, text="출력 파일:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(file_chunk_frame, text="출력 파일:"), "번역된 결과를 저장할 파일입니다.")
+        output_file_label_widget = ttk.Label(file_chunk_frame, text="출력 파일:")
+        output_file_label_widget.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(output_file_label_widget, "번역된 결과를 저장할 파일입니다.")
         self.output_file_entry = ttk.Entry(file_chunk_frame, width=50)
         self.output_file_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         Tooltip(self.output_file_entry, "번역 결과를 저장할 파일 경로를 입력하거나 '찾아보기'로 선택하세요.")
@@ -565,22 +580,25 @@ class BatchTranslatorGUI:
         chunk_worker_frame = ttk.Frame(file_chunk_frame)
         chunk_worker_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
         
-        ttk.Label(chunk_worker_frame, text="청크 크기:").pack(side="left", padx=(0,5))
-        Tooltip(ttk.Label(chunk_worker_frame, text="청크 크기:"), "API 요청당 처리할 텍스트의 최대 문자 수입니다.")
+        chunk_size_label_widget = ttk.Label(chunk_worker_frame, text="청크 크기:")
+        chunk_size_label_widget.pack(side="left", padx=(0,5))
+        Tooltip(chunk_size_label_widget, "API 요청당 처리할 텍스트의 최대 문자 수입니다.")      
         self.chunk_size_entry = ttk.Entry(chunk_worker_frame, width=10)
         self.chunk_size_entry.pack(side="left", padx=(0,15))
         Tooltip(self.chunk_size_entry, "청크 크기를 입력하세요 (예: 6000).")
         
-        ttk.Label(chunk_worker_frame, text="최대 작업자 수:").pack(side="left", padx=(10,5))
-        Tooltip(ttk.Label(chunk_worker_frame, text="최대 작업자 수:"), "동시에 실행할 번역 스레드의 최대 개수입니다.")
+        max_workers_label_widget = ttk.Label(chunk_worker_frame, text="최대 작업자 수:")
+        max_workers_label_widget.pack(side="left", padx=(10,5))
+        Tooltip(max_workers_label_widget, "동시에 실행할 번역 스레드의 최대 개수입니다.")       
         self.max_workers_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.max_workers_entry.pack(side="left")
         self.max_workers_entry.insert(0, str(os.cpu_count() or 1))
         Tooltip(self.max_workers_entry, "최대 작업자 수를 입력하세요 (예: 4).")
         
         # RPM 설정
-        ttk.Label(chunk_worker_frame, text="분당 요청 수 (RPM):").pack(side="left", padx=(10,5))
-        Tooltip(ttk.Label(chunk_worker_frame, text="분당 요청 수 (RPM):"), "API에 분당 보낼 수 있는 최대 요청 수입니다. 0은 제한 없음을 의미합니다.")
+        rpm_label_widget = ttk.Label(chunk_worker_frame, text="분당 요청 수 (RPM):")
+        rpm_label_widget.pack(side="left", padx=(10,5))
+        Tooltip(rpm_label_widget, "API에 분당 보낼 수 있는 최대 요청 수입니다. 0은 제한 없음을 의미합니다.")      
         self.rpm_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.rpm_entry.pack(side="left")
         Tooltip(self.rpm_entry, "분당 요청 수를 입력하세요 (예: 60).")
@@ -716,14 +734,18 @@ class BatchTranslatorGUI:
         Tooltip(self.enable_dynamic_glossary_injection_check, "번역 시 용어집 탭에서 설정된 용어집 JSON 파일의 내용을\n프롬프트에 동적으로 주입하여 번역 일관성을 높입니다.") # Text changed
         self.enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
 
-        ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 항목 수:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 항목 수:"), "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.") # Text changed
+        max_entries_injection_label = ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 항목 수:")
+        max_entries_injection_label.grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(max_entries_injection_label, "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.") # Text changed
+        # max_glossary_entries_injection_entry는 Tooltip이 이미 올바르게 적용되어 있습니다.     
         self.max_glossary_entries_injection_entry = ttk.Entry(self.dynamic_glossary_details_frame, width=5) # Widget name changed, Parent changed
         self.max_glossary_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         Tooltip(self.max_glossary_entries_injection_entry, "최대 주입 항목 수를 입력하세요.")
 
-        ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 문자 수:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 문자 수:"), "하나의 번역 청크에 주입될 용어집 내용의 최대 총 문자 수입니다.") # Text changed
+        max_chars_injection_label = ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 문자 수:")
+        max_chars_injection_label.grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
+        Tooltip(max_chars_injection_label, "하나의 번역 청크에 주입될 용어집 내용의 최대 총 문자 수입니다.") # Text changed
+        # max_glossary_chars_injection_entry는 Tooltip이 이미 올바르게 적용되어 있습니다.
         self.max_glossary_chars_injection_entry = ttk.Entry(self.dynamic_glossary_details_frame, width=10) # Widget name changed, Parent changed
         self.max_glossary_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         Tooltip(self.max_glossary_chars_injection_entry, "최대 주입 문자 수를 입력하세요.")
@@ -821,10 +843,11 @@ class BatchTranslatorGUI:
         
         path_frame.pack(fill="x", padx=5, pady=5)
         
-        ttk.Label(path_frame, text="JSON 파일 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w") # Text changed
+        glossary_json_path_label = ttk.Label(path_frame, text="JSON 파일 경로:") # Text changed
+        glossary_json_path_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(glossary_json_path_label, "사용할 용어집 JSON 파일의 경로입니다.\n추출 기능을 사용하면 자동으로 채워지거나, 직접 입력/선택할 수 있습니다.")     
         self.glossary_json_path_entry = ttk.Entry(path_frame, width=50) # Renamed
         self.glossary_json_path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        Tooltip(self.glossary_json_path_entry, "사용할 용어집 JSON 파일의 경로입니다.\n추출 기능을 사용하면 자동으로 채워지거나, 직접 입력/선택할 수 있습니다.") # Text changed
         self.browse_glossary_json_button = ttk.Button(path_frame, text="찾아보기", command=self._browse_glossary_json) # Renamed
         self.browse_glossary_json_button.grid(row=0, column=2, padx=5, pady=5)
         
@@ -844,10 +867,9 @@ class BatchTranslatorGUI:
         extraction_settings_frame.pack(fill="x", padx=5, pady=5)
         
         # 샘플링 비율 설정 (lorebook_sampling_ratio)
-        ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):"), "용어집 추출 시 전체 텍스트 중 분석할 비율입니다.\n100%로 설정하면 전체 텍스트를 분석합니다.") # Text changed
-        
-
+        sample_ratio_label_widget = ttk.Label(extraction_settings_frame, text="샘플링 비율 (%):")
+        sample_ratio_label_widget.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(sample_ratio_label_widget, "용어집 추출 시 전체 텍스트 중 분석할 비율입니다.\n100%로 설정하면 전체 텍스트를 분석합니다.") # Text changed
         sample_ratio_frame = ttk.Frame(extraction_settings_frame)
         sample_ratio_frame.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
         
@@ -894,9 +916,9 @@ class BatchTranslatorGUI:
         self.advanced_frame.grid(row=5, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
         
         # 온도 설정 (용어집 추출용)        
-        ttk.Label(self.advanced_frame, text="추출 온도:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(ttk.Label(self.advanced_frame, text="추출 온도:"), "용어집 추출 시 모델 응답의 무작위성입니다.\n낮을수록 일관적, 높을수록 다양하지만 덜 정확할 수 있습니다.") # Text changed
-    
+        extraction_temp_label_widget = ttk.Label(self.advanced_frame, text="추출 온도:")
+        extraction_temp_label_widget.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(extraction_temp_label_widget, "용어집 추출 시 모델 응답의 무작위성입니다.\n낮을수록 일관적, 높을수록 다양하지만 덜 정확할 수 있습니다.") # Text changed       
         self.extraction_temp_scale = ttk.Scale(
             self.advanced_frame,
             from_=0.0,
@@ -1178,6 +1200,20 @@ class BatchTranslatorGUI:
                 messagebox.showwarning("입력 오류", "프리필 캐시된 히스토리 형식이 잘못되었습니다 (JSON 파싱 실패). 기본값 []으로 설정됩니다.")
                 prefill_cached_history_obj = []
 
+
+        thinking_budget_str = self.thinking_budget_entry.get().strip()
+        thinking_budget_ui_val: Optional[int] = None
+        if thinking_budget_str:
+            try:
+                thinking_budget_ui_val = int(thinking_budget_str)
+            except ValueError:
+                messagebox.showwarning("입력 오류", f"Thinking Budget은 숫자여야 합니다. '{thinking_budget_str}'은(는) 유효하지 않습니다. 이 값은 무시됩니다.")
+                self.thinking_budget_entry.delete(0, tk.END) # 잘못된 값 제거
+                thinking_budget_ui_val = None # 잘못된 값이면 None으로 처리 (모델 기본값 사용)
+
+
+
+        
         config_data = {
             "api_keys": api_keys_list if not use_vertex else [],
             "service_account_file_path": self.service_account_file_entry.get().strip() if use_vertex else None,
@@ -1187,6 +1223,7 @@ class BatchTranslatorGUI:
             "model_name": self.model_name_combobox.get().strip(), 
             "temperature": self.temperature_scale.get(),
             "top_p": self.top_p_scale.get(),
+            "thinking_budget": thinking_budget_ui_val, # UI에서 가져온 thinking_budget 값
             "chunk_size": int(self.chunk_size_entry.get() or "6000"), 
             "max_workers": max_workers_val, 
             "requests_per_minute": rpm_val,

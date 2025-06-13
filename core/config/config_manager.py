@@ -93,6 +93,7 @@ class ConfigManager:
             "novel_language_fallback": "zh", # 자동 감지 실패 시 사용할 폴백 언어
             "model_name": "gemini-2.0-flash",
             "temperature": 0.7,
+            "thinking_budget": None, # thinking_budget 기본값 (None이면 모델 기본값 사용 또는 자동)
             "top_p": 0.9, # type: ignore
             "prompts": ( # type: ignore
                 "# 용어집 컨텍스트 (제공된 경우 참고)\n\n{{glossary_context}}\n\n"
@@ -167,6 +168,10 @@ class ConfigManager:
                     if key not in final_config:
                         final_config[key] = default_config[key]
 
+                # thinking_budget 유효성 검사 (정수 또는 None)
+                tb_value = final_config.get("thinking_budget")
+                if tb_value is not None and not isinstance(tb_value, int):
+                    final_config["thinking_budget"] = default_config["thinking_budget"] # 잘못된 타입이면 기본값으로
 
                 return final_config
             elif use_default_if_missing:
@@ -227,6 +232,12 @@ class ConfigManager:
                 except (ValueError, TypeError):
                     config_data["max_workers"] = os.cpu_count() or 1
 
+            # thinking_budget 유효성 검사 (저장 시)
+            if "thinking_budget" in config_data:
+                tb_save_value = config_data["thinking_budget"]
+                if tb_save_value is not None and not isinstance(tb_save_value, int):
+                    # 잘못된 타입이면 None (기본값)으로 설정하거나, 오류를 발생시킬 수 있음. 여기서는 None으로.
+                    config_data["thinking_budget"] = None
 
             write_json_file(self.config_file_path, config_data, indent=4)
             print(f"정보: 설정이 '{self.config_file_path}'에 성공적으로 저장되었습니다.")
@@ -259,6 +270,7 @@ if __name__ == '__main__':
     assert config1["novel_language_fallback"] == "ja"
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
     assert config1["requests_per_minute"] == 60 # RPM 기본값 확인
+    assert config1["thinking_budget"] is None # thinking_budget 기본값 확인
     assert config1["enable_dynamic_glossary_injection"] is False
     assert config1["max_glossary_entries_per_chunk_injection"] == 3
     assert config1["max_glossary_chars_per_chunk_injection"] == 500
@@ -277,6 +289,7 @@ if __name__ == '__main__':
     config_to_save["novel_language_fallback"] = "en_gb"
     config_to_save["max_workers"] = 4 # max_workers 값 설정
     config_to_save["requests_per_minute"] = 30 
+    config_to_save["thinking_budget"] = 1024 # thinking_budget 값 설정
     config_to_save["enable_dynamic_glossary_injection"] = True
     config_to_save["glossary_json_path"] = "path/to/active_glossary.json"
     save_success = manager_no_file.save_config(config_to_save)
@@ -304,6 +317,7 @@ if __name__ == '__main__':
     assert config2.get("glossary_output_json_filename_suffix") == "_simple_glossary.json" # 기본값 확인
     assert config2["requests_per_minute"] == 30
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
+    assert config2["thinking_budget"] == 1024 # 저장된 thinking_budget 값 확인
     assert config2["enable_dynamic_glossary_injection"] is True
     assert config2["max_glossary_entries_per_chunk_injection"] == 3
     assert config2["glossary_json_path"] == "path/to/active_glossary.json" # 통합된 경로 확인
@@ -315,6 +329,7 @@ if __name__ == '__main__':
         "temperature": 0.5,
         "max_workers": "invalid", # 잘못된 max_workers 값 테스트
         "requests_per_minute": 0, # RPM 제한 없음 테스트
+        "thinking_budget": "not_an_int", # 잘못된 thinking_budget 값 테스트
         # "glossary_sampling_ratio": 50.0, # 이 설정은 get_default_config에서 제거되었으므로, 테스트에서 제외하거나 다른 키로 대체
         "max_glossary_chars_per_chunk_injection": 600 # 동적 주입 설정 중 하나만 포함
     }
@@ -331,6 +346,7 @@ if __name__ == '__main__':
     assert config3.get("glossary_sampling_ratio") == 10.0 # 기본 용어집 설정 확인 (경량화된 기본값)
     assert config3["max_workers"] == (os.cpu_count() or 1) # 잘못된 값일 경우 기본값으로 복원되는지 확인
     assert config3["requests_per_minute"] == 0 
+    assert config3["thinking_budget"] is None # 잘못된 값일 경우 기본값(None)으로 복원되는지 확인
     assert config3["enable_dynamic_glossary_injection"] is False # 기본값 확인
     assert config3["max_glossary_chars_per_chunk_injection"] == 600 # 저장된 값 확인
 
