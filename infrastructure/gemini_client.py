@@ -369,7 +369,7 @@ class GeminiClient:
 
     def generate_text(
         self,
-        prompt: Union[str, List[Union[str, genai_types.Part]]], 
+        prompt: Union[str, List[genai_types.Content]], # 변경: List[Content] 지원
         model_name: str,
         generation_config_dict: Optional[Dict[str, Any]] = None,
         safety_settings_list_of_dicts: Optional[List[Dict[str, Any]]] = None,
@@ -391,16 +391,17 @@ class GeminiClient:
         is_api_key_mode_for_norm = self.auth_mode == "API_KEY" and bool(self.current_api_key) and not os.environ.get("GOOGLE_API_KEY")
         effective_model_name = self._normalize_model_name(model_name, for_api_key_mode=is_api_key_mode_for_norm)
         
-        final_contents: List[Union[str, genai_types.Part]] = [] # genai_types.Part 사용
+        final_sdk_contents: Union[str, Iterable[genai_types.Content]]
         if system_instruction_text:
-            logger.debug(f"System instruction이 제공되었습니다: {system_instruction_text[:100]}...")
-            # system_instruction_text는 generate_content 호출 시 system_instruction 매개변수로 전달됩니다.
+            logger.debug(f"System instruction 제공됨: {system_instruction_text[:100]}...")
+        
         if isinstance(prompt, str):
-            final_contents.append(prompt)
-        elif isinstance(prompt, list):
-            final_contents.extend(prompt) # type: ignore
+            # 단일 문자열 프롬프트는 사용자 역할의 단일 Content 객체로 변환
+            final_sdk_contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(prompt)])]
+        elif isinstance(prompt, list) and all(isinstance(item, genai_types.Content) for item in prompt):
+            final_sdk_contents = prompt # 이미 List[Content] 형태이면 그대로 사용
         else:
-            raise ValueError("프롬프트는 문자열 또는 (문자열 또는 Part 객체의) 리스트여야 합니다.")
+            raise ValueError("프롬프트는 문자열 또는 Content 객체의 리스트여야 합니다.")
 
         total_keys = len(self.api_keys_list) if self.auth_mode == "API_KEY" and self.api_keys_list else 1
         attempted_keys_count = 0
@@ -427,7 +428,7 @@ class GeminiClient:
                     logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
 
                     # generation_config 및 safety_settings 준비
-                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
+                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {} # type: ignore
                     
 
                     # 항상 BLOCK_NONE으로 안전 설정 강제 적용
@@ -464,14 +465,16 @@ class GeminiClient:
                     
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
 
+                    # system_instruction을 Part 객체로 변환 (None 또는 빈 문자열인 경우 None으로)
+                    effective_system_instruction = genai_types.Part.from_text(system_instruction_text) if system_instruction_text and system_instruction_text.strip() else None
 
                     text_content_from_api: Optional[str] = None
                     if stream:
                         response = self.client.models.generate_content_stream(
                             model=effective_model_name,
-                            contents=final_contents,
+                            contents=final_sdk_contents,
                             config=sdk_generation_config, 
-                            system_instruction=system_instruction_text
+                            system_instruction=effective_system_instruction
                         )
                         aggregated_parts = []
                         for chunk_response in response:
@@ -489,9 +492,9 @@ class GeminiClient:
                     else:
                         response = self.client.models.generate_content(
                             model=effective_model_name,
-                            contents=final_contents,
+                            contents=final_sdk_contents,
                             config=sdk_generation_config, 
-                            system_instruction=system_instruction_text
+                            system_instruction=effective_system_instruction
                         )
                        
                         if self._is_content_safety_error(response=response):

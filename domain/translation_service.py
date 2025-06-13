@@ -21,8 +21,8 @@ try:
     from core.exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
     from utils.chunk_service import ChunkService
     # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다. # 로어북 -> 용어집
-    # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다.
-    # from google.genai import types as genai_types
+    # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다. # 로어북 -> 용어집
+    from google.genai import types as genai_types
     from core.dtos import GlossaryEntryDTO
 except ImportError:
     from infrastructure.gemini_client import (  # type: ignore
@@ -37,8 +37,8 @@ except ImportError:
     from infrastructure.logger_config import setup_logger  # type: ignore
     from core.exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException  # type: ignore
     from utils.chunk_service import ChunkService  # type: ignore
-    from core.dtos import GlossaryEntryDTO  # type: ignore
-    # from google.genai import types as genai_types # Fallback import
+    from core.dtos import GlossaryEntryDTO # type: ignore
+    from google.genai import types as genai_types # Fallback import
 
 logger = setup_logger(__name__)
 
@@ -279,9 +279,9 @@ class TranslationService:
         if not text_chunk.strip():
             logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
-
-        api_prompt_for_gemini_client: Union[str, List[Dict[str, Any]]]
-        api_system_instruction: str
+        
+        api_prompt_for_gemini_client: Union[str, List[genai_types.Content]] # 변경: List[Content] 사용
+        api_system_instruction: Optional[str] # 변경: Optional[str]
 
         if self.config.get("enable_prefill_translation", False):
             logger.info("프리필 번역 모드 활성화됨.")
@@ -296,22 +296,28 @@ class TranslationService:
                 prefill_cached_history = []
                 for item in prefill_cached_history_raw:
                     if isinstance(item, dict) and "role" in item and "parts" in item and isinstance(item.get("parts"), list):
-                        prefill_cached_history.append(item)
+                        # parts 내부의 문자열들을 Part 객체로 변환
+                        sdk_parts = [genai_types.Part.from_text(part_str) for part_str in item["parts"] if isinstance(part_str, str)]
+                        if sdk_parts: # 유효한 part가 있는 경우에만 추가
+                            prefill_cached_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
                     else:
                         logger.warning(f"잘못된 prefill_cached_history 항목 건너뜀: {item}")
             
             # 현재 청크에 대한 사용자 프롬프트 (기존 _construct_prompt 결과)
             current_chunk_user_prompt_str = self._construct_prompt(text_chunk)
             
-            # API에 전달할 contents 구성: 캐시된 히스토리 + 현재 청크 프롬프트
-            api_prompt_for_gemini_client = prefill_cached_history + [{"role": "user", "parts": [current_chunk_user_prompt_str]}]
+            # API에 전달할 contents 구성: List[Content] 형태
+            api_prompt_for_gemini_client = list(prefill_cached_history) # 복사해서 사용
+            api_prompt_for_gemini_client.append(
+                genai_types.Content(role="user", parts=[genai_types.Part.from_text(current_chunk_user_prompt_str)])
+            )
             logger.debug(f"프리필 모드: 시스템 지침='{api_system_instruction[:50]}...', contents 개수={len(api_prompt_for_gemini_client)}")
 
         else:
             logger.info("표준 번역 모드 활성화됨.")
-            api_system_instruction = "" # 일반 시스템 지침은 제거됨. 프리필 비활성화 시 시스템 지침 없음.
+            api_system_instruction = None # 프리필 비활성화 시 시스템 지침 없음
             api_prompt_for_gemini_client = self._construct_prompt(text_chunk) # 문자열
-            logger.debug(f"표준 모드: 시스템 지침='{api_system_instruction[:50]}...', 프롬프트 길이={len(api_prompt_for_gemini_client)}")
+            logger.debug(f"표준 모드: 시스템 지침 없음, 프롬프트 길이={len(api_prompt_for_gemini_client)}")
 
         try:
             logger.debug(f"Gemini API 호출 시작. 모델: {self.config.get('model_name')}")
@@ -323,7 +329,7 @@ class TranslationService:
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)
                 },
-                system_instruction_text=api_system_instruction, # 시스템 지침 전달
+                system_instruction_text=api_system_instruction, # Optional[str] 전달
                 stream=stream 
             )
 
