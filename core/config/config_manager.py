@@ -43,6 +43,10 @@ class ConfigManager:
             "gcp_project": None,
             "gcp_location": None,
             "auth_credentials": "", 
+            # 프리필 번역 설정
+            "enable_prefill_translation": False,
+            "prefill_system_instruction": "",
+            "prefill_cached_history": [], # JSON 문자열이 아닌 Python 리스트/객체로 관리
             "system_instruction": "", # 시스템 지침 기본값 추가
             "requests_per_minute": 60, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
             "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
@@ -196,6 +200,15 @@ class ConfigManager:
             if "system_instruction" in config_data and isinstance(config_data["system_instruction"], tuple):
                 config_data["system_instruction"] = config_data["system_instruction"][0] if config_data["system_instruction"] else ""
 
+            # prefill_cached_history: UI에서는 JSON 문자열로 다루지만, 저장/로드 시에는 Python 객체로.
+            # ConfigManager는 Python 객체를 직접 다루도록 함. UI <-> Config 변환은 GUI에서.
+            # 만약 문자열로 저장된 경우 (이전 버전 호환 또는 직접 수정) 파싱 시도
+            if "prefill_cached_history" in config_data and isinstance(config_data["prefill_cached_history"], str):
+                try:
+                    config_data["prefill_cached_history"] = json.loads(config_data["prefill_cached_history"])
+                except json.JSONDecodeError:
+                    config_data["prefill_cached_history"] = [] # 파싱 실패 시 기본값
+
             if "api_keys" in config_data and config_data["api_keys"]:
                 if not config_data.get("api_key") or config_data["api_key"] != config_data["api_keys"][0]:
                     config_data["api_key"] = config_data["api_keys"][0]
@@ -236,6 +249,9 @@ if __name__ == '__main__':
     assert config1["api_keys"] == [] 
     assert config1["service_account_file_path"] is None
     assert config1["use_vertex_ai"] is False
+    assert config1["enable_prefill_translation"] is False
+    assert config1["prefill_system_instruction"] == ""
+    assert config1["prefill_cached_history"] == []
     assert config1["system_instruction"] == "" # 기본 시스템 지침 확인
     assert config1["novel_language"] == "auto" # Changed from ko to auto to match new default
     assert config1["novel_language_fallback"] == "ja"
@@ -251,6 +267,9 @@ if __name__ == '__main__':
     config_to_save["service_account_file_path"] = "path/to/vertex_sa.json"
     config_to_save["use_vertex_ai"] = True
     config_to_save["gcp_project"] = "test-project"
+    config_to_save["enable_prefill_translation"] = True
+    config_to_save["prefill_system_instruction"] = "You are a prefill bot."
+    config_to_save["prefill_cached_history"] = [{"role": "user", "parts": ["Hello"]}]
     config_to_save["system_instruction"] = "You are a helpful assistant." # 시스템 지침 설정
     config_to_save["model_name"] = "gemini-pro-custom"
     config_to_save["novel_language"] = "en"
@@ -272,6 +291,9 @@ if __name__ == '__main__':
     assert config2["service_account_file_path"] == "path/to/vertex_sa.json"
     assert config2["use_vertex_ai"] is True
     assert config2["gcp_project"] == "test-project"
+    assert config2["enable_prefill_translation"] is True
+    assert config2["prefill_system_instruction"] == "You are a prefill bot."
+    assert config2["prefill_cached_history"] == [{"role": "user", "parts": ["Hello"]}]
     assert config2["system_instruction"] == "You are a helpful assistant." # 저장된 시스템 지침 확인
     assert config2["model_name"] == "gemini-pro-custom"
     assert config2["novel_language"] == "en"

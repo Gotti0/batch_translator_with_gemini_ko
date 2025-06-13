@@ -380,6 +380,21 @@ class BatchTranslatorGUI:
             else: # 기본값 또는 빈 문자열 처리
                 self.system_instruction_text.insert('1.0', self.app_service.config_manager.get_default_config().get("system_instruction", ""))
 
+            # Prefill settings
+            self.enable_prefill_var.set(config.get("enable_prefill_translation", False))
+            
+            prefill_system_instruction_val = config.get("prefill_system_instruction", "")
+            self.prefill_system_instruction_text.delete('1.0', tk.END)
+            self.prefill_system_instruction_text.insert('1.0', prefill_system_instruction_val)
+
+            prefill_cached_history_obj = config.get("prefill_cached_history", [])
+            try:
+                prefill_cached_history_json_str = json.dumps(prefill_cached_history_obj, indent=2, ensure_ascii=False)
+            except TypeError:
+                prefill_cached_history_json_str = "[]" # 기본값
+            self.prefill_cached_history_text.delete('1.0', tk.END)
+            self.prefill_cached_history_text.insert('1.0', prefill_cached_history_json_str)
+
             prompts_val = config.get("prompts", "") 
             logger.debug(f"Config에서 가져온 prompts: '{str(prompts_val)[:100]}...', 타입: {type(prompts_val)}")
             self.prompt_text.delete('1.0', tk.END)
@@ -624,6 +639,30 @@ class BatchTranslatorGUI:
         self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=8, width=70)
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
         
+        # 프리필 번역 설정 프레임
+        prefill_frame = ttk.LabelFrame(settings_frame, text="프리필(Prefill) 번역 설정", padding="10")
+        prefill_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(prefill_frame, "모델에 초기 컨텍스트(시스템 지침 및 대화 기록)를 제공하여 번역 품질을 향상시킬 수 있습니다.")
+
+        self.enable_prefill_var = tk.BooleanVar()
+        self.enable_prefill_check = ttk.Checkbutton(prefill_frame, text="프리필 번역 사용", variable=self.enable_prefill_var)
+        self.enable_prefill_check.pack(anchor="w", padx=5, pady=(5,0))
+        Tooltip(self.enable_prefill_check, "활성화 시 아래의 프리필 시스템 지침과 캐시된 히스토리를 사용합니다.")
+
+        prefill_system_instruction_label = ttk.Label(prefill_frame, text="프리필 시스템 지침:")
+        prefill_system_instruction_label.pack(anchor="w", padx=5, pady=(5,0))
+        Tooltip(prefill_system_instruction_label, "프리필 모드에서 사용할 시스템 레벨 지침입니다.")
+        self.prefill_system_instruction_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=4, width=70)
+        self.prefill_system_instruction_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+        prefill_cached_history_label = ttk.Label(prefill_frame, text="프리필 캐시된 히스토리 (JSON 형식):")
+        prefill_cached_history_label.pack(anchor="w", padx=5, pady=(5,0))
+        Tooltip(prefill_cached_history_label, "미리 정의된 대화 기록을 JSON 형식으로 입력합니다.\n예: [{\"role\": \"user\", \"parts\": [\"안녕\"]}, {\"role\": \"model\", \"parts\": [\"안녕하세요.\"]}]")
+        self.prefill_cached_history_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=6, width=70)
+        self.prefill_cached_history_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+
+
         # 콘텐츠 안전 재시도 설정
         content_safety_outer_frame = ttk.LabelFrame(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
         content_safety_outer_frame.pack(fill="x", padx=5, pady=5)
@@ -1114,6 +1153,7 @@ class BatchTranslatorGUI:
     def _get_config_from_ui(self) -> Dict[str, Any]:
         prompt_content = self.prompt_text.get("1.0", tk.END).strip()
         system_instruction_content = self.system_instruction_text.get("1.0", tk.END).strip()
+        prefill_system_instruction_content = self.prefill_system_instruction_text.get("1.0", tk.END).strip()
         use_vertex = self.use_vertex_ai_var.get()
 
         api_keys_str = self.api_keys_text.get("1.0", tk.END).strip()
@@ -1141,6 +1181,18 @@ class BatchTranslatorGUI:
             self.rpm_entry.delete(0, tk.END)
             self.rpm_entry.insert(0, str(rpm_val))
 
+        prefill_cached_history_json_str = self.prefill_cached_history_text.get("1.0", tk.END).strip()
+        prefill_cached_history_obj = []
+        if prefill_cached_history_json_str:
+            try:
+                prefill_cached_history_obj = json.loads(prefill_cached_history_json_str)
+                if not isinstance(prefill_cached_history_obj, list):
+                    messagebox.showwarning("입력 오류", "프리필 캐시된 히스토리는 JSON 배열이어야 합니다. 기본값 []으로 설정됩니다.")
+                    prefill_cached_history_obj = []
+            except json.JSONDecodeError:
+                messagebox.showwarning("입력 오류", "프리필 캐시된 히스토리 형식이 잘못되었습니다 (JSON 파싱 실패). 기본값 []으로 설정됩니다.")
+                prefill_cached_history_obj = []
+
         config_data = {
             "api_keys": api_keys_list if not use_vertex else [],
             "service_account_file_path": self.service_account_file_entry.get().strip() if use_vertex else None,
@@ -1154,6 +1206,9 @@ class BatchTranslatorGUI:
             "max_workers": max_workers_val, 
             "requests_per_minute": rpm_val,
             "prompts": prompt_content,
+            "enable_prefill_translation": self.enable_prefill_var.get(),
+            "prefill_system_instruction": prefill_system_instruction_content,
+            "prefill_cached_history": prefill_cached_history_obj,
             "system_instruction": system_instruction_content,
             "novel_language": self.novel_language_entry.get().strip() or "auto",
             "novel_language_fallback": self.novel_language_fallback_entry.get().strip() or "ja",

@@ -280,30 +280,55 @@ class TranslationService:
             logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
 
-        processed_text = text_chunk # In case any pre-processing was intended
-        prompt = self._construct_prompt(processed_text)
+        api_prompt_for_gemini_client: Union[str, List[Dict[str, Any]]]
+        api_system_instruction: str
+
+        if self.config.get("enable_prefill_translation", False):
+            logger.info("프리필 번역 모드 활성화됨.")
+            api_system_instruction = self.config.get("prefill_system_instruction", "")
+            prefill_cached_history_raw = self.config.get("prefill_cached_history", [])
+
+            # prefill_cached_history_raw가 올바른 형식인지 확인 (리스트이며, 각 항목이 딕셔너리인지)
+            if not isinstance(prefill_cached_history_raw, list):
+                logger.warning(f"잘못된 prefill_cached_history 형식 ({type(prefill_cached_history_raw)}). 빈 리스트로 대체합니다.")
+                prefill_cached_history = []
+            else:
+                prefill_cached_history = []
+                for item in prefill_cached_history_raw:
+                    if isinstance(item, dict) and "role" in item and "parts" in item and isinstance(item.get("parts"), list):
+                        prefill_cached_history.append(item)
+                    else:
+                        logger.warning(f"잘못된 prefill_cached_history 항목 건너뜀: {item}")
+            
+            # 현재 청크에 대한 사용자 프롬프트 (기존 _construct_prompt 결과)
+            current_chunk_user_prompt_str = self._construct_prompt(text_chunk)
+            
+            # API에 전달할 contents 구성: 캐시된 히스토리 + 현재 청크 프롬프트
+            api_prompt_for_gemini_client = prefill_cached_history + [{"role": "user", "parts": [current_chunk_user_prompt_str]}]
+            logger.debug(f"프리필 모드: 시스템 지침='{api_system_instruction[:50]}...', contents 개수={len(api_prompt_for_gemini_client)}")
+
+        else:
+            logger.info("표준 번역 모드 활성화됨.")
+            api_system_instruction = self.config.get("system_instruction", "")
+            api_prompt_for_gemini_client = self._construct_prompt(text_chunk) # 문자열
+            logger.debug(f"표준 모드: 시스템 지침='{api_system_instruction[:50]}...', 프롬프트 길이={len(api_prompt_for_gemini_client)}")
 
         try:
             logger.debug(f"Gemini API 호출 시작. 모델: {self.config.get('model_name')}")
             
-            system_instruction = self.config.get("system_instruction", "")
-
             translated_text_from_api = self.gemini_client.generate_text( # Renamed variable
-                prompt=prompt,
+                prompt=api_prompt_for_gemini_client, # Union[str, List[Dict]]
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict={
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)
                 },
-                system_instruction_text=system_instruction, # 시스템 지침 전달
+                system_instruction_text=api_system_instruction, # 시스템 지침 전달
                 stream=stream 
             )
 
             if translated_text_from_api is None:
                 logger.error("GeminiClient.generate_text가 None을 반환했습니다.")
-                # This case should ideally be handled by GeminiClient raising an exception
-                # or returning an empty string if that's the API behavior for "no response".
-                # If it can return None for other reasons, this is a valid check.
                 raise GeminiContentSafetyException("API로부터 응답을 받지 못했습니다 (None 반환).")
 
             if not translated_text_from_api.strip() and text_chunk.strip():
