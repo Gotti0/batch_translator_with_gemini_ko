@@ -622,7 +622,7 @@ class BatchTranslatorGUI:
         chat_prompt_label = ttk.Label(prompt_frame, text="번역 프롬프트 (Chat/User Prompt):")
         chat_prompt_label.pack(anchor="w", padx=5, pady=(10,0))
         Tooltip(prompt_frame, "번역 모델에 전달할 프롬프트입니다.\n{{slot}}은 번역할 텍스트 청크로 대체됩니다.\n{{glossary_context}}는 용어집 내용으로 대체됩니다.")
-        self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=8, width=70)
+        self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=10, width=70) # 기본 높이 조정
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
         
         # 프리필 번역 설정 프레임
@@ -638,13 +638,13 @@ class BatchTranslatorGUI:
         prefill_system_instruction_label = ttk.Label(prefill_frame, text="프리필 시스템 지침:")
         prefill_system_instruction_label.pack(anchor="w", padx=5, pady=(5,0))
         Tooltip(prefill_system_instruction_label, "프리필 모드에서 사용할 시스템 레벨 지침입니다.")
-        self.prefill_system_instruction_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=4, width=70)
+        self.prefill_system_instruction_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=10, width=70) # 기본 높이 조정
         self.prefill_system_instruction_text.pack(fill="both", expand=True, padx=5, pady=5)
 
         prefill_cached_history_label = ttk.Label(prefill_frame, text="프리필 캐시된 히스토리 (JSON 형식):")
         prefill_cached_history_label.pack(anchor="w", padx=5, pady=(5,0))
         Tooltip(prefill_cached_history_label, "미리 정의된 대화 기록을 JSON 형식으로 입력합니다.\n예: [{\"role\": \"user\", \"parts\": [\"안녕\"]}, {\"role\": \"model\", \"parts\": [\"안녕하세요.\"]}]")
-        self.prefill_cached_history_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=6, width=70)
+        self.prefill_cached_history_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=10, width=70) # 기본 높이 조정
         self.prefill_cached_history_text.pack(fill="both", expand=True, padx=5, pady=5)
 
 
