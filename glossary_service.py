@@ -69,7 +69,7 @@ class SimpleGlossaryService:
              "Ensure your entire response is a single valid JSON object.")
         )
         # 경량화된 서비스에서는 사용자가 번역 목표 언어를 명시적으로 제공한다고 가정
-        # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "en" (영어)를 사용.
+        # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "ko" (한국어어)를 사용.
         # 실제 구현에서는 이 부분을 동적으로 설정해야 함.
         target_lang_code = self.config.get("glossary_target_language_code", "ko")
         target_lang_name = self.config.get("glossary_target_language_name", "Korean")
@@ -119,12 +119,11 @@ class SimpleGlossaryService:
 
     def _extract_glossary_entries_from_segment_via_api( # 함수명 변경
         self,
-        segment_text: str,
-        # source_language_of_segment: Optional[str] = None, # LLM이 직접 감지
-        retry_count: int = 0, max_retries: int = 2
+        segment_text: str
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
         단일 텍스트 세그먼트에서 Gemini API를 사용하여 용어집 항목들을 추출합니다.
+        GeminiClient의 내장 재시도 로직을 활용합니다.       
         """
         prompt = self._get_glossary_extraction_prompt(segment_text)
         model_name = self.config.get("model_name", "gemini-2.0-flash")
@@ -137,17 +136,10 @@ class SimpleGlossaryService:
             response_data = self.gemini_client.generate_text(
                 prompt=prompt,
                 model_name=model_name,
-                generation_config_dict=generation_config
+                config_dict=generation_config 
             )
 
-            if response_data is None: # None 또는 빈 응답 처리
-                logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다. 세그먼트: {segment_text[:50]}...")
-                return []
-
-            if isinstance(response_data, list):
-                # 프롬프트는 JSON 객체를 요청했으므로, 리스트는 예상치 못한 응답
-                logger.warning(f"용어집 추출 API로부터 예상치 못한 리스트 응답을 받았습니다: {response_data}")
-            elif isinstance(response_data, dict): # GeminiClient가 JSON 객체를 파싱하여 반환한 경우
+            if isinstance(response_data, dict):                
                 logger.debug("GeminiClient가 파싱된 딕셔너리(JSON 객체)를 반환했습니다.")
                 # 프롬프트는 'terms' 키를 가진 객체를 요청
                 raw_terms = response_data.get("terms")
@@ -156,53 +148,27 @@ class SimpleGlossaryService:
                     return self._parse_raw_glossary_items_to_dto(raw_terms) # 변경된 함수 호출
                 else:
                     logger.warning(f"API 응답 JSON 객체에 'detected_language_code' 또는 'entities' 필드가 누락/잘못되었습니다: {response_data}")
-            elif isinstance(response_data, str):
-                logger.warning("GeminiClient가 JSON 문자열을 반환했습니다 (파싱 실패 또는 JSON 응답 아님). SimpleGlossaryService에서 파싱 시도.")
-                json_str = response_data.strip()
-                json_str = re.sub(r'^```json\s*', '', json_str, flags=re.IGNORECASE) 
-                json_str = re.sub(r'\s*```$', '', json_str, flags=re.IGNORECASE)
-                json_str = json_str.strip()
-                try:
-                    parsed_dict = json.loads(json_str)
-                    if isinstance(parsed_dict, dict):
-                        raw_terms = parsed_dict.get("terms")
-                        if isinstance(raw_terms, list):
-                            return self._parse_raw_glossary_items_to_dto(raw_terms) # 변경된 함수 호출
-                        else:
-                            logger.warning(f"파싱된 JSON 객체에 'terms' 필드가 누락/잘못되었습니다: {parsed_dict}")
-                    else:
-                        logger.warning(f"파싱된 JSON 데이터가 객체가 아닙니다: {type(parsed_dict)}. 응답: {json_str[:100]}")
-                except json.JSONDecodeError as je:
-                    logger.warning(f"JSON 파싱 오류 (문자열 응답): {je}. 응답: {json_str[:200]}")
-            else: # None 또는 다른 예기치 않은 타입
-                logger.warning(f"GeminiClient로부터 예상치 않은 타입의 응답을 받았습니다: {type(response_data)}. 세그먼트: {segment_text[:50]}...")
+                    return [] # 유효한 'terms'가 없으면 빈 리스트 반환
+            elif response_data is None:
+                logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다 (GeminiClient가 None 반환). 세그먼트: {segment_text[:50]}...")
                 return []
-
-            # 여기까지 왔다면, response_data가 list나 str이 아니었거나, str 파싱에 실패한 경우.
-            # 재시도 로직으로 넘어갑니다.
-            if retry_count < max_retries: # 재시도 로직 강화
-                logger.info(f"용어집 추출 응답 형식 오류 또는 파싱 실패, 재시도 중 ({retry_count + 1}/{max_retries})...")
-                time.sleep(1 + retry_count)
-                return self._extract_glossary_entries_from_segment_via_api(segment_text, retry_count + 1, max_retries)
-            else:
-                logger.error("최대 재시도 횟수 초과 (응답 형식 오류 또는 파싱 실패). 빈 결과 반환.")
+            elif isinstance(response_data, str): # GeminiClient가 JSON 파싱에 실패하여 문자열을 반환한 경우
+                logger.warning(f"GeminiClient가 JSON 파싱에 실패하여 문자열을 반환했습니다. 응답: {response_data[:200]}... 세그먼트: {segment_text[:50]}...")
+                # 이 경우, API가 유효하지 않은 JSON을 생성했거나 GeminiClient의 파서에 문제가 있을 수 있습니다.
+                # 서비스 레벨에서 단순 API 재시도는 도움이 되지 않을 가능성이 높습니다.                          
                 return []
-
-        except GeminiContentSafetyException as e_safety:
-            logger.warning(f"용어집 추출 중 콘텐츠 안전 문제: {e_safety}. 세그먼트: {segment_text[:50]}...")
-            return [] # 콘텐츠 안전 문제는 재시도하지 않고 빈 리스트 반환
-        except (GeminiRateLimitException, GeminiApiException) as e_api:
-            logger.warning(f"용어집 추출 API 호출 실패: {e_api}. 세그먼트: {segment_text[:50]}...")
-            if retry_count < max_retries:
-                logger.info(f"API 오류, 재시도 중 ({retry_count + 1}/{max_retries})...")
-                time.sleep( (1 + retry_count) * 2 ) 
-                return self._extract_glossary_entries_from_segment_via_api(segment_text, retry_count + 1, max_retries)
             else:
-                logger.error(f"최대 재시도 횟수 초과 (API 오류).")
-                raise BtgApiClientException(f"용어집 추출 API 호출 최대 재시도 실패: {e_api}", original_exception=e_api) from e_api
+                logger.warning(f"GeminiClient로부터 예상치 않은 타입의 응답 ({type(response_data)})을 받았습니다. 세그먼트: {segment_text[:50]}...")              
+                return []
+            
+        except GeminiApiException as e_api: # GeminiClient의 자체 재시도 후에도 해결되지 않은 API 오류
+            logger.error(f"용어집 추출 API 호출 최종 실패 (GeminiClient 재시도 후 발생): {e_api}. 세그먼트: {segment_text[:50]}...")
+            raise BtgApiClientException(f"용어집 추출 API 호출 최종 실패: {e_api}", original_exception=e_api) from e_api       
         except Exception as e:
-            logger.error(f"용어집 추출 중 예상치 못한 오류: {e}. 세그먼트: {segment_text[:50]}...")
-            raise BtgBusinessLogicException(f"용어집 추출 중 오류: {e}", original_exception=e) from e
+            logger.error(f"용어집 추출 중 예상치 못한 내부 오류: {e}. 세그먼트: {segment_text[:50]}...", exc_info=True)
+            # DTO 변환 등 이 메서드 내 다른 로직에서 발생할 수 있는 예외
+            raise BtgBusinessLogicException(f"용어집 추출 중 내부 오류: {e}", original_exception=e) from e
+
 
     def _select_sample_segments(self, all_segments: List[str]) -> List[str]:
         """전체 세그먼트 리스트에서 표본 세그먼트를 선택합니다."""
