@@ -391,7 +391,7 @@ class GeminiClient:
         is_api_key_mode_for_norm = self.auth_mode == "API_KEY" and bool(self.current_api_key) and not os.environ.get("GOOGLE_API_KEY")
         effective_model_name = self._normalize_model_name(model_name, for_api_key_mode=is_api_key_mode_for_norm)
         
-        final_sdk_contents: Union[str, Iterable[genai_types.Content]]
+        final_sdk_contents: Iterable[genai_types.Content]
         if system_instruction_text:
             logger.debug(f"System instruction 제공됨: {system_instruction_text[:100]}...")
         
