@@ -371,14 +371,6 @@ class BatchTranslatorGUI:
             self.novel_language_fallback_entry.insert(0, novel_lang_fallback_val)
             logger.debug(f"Config에서 가져온 novel_language_fallback: {novel_lang_fallback_val}")
 
-            # System Instruction
-            system_instruction_val = config.get("system_instruction", "")
-            logger.debug(f"Config에서 가져온 system_instruction: '{str(system_instruction_val)[:100]}...', 타입: {type(system_instruction_val)}")
-            self.system_instruction_text.delete('1.0', tk.END)
-            if isinstance(system_instruction_val, str):
-                self.system_instruction_text.insert('1.0', system_instruction_val)
-            else: # 기본값 또는 빈 문자열 처리
-                self.system_instruction_text.insert('1.0', self.app_service.config_manager.get_default_config().get("system_instruction", ""))
 
             # Prefill settings
             self.enable_prefill_var.set(config.get("enable_prefill_translation", False))
@@ -624,13 +616,7 @@ class BatchTranslatorGUI:
         # 시스템 지침 및 번역 프롬프트 프레임
         prompt_frame = ttk.LabelFrame(settings_frame, text="프롬프트 설정", padding="10")
         prompt_frame.pack(fill="both", expand=True, padx=5, pady=5)
-
-        # 시스템 지침
-        system_instruction_label = ttk.Label(prompt_frame, text="시스템 지침 (System Instruction):")
-        system_instruction_label.pack(anchor="w", padx=5, pady=(5,0))
-        Tooltip(system_instruction_label, "모델의 전반적인 역할이나 행동을 정의하는 시스템 레벨 지침입니다.")
-        self.system_instruction_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=5, width=70)
-        self.system_instruction_text.pack(fill="both", expand=True, padx=5, pady=5)
+        # 일반 시스템 지침 UI 제거
 
         # 번역 프롬프트 (기존 Chat Prompt 역할)
         chat_prompt_label = ttk.Label(prompt_frame, text="번역 프롬프트 (Chat/User Prompt):")
@@ -1152,7 +1138,6 @@ class BatchTranslatorGUI:
 
     def _get_config_from_ui(self) -> Dict[str, Any]:
         prompt_content = self.prompt_text.get("1.0", tk.END).strip()
-        system_instruction_content = self.system_instruction_text.get("1.0", tk.END).strip()
         prefill_system_instruction_content = self.prefill_system_instruction_text.get("1.0", tk.END).strip()
         use_vertex = self.use_vertex_ai_var.get()
 
@@ -1208,8 +1193,7 @@ class BatchTranslatorGUI:
             "prompts": prompt_content,
             "enable_prefill_translation": self.enable_prefill_var.get(),
             "prefill_system_instruction": prefill_system_instruction_content,
-            "prefill_cached_history": prefill_cached_history_obj,
-            "system_instruction": system_instruction_content,
+            "prefill_cached_history": prefill_cached_history_obj,            
             "novel_language": self.novel_language_entry.get().strip() or "auto",
             "novel_language_fallback": self.novel_language_fallback_entry.get().strip() or "ja",
             # Lorebook settings

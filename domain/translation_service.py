@@ -273,7 +273,7 @@ class TranslationService:
     def translate_text(self, text_chunk: str, stream: bool = False) -> str:
         """
         주어진 텍스트 청크를 번역합니다.
-        system_instruction은 config에서 가져와 GeminiClient에 전달합니다.
+        프리필 모드 사용 시 prefill_system_instruction과 prefill_cached_history를 사용합니다.
         chat_prompt (user prompt)는 _construct_prompt를 통해 구성됩니다.
         """
         if not text_chunk.strip():
@@ -309,7 +309,7 @@ class TranslationService:
 
         else:
             logger.info("표준 번역 모드 활성화됨.")
-            api_system_instruction = self.config.get("system_instruction", "")
+            api_system_instruction = "" # 일반 시스템 지침은 제거됨. 프리필 비활성화 시 시스템 지침 없음.
             api_prompt_for_gemini_client = self._construct_prompt(text_chunk) # 문자열
             logger.debug(f"표준 모드: 시스템 지침='{api_system_instruction[:50]}...', 프롬프트 길이={len(api_prompt_for_gemini_client)}")
 
