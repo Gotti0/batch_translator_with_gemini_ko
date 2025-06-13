@@ -62,11 +62,10 @@ def _format_glossary_for_prompt( # 함수명 변경
             break
         
         # 현재 항목 추가 시 최대 글자 수 초과하면 중단 (단, 최소 1개는 포함되도록)
-        # 경량화된 DTO에 맞춰 포맷팅 변경
-        entry_str = (f"- {entry.keyword} ({entry.source_language}) "
+        # DTO에서 source_language가 제거되었으므로 해당 부분 포맷팅에서 제외
+        entry_str = (f"- {entry.keyword} "
                      f"-> {entry.translated_keyword} ({entry.target_language}) "
                      f"(등장: {entry.occurrence_count}회)")
-        
         if current_chars + len(entry_str) > max_chars and entries_count > 0:
             break
         
@@ -104,13 +103,11 @@ class TranslationService:
                         if isinstance(item_dict, dict) and \
                            "keyword" in item_dict and \
                            "translated_keyword" in item_dict and \
-                           "source_language" in item_dict and \
                            "target_language" in item_dict:
                             try:
                                 entry = GlossaryEntryDTO( # Explicitly use GlossaryEntryDTO
                                     keyword=item_dict.get("keyword", ""),
                                     translated_keyword=item_dict.get("translated_keyword", ""),
-                                    source_language=item_dict.get("source_language", ""),
                                     target_language=item_dict.get("target_language", ""),
                                     occurrence_count=int(item_dict.get("occurrence_count", 0))
                                 )
@@ -184,15 +181,12 @@ class TranslationService:
                 # 명시적 언어 설정 모드: Python에서 언어 및 키워드 기반으로 필터링.
                 logger.info(f"명시적 언어 모드 ('{current_source_lang_for_glossary_filtering}'): 용어집을 출발어/도착어 및 키워드 기준으로 필터링.") # 메시지 변경
                 for entry in self.glossary_entries_for_injection:
-                    if entry.source_language and \
-                       current_source_lang_for_glossary_filtering and \
-                       entry.source_language.lower() == current_source_lang_for_glossary_filtering.lower() and \
-                       entry.target_language.lower() == final_target_lang and \
+                    # source_language 필터링 제거. DTO에 해당 필드가 없으므로.
+                    if entry.target_language.lower() == final_target_lang and \
                        entry.keyword.lower() in chunk_text_lower:
                         relevant_entries_for_chunk.append(entry)
-                    elif not (entry.source_language and current_source_lang_for_glossary_filtering and entry.source_language.lower() == current_source_lang_for_glossary_filtering.lower()):
-                        logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 출발 언어 불일치 (용어집SL: {entry.source_language}, 청크SL: {current_source_lang_for_glossary_filtering}).")
-                    elif not (entry.target_language.lower() == final_target_lang):
+                    # source_language 관련 로깅 제거
+                    elif not (entry.target_language.lower() == final_target_lang): # target_language 불일치 로깅은 유지
                         logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 도착 언어 불일치 (용어집TL: {entry.target_language}, 최종TL: {final_target_lang}).")
                         continue
             

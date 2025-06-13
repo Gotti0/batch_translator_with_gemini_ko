@@ -1897,7 +1897,7 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         fields = {
             "keyword": {"label": "키워드:", "widget": ttk.Entry, "height": 1},
             "translated_keyword": {"label": "번역된 키워드:", "widget": ttk.Entry, "height": 1},
-            "source_language": {"label": "출발 언어 (BCP-47):", "widget": ttk.Entry, "height": 1},
+            # "source_language": {"label": "출발 언어 (BCP-47):", "widget": ttk.Entry, "height": 1}, # 제거
             "target_language": {"label": "도착 언어 (BCP-47):", "widget": ttk.Entry, "height": 1},
             "occurrence_count": {"label": "등장 횟수:", "widget": ttk.Spinbox, "height": 1, "extra_args": {"from_": 0, "to": 9999}},
         }
@@ -1905,7 +1905,8 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         self.entry_widgets: Dict[str, Union[ttk.Entry, tk.Text, ttk.Spinbox, ttk.Checkbutton]] = {}
 
         for i, (field_name, config) in enumerate(fields.items()):
-            ttk.Label(self.entry_fields_frame, text=config["label"]).grid(row=i, column=0, sticky=tk.NW, padx=5, pady=2)
+            # field_name이 "source_language"이면 건너뛰도록 수정할 필요는 없음. fields 딕셔너리에서 이미 제거됨.
+            ttk.Label(self.entry_fields_frame, text=config["label"]).grid(row=i, column=0, sticky=tk.NW, padx=5, pady=2) # row 인덱스는 fields 순서대로
             if config["widget"] == tk.Text:
                 widget = tk.Text(self.entry_fields_frame, height=config["height"], width=50, wrap=tk.WORD)
             elif config["widget"] == ttk.Spinbox:
@@ -2032,8 +2033,8 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
                     updated_entry[field_name] = 0 
 
         if not updated_entry.get("keyword") or not updated_entry.get("translated_keyword") or \
-           not updated_entry.get("source_language") or not updated_entry.get("target_language"):          
-            messagebox.showwarning("경고", "키워드는 비워둘 수 없습니다.", parent=self)
+           not updated_entry.get("target_language"): # source_language 필드 제거에 따른 유효성 검사 조건 변경
+            messagebox.showwarning("경고", "키워드, 번역된 키워드, 도착 언어는 비워둘 수 없습니다.", parent=self) # 메시지 명확화
             self.entry_widgets["keyword"].focus_set()
             return False
 

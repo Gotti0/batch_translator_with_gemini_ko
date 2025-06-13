@@ -49,24 +49,23 @@ class SimpleGlossaryService:
     def _get_glossary_extraction_prompt(self, segment_text: str) -> str: # 함수명 변경
         """용어집 항목 추출을 위한 프롬프트를 생성합니다."""
         base_template = self.config.get(
-            "simple_glossary_extraction_prompt_template", # 새로운 설정 키 (필요시)
+            "simple_glossary_extraction_prompt_template",
             ("Analyze the following text. Identify key terms, focusing specifically on "
              "**people (characters), proper nouns (e.g., unique items, titles, artifacts), "
              "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
-             "For each identified term, provide its source language (BCP-47), "           
-             "their translation into {target_lang_name} (BCP-47: {target_lang_code}), "
+             "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), "
              "and estimate their occurrence count in this segment.\n"
              "Each item in the 'terms' array should have 'keyword' (original term), "
-             "'translated_keyword' (the translation), 'source_language' (BCP-47 of keyword), "
-             "'target_language' (BCP-47 of translated_keyword, should be {target_lang_code}), "
+             "'translated_keyword' (the translation), "
+             "'target_language' (BCP-47 of translated_keyword, should be {target_lang_code}), " # source_language 제거
              "and 'occurrence_count' (estimated count in this segment, integer).\n"             
              "Text: ```\n{novelText}\n```\n"
              "Respond with a single JSON object containing one key: 'terms', which is an array of the extracted term objects.\n"
              "Example response:\n"
              "{\n"
              "  \"terms\": [\n"
-             "    {\"keyword\": \"猫\", \"translated_keyword\": \"cat\", \"source_language\": \"ja\", \"target_language\": \"en\", \"occurrence_count\": 3},\n"
-             "    {\"keyword\": \"犬\", \"translated_keyword\": \"dog\", \"source_language\": \"ja\", \"target_language\": \"en\", \"occurrence_count\": 1}\n"
+             "    {\"keyword\": \"猫\", \"translated_keyword\": \"cat\", \"target_language\": \"en\", \"occurrence_count\": 3},\n" # source_language 제거
+             "    {\"keyword\": \"犬\", \"translated_keyword\": \"dog\", \"target_language\": \"en\", \"occurrence_count\": 1}\n"  # source_language 제거             
              "  ]\n"
              "}\n"
              "Ensure your entire response is a single valid JSON object.")
@@ -85,8 +84,7 @@ class SimpleGlossaryService:
     def _parse_raw_glossary_items_to_dto( # 함수명 변경
         self,
         raw_item_list: List[Dict[str, Any]],
-        # segment_text_preview: str, # 경량화로 제거
-        # source_language_code: Optional[str] = None # LLM이 직접 반환
+        # source_language_code는 DTO에서 제거되므로 파라미터 불필요   
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
         API 응답 등으로 받은 원시 용어집 항목 딕셔너리 리스트를 GlossaryEntryDTO 리스트로 변환합니다.
@@ -100,16 +98,14 @@ class SimpleGlossaryService:
             if isinstance(item_dict, dict) and \
                "keyword" in item_dict and \
                "translated_keyword" in item_dict and \
-               "source_language" in item_dict and \
                "target_language" in item_dict:
                 entry_data = {
                     "keyword": item_dict.get("keyword"),
                     "translated_keyword": item_dict.get("translated_keyword"),
-                    "source_language": item_dict.get("source_language"),
                     "target_language": item_dict.get("target_language"),
                     "occurrence_count": int(item_dict.get("occurrence_count", 0))
                 }
-                if not all(entry_data.get(key) for key in ["keyword", "translated_keyword", "source_language", "target_language"]):
+                if not all(entry_data.get(key) for key in ["keyword", "translated_keyword", "target_language"]): # source_language 제거                  
                     logger.warning(f"필수 필드 누락된 용어집 항목 건너뜀: {item_dict}")
                     continue
                 glossary_entries.append(GlossaryEntryDTO(**entry_data)) # DTO 변경
@@ -239,13 +235,13 @@ class SimpleGlossaryService:
 
         logger.info(f"용어집 충돌 해결 시작. 총 {len(all_extracted_entries)}개 항목 검토 중...")
         
-        # (keyword, source_language, target_language)를 키로 사용하여 그룹화 및 등장 횟수 합산
+        # (keyword, target_language)를 키로 사용하여 그룹화 및 등장 횟수 합산       
         # translated_keyword는 첫 번째 등장한 것을 사용하거나, 가장 긴 것을 사용하는 등의 규칙 적용 가능
         # 여기서는 첫 번째 등장한 translated_keyword를 사용
-        final_entries_map: Dict[Tuple[str, str, str], GlossaryEntryDTO] = {}
+        final_entries_map: Dict[Tuple[str, str], GlossaryEntryDTO] = {} # 키에서 source_language 제거
 
         for entry in all_extracted_entries:
-            key_tuple = (entry.keyword.lower(), entry.source_language.lower(), entry.target_language.lower())
+            key_tuple = (entry.keyword.lower(), entry.target_language.lower()) # 키에서 source_language 제거
             if key_tuple not in final_entries_map:
                 final_entries_map[key_tuple] = entry
             else:
@@ -253,9 +249,9 @@ class SimpleGlossaryService:
                 final_entries_map[key_tuple].occurrence_count += entry.occurrence_count
         
         final_glossary = list(final_entries_map.values())
-        # 최종 용어집 정렬 (예: 키워드, 출발언어, 도착언어 순)
-        final_glossary.sort(key=lambda x: (x.keyword.lower(), x.source_language.lower(), x.target_language.lower()))
-        
+        # 최종 용어집 정렬 (예: 키워드, 도착언어 순)
+        final_glossary.sort(key=lambda x: (x.keyword.lower(), x.target_language.lower())) # 정렬 키에서 source_language 제거
+              
         logger.info(f"용어집 충돌 해결 완료. 최종 {len(final_glossary)}개 항목.")
         return final_glossary
 
@@ -305,13 +301,12 @@ class SimpleGlossaryService:
                     if isinstance(raw_seed_data, list):
                         for item_dict in raw_seed_data:
                             if isinstance(item_dict, dict) and "keyword" in item_dict and \
-                               "translated_keyword" in item_dict and "source_language" in item_dict and \
+                               "translated_keyword" in item_dict and \
                                "target_language" in item_dict:
                                 try:
                                     entry = GlossaryEntryDTO( # DTO 변경
                                         keyword=item_dict.get("keyword", ""),
                                         translated_keyword=item_dict.get("translated_keyword", ""),
-                                        source_language=item_dict.get("source_language", ""),
                                         target_language=item_dict.get("target_language", ""),
                                         occurrence_count=int(item_dict.get("occurrence_count", 0))
                                     )

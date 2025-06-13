@@ -60,7 +60,7 @@ class GlossaryEntryDTO: # 클래스명 변경 LorebookEntryDTO -> GlossaryEntryD
     """
     keyword: str
     translated_keyword: str # 번역된 용어
-    source_language: str    # 번역 출발 언어 (예: "en", "ja", "ko")
+    # source_language: str    # 번역 출발 언어 (예: "en", "ja", "ko") # 제거됨
     target_language: str    # 번역 도착 언어 (예: "ko", "en")
     occurrence_count: int = field(default=0) # 등장 횟수
 
