@@ -267,26 +267,6 @@ class SimpleGlossaryService:
         entry_group.sort(key=lambda e: (-e.occurrence_count, e.keyword.lower())) # 등장 횟수 많은 순, 같으면 키워드 순
         return entry_group[0]
 
-    def _update_occurrence_counts(self, glossary_entries: List[GlossaryEntryDTO], full_text: str) -> List[GlossaryEntryDTO]:
-        """
-        주어진 전체 텍스트에서 각 용어집 항목의 실제 등장 횟수를 계산하여 업데이트합니다.
-        LLM이 추정한 초기 등장 횟수는 덮어씁니다.
-        """
-        if not glossary_entries or not full_text:
-            return glossary_entries
-
-        logger.info(f"용어집 항목 {len(glossary_entries)}개에 대해 실제 등장 횟수 계산 시작...")
-        full_text_lower = full_text.lower() # 대소문자 구분 없는 검색을 위해
-
-        for entry in glossary_entries:
-            # 단순 문자열 검색 대신 단어 경계를 고려한 정규식 사용 (부분 일치 방지)
-            # re.escape를 사용하여 키워드 내 특수문자 처리
-            pattern = r'\b' + re.escape(entry.keyword.lower()) + r'\b'
-            entry.occurrence_count = len(re.findall(pattern, full_text_lower))
-            logger.debug(f"용어 '{entry.keyword}' 등장 횟수 업데이트: {entry.occurrence_count}")
-
-        return glossary_entries
-
     def extract_and_save_glossary(self, # 함수명 변경
                                   # all_text_segments: List[str], # 직접 세그먼트 리스트를 받는 대신 원본 텍스트를 받도록 변경
                                   novel_text_content: str, # 원본 텍스트 내용
@@ -432,10 +412,7 @@ class SimpleGlossaryService:
         # 모든 세그먼트 처리 후 또는 시드만 있는 경우 충돌 해결
         final_glossary = self._resolve_glossary_conflicts(all_extracted_entries_from_segments) # 함수명 및 변수명 변경
         
-        # LLM 기반 추출 후, 실제 등장 횟수로 업데이트 (요청 사항 반영)
-        if novel_text_content.strip(): # 원본 텍스트가 있을 경우에만 실행
-            final_glossary = self._update_occurrence_counts(final_glossary, novel_text_content)
-
+        # _update_occurrence_counts 호출 제거. LLM 추정치 또는 시드 파일의 등장 횟수만 사용.
         # 로어북 최대 항목 수 제한 (설정값 사용)
         max_total_glossary_entries = self.config.get("glossary_max_total_entries", 500) # 기본값 줄임
         if len(final_glossary) > max_total_glossary_entries:
