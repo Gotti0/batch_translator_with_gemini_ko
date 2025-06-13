@@ -430,7 +430,8 @@ class GeminiClient:
                             contents=final_contents,
                             config=genai_types.GenerateContentConfig(
                                 **generation_config_dict
-                            ) if generation_config_dict else None
+                            ) if generation_config_dict else None,
+                            safety_settings=safety_settings_list_of_dicts                      
                         )
                         aggregated_parts = []
                         for chunk_response in response:
@@ -451,8 +452,10 @@ class GeminiClient:
                             contents=final_contents,
                             config=genai_types.GenerateContentConfig(
                                 **generation_config_dict
-                            ) if generation_config_dict else None
+                            ) if generation_config_dict else None,
+                            safety_settings=safety_settings_list_of_dicts
                         )
+                       
                         if self._is_content_safety_error(response=response):
                             raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
                         if hasattr(response, 'text') and response.text is not None:
