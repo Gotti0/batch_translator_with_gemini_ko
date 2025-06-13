@@ -420,6 +420,10 @@ class SimpleGlossaryService:
             # 중요도 등으로 정렬되어 있으므로 상위 항목 선택
             final_glossary = final_glossary[:max_total_glossary_entries]
 
+        # 최종 저장 전, 등장 횟수(내림차순), 키워드(오름차순) 순으로 정렬
+        final_glossary.sort(key=lambda x: (-x.occurrence_count, x.keyword.lower()))
+        logger.info(f"최종 용어집을 등장 횟수 순으로 정렬했습니다. (상위 3개: {[e.keyword for e in final_glossary[:3]]})")
+
         # 최종 로어북 저장
         glossary_output_path = self._get_lorebook_output_path(input_file_path_for_naming) # 함수명 변경 (내부적으로 파일명 접미사 변경)
         self._save_glossary_to_json(final_glossary, glossary_output_path) # 함수명 변경
