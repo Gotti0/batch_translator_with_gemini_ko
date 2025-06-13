@@ -50,13 +50,16 @@ class SimpleGlossaryService:
         """용어집 항목 추출을 위한 프롬프트를 생성합니다."""
         base_template = self.config.get(
             "simple_glossary_extraction_prompt_template", # 새로운 설정 키 (필요시)
-            ("Analyze the following text. Identify key terms, their source language (BCP-47), "
+            ("Analyze the following text. Identify key terms, focusing specifically on "
+             "**people (characters), proper nouns (e.g., unique items, titles, artifacts), "
+             "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
+             "For each identified term, provide its source language (BCP-47), "           
              "their translation into {target_lang_name} (BCP-47: {target_lang_code}), "
              "and estimate their occurrence count in this segment.\n"
              "Each item in the 'terms' array should have 'keyword' (original term), "
              "'translated_keyword' (the translation), 'source_language' (BCP-47 of keyword), "
              "'target_language' (BCP-47 of translated_keyword, should be {target_lang_code}), "
-             "and 'occurrence_count' (estimated count in this segment, integer).\n"
+             "and 'occurrence_count' (estimated count in this segment, integer).\n"             
              "Text: ```\n{novelText}\n```\n"
              "Respond with a single JSON object containing one key: 'terms', which is an array of the extracted term objects.\n"
              "Example response:\n"
@@ -69,7 +72,7 @@ class SimpleGlossaryService:
              "Ensure your entire response is a single valid JSON object.")
         )
         # 경량화된 서비스에서는 사용자가 번역 목표 언어를 명시적으로 제공한다고 가정
-        # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "ko" (한국어어)를 사용.
+        # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "ko" (한국어)를 사용.
         # 실제 구현에서는 이 부분을 동적으로 설정해야 함.
         target_lang_code = self.config.get("glossary_target_language_code", "ko")
         target_lang_name = self.config.get("glossary_target_language_name", "Korean")
