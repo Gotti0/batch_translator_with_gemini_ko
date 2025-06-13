@@ -499,10 +499,10 @@ class GeminiClient:
                         response = self.client.models.generate_content(
                             model=effective_model_name,
                             contents=final_sdk_contents,
-                            config=sdk_generation_config
-+                            # system_instruction 파라미터 제거
-                         )
-                       
+                            config=sdk_generation_config,
+                            # system_instruction 파라미터 제거
+                        )                      
+                        
                         if self._is_content_safety_error(response=response):
                             raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
                         if hasattr(response, 'text') and response.text is not None:
