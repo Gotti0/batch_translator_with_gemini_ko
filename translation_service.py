@@ -22,10 +22,10 @@ try:
     from .chunk_service import ChunkService
     # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다. # 로어북 -> 용어집
     # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다.
-    # from google.genai import types as genai_types 
-    from .dtos import LorebookEntryDTO # 로어북 DTO 임포트
+    # from google.genai import types as genai_types
+    from .dtos import GlossaryEntryDTO # 용어집 DTO 임포트
 except ImportError:
-    from gemini_client import ( # type: ignore
+    from gemini_client import (  # type: ignore
         GeminiClient,
         GeminiContentSafetyException,
         GeminiRateLimitException,
@@ -33,17 +33,17 @@ except ImportError:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from file_handler import read_json_file # type: ignore # JSON 로딩을 위해 추가
-    from logger_config import setup_logger # type: ignore
-    from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException # type: ignore
-    from chunk_service import ChunkService # type: ignore
-    from dtos import GlossaryEntryDTO as LorebookEntryDTO # type: ignore # 로어북 DTO 임포트 (GlossaryEntryDTO로 변경되었으나, 호환성을 위해 LorebookEntryDTO로 alias)
+    from file_handler import read_json_file  # type: ignore # JSON 로딩을 위해 추가
+    from logger_config import setup_logger  # type: ignore
+    from exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException  # type: ignore
+    from chunk_service import ChunkService  # type: ignore
+    from dtos import GlossaryEntryDTO  # type: ignore # 용어집 DTO 임포트
     # from google.genai import types as genai_types # Fallback import
 
 logger = setup_logger(__name__)
 
 def _format_glossary_for_prompt( # 함수명 변경
-    glossary_entries: List[LorebookEntryDTO], # DTO는 GlossaryEntryDTO (경량화된 버전)
+    glossary_entries: List[GlossaryEntryDTO], # DTO는 GlossaryEntryDTO (경량화된 버전)
     max_entries: int,
     max_chars: int
 ) -> str:
