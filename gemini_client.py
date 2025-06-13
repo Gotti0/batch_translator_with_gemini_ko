@@ -436,7 +436,7 @@ class GeminiClient:
                         response = self.client.models.generate_content_stream(
                             model=effective_model_name,
                             contents=final_contents,
-                            generation_config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                                         
+                            config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                                         
                         )
                         aggregated_parts = []
                         for chunk_response in response:
@@ -455,7 +455,7 @@ class GeminiClient:
                         response = self.client.models.generate_content(
                             model=effective_model_name,
                             contents=final_contents,
-                            generation_config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                        
+                            config=sdk_generation_config # 'config' -> 'generation_config', safety_settings 포함                        
                         )
                        
                         if self._is_content_safety_error(response=response):
