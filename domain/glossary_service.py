@@ -45,31 +45,35 @@ class SimpleGlossaryService:
         self.chunk_service = ChunkService() # ChunkService 인스턴스화
         # self.all_extracted_entries: List[GlossaryEntryDTO] = [] # 추출된 모든 항목 (필요시 멤버 변수로, 아니면 로컬 변수로)
         self._lock = threading.Lock() # 병렬 처리 시 공유 자원 접근 동기화용
-
-    def _get_glossary_extraction_prompt(self, segment_text: str) -> str: # 함수명 변경
+    
+    def _get_glossary_extraction_prompt(self, segment_text: str, user_override_glossary_prompt: Optional[str] = None) -> str:
         """용어집 항목 추출을 위한 프롬프트를 생성합니다."""
-        base_template = self.config.get(
-            "simple_glossary_extraction_prompt_template",
-            ("Analyze the following text. Identify key terms, focusing specifically on "
-             "**people (characters), proper nouns (e.g., unique items, titles, artifacts), "
-             "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
-             "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), "
-             "and estimate their occurrence count in this segment.\n"
-             "Each item in the 'terms' array should have 'keyword' (original term), "
-             "'translated_keyword' (the translation), "
-             "'target_language' (BCP-47 of translated_keyword, should be {target_lang_code}), " # source_language 제거
-             "and 'occurrence_count' (estimated count in this segment, integer).\n"             
-             "Text: ```\n{novelText}\n```\n"
-             "Respond with a single JSON object containing one key: 'terms', which is an array of the extracted term objects.\n"
-             "Example response:\n"
-             "{\n"
-             "  \"terms\": [\n"
-             "    {\"keyword\": \"猫\", \"translated_keyword\": \"cat\", \"target_language\": \"en\", \"occurrence_count\": 3},\n" # source_language 제거
-             "    {\"keyword\": \"犬\", \"translated_keyword\": \"dog\", \"target_language\": \"en\", \"occurrence_count\": 1}\n"  # source_language 제거             
-             "  ]\n"
-             "}\n"
-             "Ensure your entire response is a single valid JSON object.")
-        )
+        if user_override_glossary_prompt and user_override_glossary_prompt.strip():
+            base_template = user_override_glossary_prompt
+            logger.info("사용자 재정의 용어집 추출 프롬프트를 사용합니다.")
+        else:
+            base_template = self.config.get(
+                "simple_glossary_extraction_prompt_template",
+                ("Analyze the following text. Identify key terms, focusing specifically on "
+                 "**people (characters), proper nouns (e.g., unique items, titles, artifacts), "
+                 "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
+                 "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), "
+                 "and estimate their occurrence count in this segment.\n"
+                 "Each item in the 'terms' array should have 'keyword' (original term), "
+                 "'translated_keyword' (the translation), "
+                 "'target_language' (BCP-47 of translated_keyword, should be {target_lang_code}), "
+                 "and 'occurrence_count' (estimated count in this segment, integer).\n"
+                 "Text: ```\n{novelText}\n```\n"
+                 "Respond with a single JSON object containing one key: 'terms', which is an array of the extracted term objects.\n"
+                 "Example response:\n"
+                 "{\n"
+                 "  \"terms\": [\n"
+                 "    {\"keyword\": \"猫\", \"translated_keyword\": \"cat\", \"target_language\": \"en\", \"occurrence_count\": 3},\n"
+                 "    {\"keyword\": \"犬\", \"translated_keyword\": \"dog\", \"target_language\": \"en\", \"occurrence_count\": 1}\n"
+                 "  ]\n"
+                 "}\n"
+                 "Ensure your entire response is a single valid JSON object.")
+            )
         # 경량화된 서비스에서는 사용자가 번역 목표 언어를 명시적으로 제공한다고 가정
         # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "ko" (한국어)를 사용.
         # 실제 구현에서는 이 부분을 동적으로 설정해야 함.
@@ -118,13 +122,14 @@ class SimpleGlossaryService:
 
     def _extract_glossary_entries_from_segment_via_api( # 함수명 변경
         self,
-        segment_text: str
+        segment_text: str,
+        user_override_glossary_prompt: Optional[str] = None
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
         단일 텍스트 세그먼트에서 Gemini API를 사용하여 용어집 항목들을 추출합니다.
         GeminiClient의 내장 재시도 로직을 활용합니다.       
         """
-        prompt = self._get_glossary_extraction_prompt(segment_text)
+        prompt = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
         model_name = self.config.get("model_name", "gemini-2.0-flash")
         generation_config_params = { # 변수명 변경 (선택 사항이지만, 명확성을 위해)
             "temperature": self.config.get("glossary_extraction_temperature", 0.3), # 단순 추출이므로 약간 높여도 됨
@@ -269,7 +274,8 @@ class SimpleGlossaryService:
                                   input_file_path_for_naming: Union[str, Path],
                                   # novel_language_code: Optional[str] = None, # LLM이 감지하므로 불필요
                                   progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO 변경
-                                  seed_glossary_path: Optional[Union[str, Path]] = None # 시드 용어집 경로 추가
+                                  seed_glossary_path: Optional[Union[str, Path]] = None, # 시드 용어집 경로 추가
+                                  user_override_glossary_extraction_prompt: Optional[str] = None # 사용자 재정의 프롬프트
                                  ) -> Path:
         """
         주어진 텍스트 내용에서 로어북을 추출하고 JSON 파일에 저장합니다.
@@ -282,6 +288,8 @@ class SimpleGlossaryService:
                 진행 상황을 알리기 위한 콜백 함수.
             seed_glossary_path (Optional[Union[str, Path]], optional):
                 참고할 기존 용어집 JSON 파일 경로.
+            user_override_glossary_extraction_prompt (Optional[str], optional):
+                용어집 추출 시 사용할 사용자 정의 프롬프트. 제공되면 기본 프롬프트를 대체합니다.
 
         Returns:
             Path: 생성된 로어북 JSON 파일의 경로.
@@ -372,7 +380,11 @@ class SimpleGlossaryService:
                 ))
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_segment = {executor.submit(self._extract_glossary_entries_from_segment_via_api, segment): segment # lang_for_segment_extraction_hint 제거
+                future_to_segment = {
+                    executor.submit(
+                        self._extract_glossary_entries_from_segment_via_api,
+                        segment,
+                        user_override_glossary_extraction_prompt): segment
                            for segment in sample_segments}
                 
                 for future in as_completed(future_to_segment):

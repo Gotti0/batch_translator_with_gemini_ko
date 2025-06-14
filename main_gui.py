@@ -344,6 +344,12 @@ class BatchTranslatorGUI:
                 self.thinking_budget_entry.insert(0, str(thinking_budget_val))
             else:
                 self.thinking_budget_entry.insert(0, "") # 비어있으면 빈 문자열로 표시
+            
+            # Glossary Extraction User Override Prompt
+            user_override_glossary_prompt_val = config.get("user_override_glossary_extraction_prompt", "")
+            logger.debug(f"Config에서 가져온 user_override_glossary_extraction_prompt: {user_override_glossary_prompt_val[:50]}...")
+            self.user_override_glossary_prompt_text.delete('1.0', tk.END)
+            self.user_override_glossary_prompt_text.insert('1.0', user_override_glossary_prompt_val)
 
 
             chunk_size_val = config.get("chunk_size", 6000)
@@ -934,6 +940,17 @@ class BatchTranslatorGUI:
         self.extraction_temp_label = ttk.Label(self.advanced_frame, text="0.20", width=6)
         self.extraction_temp_label.grid(row=0, column=2, padx=5, pady=5)
         Tooltip(self.extraction_temp_label, "현재 설정된 용어집 추출 온도입니다.") # Text changed
+
+        # 사용자 재정의 용어집 추출 프롬프트
+        user_override_glossary_prompt_label = ttk.Label(self.advanced_frame, text="사용자 재정의 추출 프롬프트:")
+        user_override_glossary_prompt_label.grid(row=1, column=0, padx=5, pady=5, sticky="nw")
+        Tooltip(user_override_glossary_prompt_label, "용어집 추출 시 사용할 사용자 정의 프롬프트입니다.\n비워두면 기본 프롬프트를 사용합니다.\n플레이스홀더: {target_lang_name}, {target_lang_code}, {novelText}")
+        
+        self.user_override_glossary_prompt_text = scrolledtext.ScrolledText(self.advanced_frame, wrap=tk.WORD, height=8, width=60)
+        self.user_override_glossary_prompt_text.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        Tooltip(self.user_override_glossary_prompt_text, "사용자 정의 프롬프트를 입력하세요. JSON 응답 형식을 유지해야 합니다.")
+
+
         
 
         
@@ -1025,6 +1042,7 @@ class BatchTranslatorGUI:
         # 설정 변경 감지 이벤트 바인딩
         self.sample_ratio_scale.bind("<ButtonRelease-1>", self._on_glossary_setting_changed) # Changed
         self.extraction_temp_scale.bind("<ButtonRelease-1>", self._on_glossary_setting_changed) # Changed
+        self.user_override_glossary_prompt_text.bind("<KeyRelease>", self._on_glossary_setting_changed)
         
         # 제거된 UI 요소에 대한 바인딩도 제거
 
@@ -1225,6 +1243,7 @@ class BatchTranslatorGUI:
             "top_p": self.top_p_scale.get(),
             "thinking_budget": thinking_budget_ui_val, # UI에서 가져온 thinking_budget 값
             "chunk_size": int(self.chunk_size_entry.get() or "6000"), 
+            "user_override_glossary_extraction_prompt": self.user_override_glossary_prompt_text.get("1.0", tk.END).strip(),
             "max_workers": max_workers_val, 
             "requests_per_minute": rpm_val,
             "prompts": prompt_content,
@@ -1484,7 +1503,8 @@ class BatchTranslatorGUI:
                     result_json_path = app_service.extract_glossary(
                         input_file,
                         progress_callback=self._update_glossary_extraction_progress, # Callback changed                      
-                        seed_glossary_path=app_service.config.get("glossary_json_path") # Use current glossary as seed
+                        seed_glossary_path=app_service.config.get("glossary_json_path"), # Use current glossary as seed
+                        user_override_glossary_extraction_prompt=app_service.config.get("user_override_glossary_extraction_prompt") # Pass override prompt
                     )
                     self.master.after(0, lambda: messagebox.showinfo("성공", f"용어집 추출 완료!\n결과 파일: {result_json_path}")) # Text changed
                     self.master.after(0, lambda: self.glossary_progress_label.config(text=f"추출 완료: {result_json_path.name}")) # Changed
@@ -1667,7 +1687,8 @@ class BatchTranslatorGUI:
                 # Dynamic lorebook injection settings
                 "enable_dynamic_glossary_injection": self.enable_dynamic_glossary_injection_var.get(), # Key and var name changed
                 "max_glossary_entries_per_chunk_injection": int(self.max_glossary_entries_injection_entry.get() or "3"), # Key and widget name changed
-                "max_glossary_chars_per_chunk_injection": int(self.max_glossary_chars_injection_entry.get() or "500") # Key and widget name changed
+                "max_glossary_chars_per_chunk_injection": int(self.max_glossary_chars_injection_entry.get() or "500"), # Key and widget name changed
+                "user_override_glossary_extraction_prompt": self.user_override_glossary_prompt_text.get("1.0", tk.END).strip()
             }
             
             # 제거된 UI 요소에 대한 설정 추출 로직도 제거
@@ -1697,6 +1718,8 @@ class BatchTranslatorGUI:
                 # UI에 기본값 적용
                 self.sample_ratio_scale.set(default_config.get("glossary_sampling_ratio", 10.0))
                 self.extraction_temp_scale.set(default_config.get("glossary_extraction_temperature", 0.3))
+                self.user_override_glossary_prompt_text.delete('1.0', tk.END)
+                self.user_override_glossary_prompt_text.insert('1.0', default_config.get("user_override_glossary_extraction_prompt", ""))
                 # 제거된 UI 요소에 대한 초기화 로직도 제거
                 
 

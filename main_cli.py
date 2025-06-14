@@ -199,6 +199,7 @@ def parse_arguments():
     config_override_group.add_argument("--novel-language-override", type=str, help="설정 파일의 'novel_language' 값을 덮어씁니다. (--novel-language와 동일)")
     config_override_group.add_argument("--novel-language-fallback-override", type=str, help="설정 파일의 'novel_language_fallback' 값을 덮어씁니다.")
     config_override_group.add_argument("--rpm", type=int, help="분당 API 요청 수를 설정합니다. (예: 60). 0은 제한 없음을 의미합니다.")
+    config_override_group.add_argument("--user-override-glossary-prompt", type=str, help="용어집 추출 시 사용할 사용자 정의 프롬프트를 설정합니다.")
     return parser.parse_args()
 
 def main():
@@ -296,6 +297,10 @@ def main():
             app_service.config["requests_per_minute"] = args.rpm
             cli_auth_applied = True
             cli_logger.info(f"분당 요청 수(RPM)가 CLI 인수로 인해 '{args.rpm}' (으)로 설정됩니다.")
+        if args.user_override_glossary_prompt:
+            app_service.config["user_override_glossary_extraction_prompt"] = args.user_override_glossary_prompt
+            cli_auth_applied = True
+            cli_logger.info(f"사용자 재정의 용어집 추출 프롬프트가 CLI 인수로 설정되었습니다.")
 
         if cli_auth_applied:
             cli_logger.info("CLI 인수로 제공된 인증/Vertex 정보를 반영하기 위해 설정을 다시 로드합니다.")
@@ -320,7 +325,8 @@ def main():
                 args.input_file,
                 progress_callback=cli_glossary_extraction_progress_callback, # 콜백 함수명 변경
                 novel_language_code=app_service.config.get("novel_language"),
-                seed_glossary_path=args.seed_glossary_file
+                seed_glossary_path=args.seed_glossary_file,
+                user_override_glossary_extraction_prompt=app_service.config.get("user_override_glossary_extraction_prompt")
             )
             Tqdm.write(f"\n용어집 추출 완료. 결과 파일: {result_glossary_path}", file=sys.stdout) # 메시지 변경
 

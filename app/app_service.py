@@ -267,7 +267,8 @@ class AppService:
         input_file_path: Union[str, Path],
         progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO Changed
         novel_language_code: Optional[str] = None, # 명시적 언어 코드 전달
-        seed_glossary_path: Optional[Union[str, Path]] = None # CLI에서 전달된 시드 용어집 경로
+        seed_glossary_path: Optional[Union[str, Path]] = None, # CLI에서 전달된 시드 용어집 경로
+        user_override_glossary_extraction_prompt: Optional[str] = None # 사용자 재정의 프롬프트 추가
         # tqdm_file_stream is not typically used by lorebook extraction directly in AppService,
         # but can be passed down if SimpleGlossaryService supports it (currently it doesn't directly)
         # For CLI, tqdm is handled in the CLI module itself.
@@ -289,12 +290,19 @@ class AppService:
             # 2. 설정 파일의 novel_language (통합됨)
             # 3. None (SimpleGlossaryService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
             lang_code_for_extraction = novel_language_code or self.config.get("novel_language") # 통합된 설정 사용
+
+            # 사용할 프롬프트 결정: 메서드 인자로 전달된 것이 있으면 그것을 사용, 없으면 설정 파일 값 사용
+            prompt_to_use = user_override_glossary_extraction_prompt \
+                if user_override_glossary_extraction_prompt is not None \
+                else self.config.get("user_override_glossary_extraction_prompt")
+
             # lang_code_for_extraction은 SimpleGlossaryService.extract_and_save_glossary에서 직접 사용되지 않음.
             result_path = self.glossary_service.extract_and_save_glossary( # type: ignore
                 novel_text_content=file_content,
                 input_file_path_for_naming=input_file_path,
                 progress_callback=progress_callback,
-                seed_glossary_path=seed_glossary_path # 시드 용어집 경로 전달
+                seed_glossary_path=seed_glossary_path, # 시드 용어집 경로 전달
+                user_override_glossary_extraction_prompt=prompt_to_use # 결정된 프롬프트 전달
             )
             logger.info(f"용어집 추출 완료. 결과 파일: {result_path}") # Message updated
         

@@ -119,6 +119,7 @@ class ConfigManager:
             "glossary_sampling_ratio": 10.0, # 경량화된 용어집 샘플링 비율
             "glossary_max_total_entries": 500, # 경량화된 용어집 최대 항목 수
             # "simple_glossary_extraction_prompt_template": "...", # 필요시 프롬프트 템플릿 추가
+            "user_override_glossary_extraction_prompt": "", # 사용자 재정의 용어집 추출 프롬프트 기본값
 
             # 후처리 관련 설정 (기존 위치에서 이동 또는 기본값으로 통합)
             "remove_translation_headers": True,
