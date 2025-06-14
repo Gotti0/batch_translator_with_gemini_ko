@@ -6,6 +6,7 @@ import time
 import os
 import threading
 from pathlib import Path
+from pydantic import BaseModel, Field as PydanticField # Field 이름 충돌 방지
 from typing import Dict, Any, Optional, List, Union, Tuple, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -26,6 +27,13 @@ except ImportError:
     from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO # type: ignore
 
 logger = setup_logger(__name__)
+
+class ApiGlossaryTerm(BaseModel):
+    """Pydantic 모델: API로부터 직접 받을 용어집 항목의 스키마"""
+    keyword: str = PydanticField(description="The original term found in the text.")
+    translated_keyword: str = PydanticField(description="The translation of the keyword.")
+    target_language: str = PydanticField(description="The BCP-47 language code of the translated_keyword.")
+    occurrence_count: int = PydanticField(description="Estimated number of times the keyword appears in the segment.")
 
 class SimpleGlossaryService:
     """
@@ -52,28 +60,16 @@ class SimpleGlossaryService:
             base_template = user_override_glossary_prompt
             logger.info("사용자 재정의 용어집 추출 프롬프트를 사용합니다.")
         else:
-            base_template = self.config.get(
-                "simple_glossary_extraction_prompt_template",
+            base_template = self.config.get("simple_glossary_extraction_prompt_template") or \
                 ("Analyze the following text. Identify key terms, focusing specifically on "
                  "**people (characters), proper nouns (e.g., unique items, titles, artifacts), "
                  "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
                  "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), "
                  "and estimate their occurrence count in this segment.\n"
-                 "Each item in the 'terms' array should have 'keyword' (original term), "
-                 "'translated_keyword' (the translation), "
-                 "'target_language' (BCP-47 of translated_keyword, should be {target_lang_code}), "
-                 "and 'occurrence_count' (estimated count in this segment, integer).\n"
+                 "The response should be a list of these term objects, conforming to the provided schema.\n"
                  "Text: ```\n{novelText}\n```\n"
-                 "Respond with a single JSON object containing one key: 'terms', which is an array of the extracted term objects.\n"
-                 "Example response:\n"
-                 "{\n"
-                 "  \"terms\": [\n"
-                 "    {\"keyword\": \"猫\", \"translated_keyword\": \"cat\", \"target_language\": \"en\", \"occurrence_count\": 3},\n"
-                 "    {\"keyword\": \"犬\", \"translated_keyword\": \"dog\", \"target_language\": \"en\", \"occurrence_count\": 1}\n"
-                 "  ]\n"
-                 "}\n"
-                 "Ensure your entire response is a single valid JSON object.")
-            )
+                 "Ensure your response is a list of objects, where each object has 'keyword', 'translated_keyword', 'target_language', and 'occurrence_count' fields.")
+
         # 경량화된 서비스에서는 사용자가 번역 목표 언어를 명시적으로 제공한다고 가정
         # 또는 설정에서 가져올 수 있음. 여기서는 예시로 "ko" (한국어)를 사용.
         # 실제 구현에서는 이 부분을 동적으로 설정해야 함.
@@ -85,36 +81,44 @@ class SimpleGlossaryService:
         prompt = prompt.replace("{novelText}", segment_text) # 수정: base_template 대신 prompt 사용
         return prompt
 
-    def _parse_raw_glossary_items_to_dto( # 함수명 변경
+    def _parse_api_glossary_terms_to_dto(
         self,
-        raw_item_list: List[Dict[str, Any]],
-        # source_language_code는 DTO에서 제거되므로 파라미터 불필요   
+        api_terms: List[ApiGlossaryTerm]
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
         API 응답 등으로 받은 원시 용어집 항목 딕셔너리 리스트를 GlossaryEntryDTO 리스트로 변환합니다.
         """
         glossary_entries: List[GlossaryEntryDTO] = [] # 변수명 변경
-        if not isinstance(raw_item_list, list):
-            logger.warning(f"용어집 항목 데이터가 리스트가 아닙니다: {type(raw_item_list)}. 원본: {str(raw_item_list)[:200]}")
+        if not isinstance(api_terms, list): # raw_item_list -> api_terms
+            logger.warning(f"API 용어집 항목 데이터가 리스트가 아닙니다: {type(api_terms)}. 원본: {str(api_terms)[:200]}")
             return glossary_entries
 
-        for item_dict in raw_item_list:
-            if isinstance(item_dict, dict) and \
-               "keyword" in item_dict and \
-               "translated_keyword" in item_dict and \
-               "target_language" in item_dict:
-                entry_data = {
-                    "keyword": item_dict.get("keyword"),
-                    "translated_keyword": item_dict.get("translated_keyword"),
-                    "target_language": item_dict.get("target_language"),
-                    "occurrence_count": int(item_dict.get("occurrence_count", 0))
-                }
-                if not all(entry_data.get(key) for key in ["keyword", "translated_keyword", "target_language"]): # source_language 제거                  
-                    logger.warning(f"필수 필드 누락된 용어집 항목 건너뜀: {item_dict}")
+        for term in api_terms:
+            if isinstance(term, ApiGlossaryTerm):
+                try:
+                    entry = GlossaryEntryDTO(
+                        keyword=term.keyword,
+                        translated_keyword=term.translated_keyword,
+                        target_language=term.target_language,
+                        occurrence_count=term.occurrence_count
+                    )
+                    glossary_entries.append(entry)
+                except Exception as e: # Catch potential errors during DTO creation
+                    logger.warning(f"ApiGlossaryTerm을 GlossaryEntryDTO로 변환 중 오류: {term}, 오류: {e}")
                     continue
-                glossary_entries.append(GlossaryEntryDTO(**entry_data)) # DTO 변경
             else:
-                logger.warning(f"잘못된 용어집 항목 형식 건너뜀: {item_dict}")
+                logger.warning(f"잘못된 API 용어집 항목 형식 건너뜀: {term}")
+        return glossary_entries
+
+    def _parse_dict_list_to_dto(self, raw_item_list: List[Dict[str, Any]]) -> List[GlossaryEntryDTO]:
+        glossary_entries: List[GlossaryEntryDTO] = []
+        for item_dict in raw_item_list:
+            try:
+                # GlossaryEntryDTO expects specific fields.
+                # Ensure item_dict has them or handle missing keys gracefully.
+                glossary_entries.append(GlossaryEntryDTO(**item_dict))
+            except TypeError as e:
+                logger.warning(f"딕셔너리를 GlossaryEntryDTO로 변환 중 오류: {item_dict}, 오류: {e}")
         return glossary_entries
 
     # _get_conflict_resolution_prompt, _group_similar_keywords_via_api 메서드는 경량화로 인해 제거 또는 대폭 단순화.
@@ -132,26 +136,33 @@ class SimpleGlossaryService:
         prompt = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
         model_name = self.config.get("model_name", "gemini-2.0-flash")
         generation_config_params = { # 변수명 변경 (선택 사항이지만, 명확성을 위해)
-            "temperature": self.config.get("glossary_extraction_temperature", 0.3), # 단순 추출이므로 약간 높여도 됨
+            "temperature": self.config.get("glossary_extraction_temperature", 0.3),
             "response_mime_type": "application/json",
+            "response_schema": List[ApiGlossaryTerm] # 구조화된 출력 스키마
         }
 
         try:
             response_data = self.gemini_client.generate_text(
                 prompt=prompt,
                 model_name=model_name,
-                generation_config_dict=generation_config_params # 호출 시 인자명 수정
+                generation_config_dict=generation_config_params
             )
 
-            if isinstance(response_data, dict):                
-                logger.debug("GeminiClient가 파싱된 딕셔너리(JSON 객체)를 반환했습니다.")
-                # 프롬프트는 'terms' 키를 가진 객체를 요청
-                raw_terms = response_data.get("terms")
-
-                if isinstance(raw_terms, list):
-                    return self._parse_raw_glossary_items_to_dto(raw_terms) # 변경된 함수 호출
+            if isinstance(response_data, list) and all(isinstance(item, ApiGlossaryTerm) for item in response_data):
+                logger.debug("GeminiClient가 ApiGlossaryTerm 객체 리스트를 반환했습니다.")
+                return self._parse_api_glossary_terms_to_dto(response_data)
+            elif isinstance(response_data, list) and all(isinstance(item, dict) for item in response_data):
+                # GeminiClient가 Pydantic 파싱에 실패하고 dict 리스트를 반환한 경우 (예: response.text 파싱)
+                logger.warning("GeminiClient가 dict 리스트를 반환했습니다. 스키마 적용이 부분적으로 성공했을 수 있습니다.")
+                return self._parse_dict_list_to_dto(response_data)
+            elif isinstance(response_data, dict):
+                # 이전 프롬프트 방식("terms" 키를 가진 객체)에 대한 폴백 (스키마가 완전히 무시된 경우)
+                logger.warning(f"GeminiClient가 예상치 못한 딕셔너리를 반환했습니다 (스키마 미적용 가능성): {str(response_data)[:200]}")
+                raw_terms_fallback = response_data.get("terms")
+                if isinstance(raw_terms_fallback, list):
+                    return self._parse_dict_list_to_dto(raw_terms_fallback)
                 else:
-                    logger.warning(f"API 응답 JSON 객체에 'detected_language_code' 또는 'entities' 필드가 누락/잘못되었습니다: {response_data}")
+                    logger.error(f"API 응답이 예상된 리스트나 'terms' 키를 포함한 딕셔너리가 아닙니다: {response_data}")
                     return [] # 유효한 'terms'가 없으면 빈 리스트 반환
             elif response_data is None:
                 logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다 (GeminiClient가 None 반환). 세그먼트: {segment_text[:50]}...")

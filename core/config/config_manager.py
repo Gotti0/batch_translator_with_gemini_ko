@@ -118,8 +118,15 @@ class ConfigManager:
             "glossary_extraction_temperature": 0.3, # 경량화된 용어집 추출 온도
             "glossary_sampling_ratio": 10.0, # 경량화된 용어집 샘플링 비율
             "glossary_max_total_entries": 500, # 경량화된 용어집 최대 항목 수
-            # "simple_glossary_extraction_prompt_template": "...", # 필요시 프롬프트 템플릿 추가
-            "user_override_glossary_extraction_prompt": "", # 사용자 재정의 용어집 추출 프롬프트 기본값
+            "simple_glossary_extraction_prompt_template": ("Analyze the following text. Identify key terms, focusing specifically on "
+                 "**people (characters), proper nouns (e.g., unique items, titles, artifacts), "
+                 "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
+                 "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), "
+                 "and estimate their occurrence count in this segment.\n"
+                 "The response should be a list of these term objects, conforming to the provided schema.\n"
+                 "Text: ```\n{novelText}\n```\n"
+                 "Ensure your response is a list of objects, where each object has 'keyword', 'translated_keyword', 'target_language', and 'occurrence_count' fields."),
+            "user_override_glossary_extraction_prompt": "", # 사용자 재정의 용어집 추출 프롬프트 기본값 (비워두면 simple_glossary_extraction_prompt_template 사용)
 
             # 후처리 관련 설정 (기존 위치에서 이동 또는 기본값으로 통합)
             "remove_translation_headers": True,

@@ -517,10 +517,21 @@ class GeminiClient:
                             if not attr_name.startswith('_'):
                                 try:
                                     attr_value = getattr(response, attr_name)
-                                    logger.debug(f"  response.{attr_name}: {attr_value}")
+                                    # 값의 길이가 너무 길면 일부만 로깅
+                                    value_str = str(attr_value)
+                                    if len(value_str) > 200:
+                                        value_str = value_str[:200] + "..."
+                                    logger.debug(f"  response.{attr_name}: {value_str}")
                                 except Exception:
                                     logger.debug(f"  response.{attr_name}: <접근 불가>")
                         
+                        # 구조화된 출력 (스키마 사용 시) 처리
+                        if sdk_generation_config and sdk_generation_config.response_schema and \
+                           sdk_generation_config.response_mime_type == "application/json" and \
+                           hasattr(response, 'parsed') and response.parsed is not None:
+                            logger.debug("GeminiClient: response.parsed를 구조화된 출력으로 반환합니다.")
+                            return response.parsed
+
                         if self._is_content_safety_error(response=response):
                             raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
                         if hasattr(response, 'text') and response.text is not None:
