@@ -82,10 +82,20 @@ class AppService:
 
         self.load_app_config()
 
-    def load_app_config(self) -> Dict[str, Any]:
+    def load_app_config(self, runtime_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         logger.info("애플리케이션 설정 로드 중...")
+        if runtime_overrides:
+            logger.debug(f"로드 시 적용할 런타임 오버라이드 값: {list(runtime_overrides.keys())}")
+
         try:
-            self.config = self.config_manager.load_config()
+            # 1. 파일 및 기본값으로부터 기본 설정 로드
+            config_from_manager = self.config_manager.load_config()
+            self.config = config_from_manager # 파일/기본값으로 시작
+
+            # 2. 제공된 runtime_overrides가 있다면, self.config에 덮어쓰기
+            if runtime_overrides:
+                self.config.update(runtime_overrides)
+                logger.info(f"런타임 오버라이드 값들이 적용되었습니다. 최종 설정에 반영됨: {list(runtime_overrides.keys())}")
             logger.info("애플리케이션 설정 로드 완료.")
 
             auth_credentials_for_gemini_client: Optional[Union[str, List[str], Dict[str, Any]]] = None
@@ -238,7 +248,10 @@ class AppService:
             success = self.config_manager.save_config(config_data)
             if success:
                 logger.info("애플리케이션 설정 저장 완료.")
-                self.load_app_config()
+                # 저장 후에는 파일에서 최신 설정을 로드하므로 runtime_overrides 없이 호출
+                # config_data가 최신 상태이므로, 이를 self.config에 반영하고 클라이언트를 재설정할 수도 있지만,
+                # load_app_config()를 호출하여 일관된 로직을 따르는 것이 더 간단합니다.
+                self.load_app_config() # runtime_overrides=None (기본값)
             return success
         except Exception as e:
             logger.error(f"설정 저장 중 오류 발생: {e}")

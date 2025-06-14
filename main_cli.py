@@ -217,102 +217,98 @@ def main():
 
     try:
         app_service = AppService(config_file_path=args.config)
-        cli_auth_applied = False
+        
+        cli_overrides: Dict[str, Any] = {}
+        config_changed_by_cli = False
 
         if args.api_keys:
             api_keys_list = [key.strip() for key in args.api_keys.split(',') if key.strip()]
             if api_keys_list:
-                app_service.config["api_keys"] = api_keys_list
-                app_service.config["api_key"] = api_keys_list[0] # 첫 번째 키를 대표로 설정
-                app_service.config["use_vertex_ai"] = False # API 키 사용 시 Vertex AI는 비활성화
-                app_service.config["service_account_file_path"] = None
-                app_service.config["auth_credentials"] = None # 다른 인증 방식 무시
-                cli_auth_applied = True
+                cli_overrides["api_keys"] = api_keys_list
+                cli_overrides["api_key"] = api_keys_list[0]
+                cli_overrides["use_vertex_ai"] = False
+                cli_overrides["service_account_file_path"] = None
+                cli_overrides["auth_credentials"] = None
+                config_changed_by_cli = True
                 cli_logger.info(f"--api-keys로 {len(api_keys_list)}개의 API 키가 설정되었습니다.")
             else:
                 cli_logger.warning("--api-keys 인수가 제공되었지만 유효한 키가 없습니다.")
 
-        elif args.auth_credentials_file: # --api-keys가 제공되지 않았을 때만 처리
+        elif args.auth_credentials_file:
             cli_logger.info(f"서비스 계정 파일에서 인증 정보 로드 시도: {args.auth_credentials_file}")
             if not args.auth_credentials_file.exists():
                 cli_logger.error(f"서비스 계정 파일을 찾을 수 없습니다: {args.auth_credentials_file}")
                 sys.exit(1)
             try:
-                app_service.config["service_account_file_path"] = str(args.auth_credentials_file.resolve())
-                app_service.config["api_key"] = None
-                app_service.config["api_keys"] = []
-                app_service.config["auth_credentials"] = None
-                app_service.config["use_vertex_ai"] = True
-                cli_auth_applied = True
+                cli_overrides["service_account_file_path"] = str(args.auth_credentials_file.resolve())
+                cli_overrides["api_key"] = None
+                cli_overrides["api_keys"] = []
+                cli_overrides["auth_credentials"] = None
+                cli_overrides["use_vertex_ai"] = True
+                config_changed_by_cli = True
                 cli_logger.info(f"서비스 계정 파일 경로 '{args.auth_credentials_file}'를 설정에 반영했습니다.")
             except Exception as e:
                 cli_logger.error(f"서비스 계정 파일 경로 설정 중 오류: {e}")
                 sys.exit(1)
-        elif args.auth_credentials: # --api-keys 및 --auth-credentials-file이 없을 때 처리
-            # 이 auth_credentials는 단일 API 키 또는 JSON 문자열일 수 있음
-            # AppService.load_app_config()에서 이를 판단하여 api_key 또는 service_account_file_path로 변환
-            app_service.config["auth_credentials"] = args.auth_credentials
-            app_service.config["api_key"] = None # auth_credentials가 우선
-            app_service.config["api_keys"] = []
-            app_service.config["service_account_file_path"] = None
-            cli_auth_applied = True
+        elif args.auth_credentials:
+            cli_overrides["auth_credentials"] = args.auth_credentials
+            cli_overrides["api_key"] = None
+            cli_overrides["api_keys"] = []
+            cli_overrides["service_account_file_path"] = None
+            config_changed_by_cli = True
             cli_logger.info("명령줄 --auth-credentials 사용.")
 
-
         if args.use_vertex_ai and not args.api_keys: # --api-keys가 우선순위가 더 높음
-            app_service.config["use_vertex_ai"] = True
-            # use_vertex_ai가 True이면 api_key/api_keys는 사용 안 함을 명시
-            app_service.config["api_key"] = None
-            app_service.config["api_keys"] = []
-            cli_auth_applied = True
+            cli_overrides["use_vertex_ai"] = True
+            cli_overrides["api_key"] = None
+            cli_overrides["api_keys"] = []
+            config_changed_by_cli = True
         if args.gcp_project:
-            app_service.config["gcp_project"] = args.gcp_project
-            cli_auth_applied = True
+            cli_overrides["gcp_project"] = args.gcp_project
+            config_changed_by_cli = True
         if args.gcp_location:
-            app_service.config["gcp_location"] = args.gcp_location
-            cli_auth_applied = True
+            cli_overrides["gcp_location"] = args.gcp_location
+            config_changed_by_cli = True
         
         # 동적 로어북 주입 설정 CLI 인자 처리
         if args.enable_dynamic_glossary_injection: # Arg name changed
-            app_service.config["enable_dynamic_glossary_injection"] = True # Key changed
-            cli_auth_applied = True # config 변경 플래그로 사용
+            cli_overrides["enable_dynamic_glossary_injection"] = True # Key changed
+            config_changed_by_cli = True
         if args.max_glossary_entries_injection is not None: # Arg name changed
-            app_service.config["max_glossary_entries_per_chunk_injection"] = args.max_glossary_entries_injection # Key changed
-            cli_auth_applied = True
+            cli_overrides["max_glossary_entries_per_chunk_injection"] = args.max_glossary_entries_injection # Key changed
+            config_changed_by_cli = True
         if args.max_glossary_chars_injection is not None: # Arg name changed
-            app_service.config["max_glossary_chars_per_chunk_injection"] = args.max_glossary_chars_injection # Key changed
-            cli_auth_applied = True
-        # glossary_json_path_injection 인자는 제거되었으므로, 관련 CLI 로직도 제거합니다.
-        # 동적 주입 시에는 config.json의 "glossary_json_path"를 사용합니다.
+            cli_overrides["max_glossary_chars_per_chunk_injection"] = args.max_glossary_chars_injection # Key changed
+            config_changed_by_cli = True
 
         # CLI 인자 --novel-language와 --novel-language-override 둘 다 novel_language 설정을 변경
         novel_lang_arg = args.novel_language or args.novel_language_override
         if novel_lang_arg:
-            app_service.config["novel_language"] = novel_lang_arg
-            cli_auth_applied = True
+            cli_overrides["novel_language"] = novel_lang_arg
+            config_changed_by_cli = True
         if args.novel_language_fallback_override:
-            app_service.config["novel_language_fallback"] = args.novel_language_fallback_override
-            cli_auth_applied = True
+            cli_overrides["novel_language_fallback"] = args.novel_language_fallback_override
+            config_changed_by_cli = True
         if args.rpm is not None:
-            app_service.config["requests_per_minute"] = args.rpm
-            cli_auth_applied = True
+            cli_overrides["requests_per_minute"] = args.rpm
+            config_changed_by_cli = True
             cli_logger.info(f"분당 요청 수(RPM)가 CLI 인수로 인해 '{args.rpm}' (으)로 설정됩니다.")
         if args.user_override_glossary_prompt:
-            app_service.config["user_override_glossary_extraction_prompt"] = args.user_override_glossary_prompt
-            cli_auth_applied = True
+            cli_overrides["user_override_glossary_extraction_prompt"] = args.user_override_glossary_prompt
+            config_changed_by_cli = True
             cli_logger.info(f"사용자 재정의 용어집 추출 프롬프트가 CLI 인수로 설정되었습니다.")
 
-        if cli_auth_applied:
-            cli_logger.info("CLI 인수로 제공된 인증/Vertex 정보를 반영하기 위해 설정을 다시 로드합니다.")
-            app_service.load_app_config()
+        if config_changed_by_cli:
+            cli_logger.info("CLI 인수로 제공된 설정을 반영하기 위해 AppService 설정을 다시 로드합니다.")
+            app_service.load_app_config(runtime_overrides=cli_overrides)
 
         if args.seed_glossary_file:
             cli_logger.info(f"용어집 생성 시 참고할 파일: {args.seed_glossary_file}")
-            # 이 파일은 AppService.extract_glossary 메서드에 전달되거나,
-            # ConfigManager를 통해 설정에 저장되어 SimpleGlossaryService에서 사용될 수 있습니다.
-            # 여기서는 AppService.config에 직접 저장하는 대신, extract_glossary 호출 시 전달하는 것을 가정합니다.
-            # app_service.config["glossary_seed_file"] = str(args.seed_glossary_file) # 필요시 AppService에서 처리
-            app_service.load_app_config()
+            # seed_glossary_file은 extract_glossary 호출 시 직접 전달되므로,
+            # config에 저장하고 load_app_config를 통해 보존할 필요는 현재 없습니다.
+            # 만약 이 값도 config의 일부로 관리하고 싶다면, cli_overrides에 추가하고
+            # app_service.load_app_config(runtime_overrides=cli_overrides)를 호출해야 합니다.
+            # 현재는 AppService의 config에 직접 영향을 주지 않으므로 load_app_config 호출 불필요.
         
         # type: ignore
         if args.extract_glossary_only: # 인수명 변경

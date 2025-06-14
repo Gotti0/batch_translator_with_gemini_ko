@@ -1404,8 +1404,7 @@ class BatchTranslatorGUI:
         
         try:
             current_ui_config = self._get_config_from_ui()
-            app_service.config.update(current_ui_config)
-            app_service.load_app_config()
+            app_service.load_app_config(runtime_overrides=current_ui_config)
 
 
             if not self.app_service.gemini_client:
@@ -1473,8 +1472,7 @@ class BatchTranslatorGUI:
 
         try:
             current_ui_config = self._get_config_from_ui()
-            app_service.config.update(current_ui_config)
-            app_service.load_app_config()
+            app_service.load_app_config(runtime_overrides=current_ui_config)
 
             if not app_service.gemini_client:
                  if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. 계속 진행하시겠습니까?"):
