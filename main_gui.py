@@ -2083,8 +2083,8 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         # Create a new blank entry and add it to the data
         new_entry_template = {
             "keyword": "", "translated_keyword": "", 
-            "source_language": "", "target_language": "",
-+            "occurrence_count": 0
+            "target_language": "",
+            "occurrence_count": 0
         }
         self.glossary_data.append(new_entry_template) # Var name changed
         self._populate_listbox()
