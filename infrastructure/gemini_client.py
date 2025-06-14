@@ -509,7 +509,17 @@ class GeminiClient:
                             contents=final_sdk_contents,
                             config=sdk_generation_config,
                             # system_instruction 파라미터 제거
-                        )                      
+                        )
+
+                        # [[가이드]] 응답 객체 전체 분석 로깅 추가
+                        logger.debug("비스트리밍 API 응답 객체 속성:")
+                        for attr_name in dir(response):
+                            if not attr_name.startswith('_'):
+                                try:
+                                    attr_value = getattr(response, attr_name)
+                                    logger.debug(f"  response.{attr_name}: {attr_value}")
+                                except Exception:
+                                    logger.debug(f"  response.{attr_name}: <접근 불가>")
                         
                         if self._is_content_safety_error(response=response):
                             raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")

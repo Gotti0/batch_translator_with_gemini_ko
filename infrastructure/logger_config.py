@@ -6,7 +6,7 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 DEFAULT_LOG_FILENAME = "btg_app.log"
-DEFAULT_LOG_LEVEL = logging.INFO
+DEFAULT_LOG_LEVEL = logging.DEBUG
 DEFAULT_LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 DEFAULT_MAX_BYTES = 10*1024*1024  # 10 MB
 DEFAULT_BACKUP_COUNT = 5
@@ -67,7 +67,8 @@ def setup_logger(
             log_file, 
             maxBytes=max_bytes, 
             backupCount=backup_count,
-            encoding='utf-8'
+            encoding='utf-8',
+            delay=True  # 파일 열기를 지연시켜 동시 접근 문제 완화 시도
         )
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
