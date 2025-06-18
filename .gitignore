@@ -45,3 +45,4 @@ config.json
 btg_app.log.1
 /test
 btg_app.log.5
+.__btg_app.lock

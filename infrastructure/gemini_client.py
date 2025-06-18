@@ -215,9 +215,12 @@ class GeminiClient:
                     sdk_client = genai.Client(api_key=key_value)
                     self.client_pool[key_value] = sdk_client
                     successful_keys.append(key_value)
-                    logger.info(f"API 키 '{key_value[:7]}...'에 대한 SDK 클라이언트 인스턴스 생성 성공.")
+                    
+                    key_id = self._get_api_key_identifier(key_value)
+                    logger.info(f"API {key_id}에 대한 SDK 클라이언트 생성 성공.")
                 except Exception as e_sdk_init:
-                    logger.warning(f"API 키 '{key_value[:7]}...'에 대한 SDK 클라이언트 생성 실패: {e_sdk_init}")
+                    key_id = self._get_api_key_identifier(key_value)
+                    logger.warning(f"API {key_id}에 대한 SDK 클라이언트 생성 실패: {e_sdk_init}")
             
             if not successful_keys:
                 raise GeminiAllApiKeysExhaustedException("제공된 모든 API 키에 대해 SDK 클라이언트를 초기화하지 못했습니다.")
@@ -228,7 +231,7 @@ class GeminiClient:
             self.client = self.client_pool.get(self.current_api_key) # Get the first valid client
             if not self.client: # Should not happen if successful_keys is not empty
                 raise GeminiAllApiKeysExhaustedException("초기 클라이언트 설정에 실패했습니다 (풀에서 클라이언트를 찾을 수 없음).")
-            logger.info(f"API 키 모드 설정 완료. 활성 클라이언트 풀 크기: {len(self.client_pool)}. 현재 사용 키: {self.current_api_key[:7]}...")
+            logger.info(f"API 키 모드 설정 완료. 활성 클라이언트 풀 크기: {len(self.client_pool)}. 현재 사용 키: {key_id}")
         elif os.environ.get("GOOGLE_API_KEY"): 
             env_api_key = os.environ.get("GOOGLE_API_KEY","").strip()
             if env_api_key:
@@ -413,7 +416,7 @@ class GeminiClient:
             
             if self.auth_mode == "API_KEY":
                 current_key_for_log = self.current_api_key # self.current_api_key should be set
-                logger.info(f"API 키 '{current_key_for_log[:5]}...'로 작업 시도.") # type: ignore
+                logger.info(f"API {current_key_for_log}로 작업 시도.")
                 # _normalize_model_name에서 API 키가 모델명에 포함되도록 수정했으므로, 여기서 추가 작업 불필요
             elif self.auth_mode == "VERTEX_AI":
                  logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")
@@ -631,7 +634,7 @@ class GeminiClient:
 
 
     def _rotate_api_key_and_reconfigure(self) -> bool:
-        with self._key_rotation_lock: # Ensure thread safety for key rotation
+        with self._key_rotation_lock:
             if not self.api_keys_list or len(self.api_keys_list) <= 1: # No keys or only one successful key
                 logger.warning("API 키 목록이 비어있거나 단일 유효 키만 있어 회전할 수 없습니다.")
                 # If only one key, and it failed, there's nothing to rotate to.
@@ -649,10 +652,13 @@ class GeminiClient:
                 if next_key in self.client_pool:
                     self.current_api_key = next_key
                     self.client = self.client_pool[self.current_api_key]
-                    logger.info(f"API 키를 '{self.current_api_key[:7]}...' (인덱스: {self.current_api_key_index})로 성공적으로 회전하고 클라이언트를 업데이트했습니다.")
+                    
+                    key_id = self._get_api_key_identifier(self.current_api_key)
+                    logger.info(f"API 키를 {key_id}로 성공적으로 회전하고 클라이언트를 업데이트했습니다.")
                     return True
-                else: # Should not happen if api_keys_list only contains keys from client_pool
-                    logger.warning(f"회전 시도 중 API 키 '{next_key[:7]}...'에 대한 클라이언트를 풀에서 찾을 수 없습니다. 다음 키로 넘어갑니다.")
+                else:
+                    key_id = self._get_api_key_identifier(next_key)
+                    logger.warning(f"회전 시도 중 API {key_id}에 대한 클라이언트를 풀에서 찾을 수 없습니다.")
             
             logger.error("유효한 다음 API 키로 회전하지 못했습니다. 모든 풀의 클라이언트가 유효하지 않을 수 있습니다.")
             self.client = None # No valid client found after trying all pooled keys
