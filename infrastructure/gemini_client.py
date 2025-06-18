@@ -652,6 +652,14 @@ class GeminiClient:
                             raise GeminiInvalidRequestException(f"복구 불가능한 요청 오류: {error_message}") from e
                     elif self._is_rate_limit_error(e):
                         logger.warning(f"API 사용량 제한/리소스 부족 감지: {error_message}")
+                        
+                        # RESOURCE_EXHAUSTED (할당량 초과) 또는 QUOTA_EXCEEDED인 경우 즉시 키 회전
+                        if self._is_quota_exhausted_error(e):
+                            current_key_id = self._get_api_key_identifier(self.current_api_key) if self.current_api_key else "Unknown"
+                            logger.warning(f"할당량 소진 감지 ({current_key_id}). 즉시 다음 키로 회전을 시도합니다.")
+                            break  # 현재 키에 대한 재시도 루프 탈출하여 키 회전 실행
+                        
+                        # 일반적인 rate limit의 경우 재시도 수행
                         if current_retry_for_this_key < max_retries:
                             time.sleep(current_backoff + random.uniform(0,1))
                             current_retry_for_this_key += 1
@@ -783,6 +791,30 @@ class GeminiClient:
         
         raise GeminiApiException("모델 목록 조회에 실패했습니다 (알 수 없는 내부 오류).")
 
+
+    def _is_quota_exhausted_error(self, error_obj: Any) -> bool:
+        """
+        할당량 소진(RESOURCE_EXHAUSTED, QUOTA_EXCEEDED) 오류를 구체적으로 감지합니다.
+        이런 오류의 경우 즉시 다음 API 키로 회전해야 합니다.
+        """
+        from google.api_core import exceptions as gapi_exceptions
+        
+        # Google API Core의 ResourceExhausted 예외 체크
+        if isinstance(error_obj, gapi_exceptions.ResourceExhausted):
+            return True
+        
+        # 특정 할당량 관련 패턴 체크
+        quota_patterns = [
+            "RESOURCE_EXHAUSTED", 
+            "QUOTA_EXCEEDED",
+            "Quota exceeded",
+            "quota.*exceeded",
+            "Resource has been exhausted",
+            "resource.*exhausted"
+        ]
+        
+        error_str = str(error_obj).lower()
+        return any(re.search(pattern.lower(), error_str) for pattern in quota_patterns)
 
 if __name__ == '__main__':
     # ... (테스트 코드는 이전과 유사하게 유지하되, Client 및 generate_content 호출 방식 변경에 맞춰 수정 필요) ...
