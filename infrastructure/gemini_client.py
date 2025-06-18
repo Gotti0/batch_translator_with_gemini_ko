@@ -151,9 +151,9 @@ class GeminiClient:
         self.vertex_credentials: Optional[Any] = None
         self.vertex_project: Optional[str] = None
         self.vertex_location: Optional[str] = None
-        
-        # RPM control
+          # RPM control
         self.requests_per_minute = requests_per_minute or 140
+        self.delay_between_requests = 60.0 / self.requests_per_minute  # 요청 간 지연 시간 계산
         self.last_request_timestamp = 0.0
         self._rpm_lock = threading.Lock()
 
