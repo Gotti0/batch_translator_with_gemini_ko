@@ -75,6 +75,8 @@ try:
     from app.app_service import AppService
     from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from core.exceptions import BtgException
+    from core.github_auth_service import GitHubAuthService
+    from core.config.config_manager import ConfigManager
     from infrastructure.logger_config import setup_logger
     from infrastructure.file_handler import (
         read_text_file, get_metadata_file_path, load_metadata,
@@ -171,10 +173,17 @@ def parse_arguments():
     # 여러 API 키를 위한 인수 추가
     auth_group.add_argument("--api-keys", type=str, default=None, help="쉼표로 구분된 Gemini API 키 목록 (예: key1,key2,key3)")
 
-
+    # Vertex AI 설정
     parser.add_argument("--use-vertex-ai", action="store_true", help="Vertex AI API를 사용합니다 (서비스 계정 필요).")
     parser.add_argument("--gcp-project", type=str, default=None, help="Vertex AI 사용 시 GCP 프로젝트 ID")
     parser.add_argument("--gcp-location", type=str, default=None, help="Vertex AI 사용 시 GCP 리전")
+
+    # GitHub Copilot 설정
+    github_group = parser.add_argument_group('GitHub Copilot 설정')
+    github_group.add_argument("--use-github-copilot", action="store_true", help="GitHub Copilot을 LLM 백엔드로 사용합니다.")
+    github_group.add_argument("--github-copilot-token", type=str, default=None, help="GitHub Copilot 액세스 토큰")
+    github_group.add_argument("--github-copilot-model", type=str, default="gpt-4o", choices=["gpt-4o", "gpt-4", "gpt-3.5-turbo"], help="GitHub Copilot에서 사용할 모델 (기본값: gpt-4o)")
+    github_group.add_argument("--generate-github-copilot-token", action="store_true", help="GitHub OAuth를 통해 새로운 액세스 토큰을 생성합니다 (대화형 모드)")
 
     parser.add_argument("--seed-glossary-file", type=Path, default=None, help="용어집 생성 시 참고할 기존 용어집 JSON 파일 경로 (선택 사항)")
     parser.add_argument("--extract_glossary_only", action="store_true", help="번역 대신 용어집 추출만 수행합니다.") # 인수명 변경
@@ -202,6 +211,159 @@ def parse_arguments():
     config_override_group.add_argument("--user-override-glossary-prompt", type=str, help="용어집 추출 시 사용할 사용자 정의 프롬프트를 설정합니다.")
     return parser.parse_args()
 
+def generate_github_copilot_token():
+    """CLI에서 GitHub Copilot 토큰을 생성합니다."""
+    import webbrowser
+    import time
+    
+    print("\n=== GitHub Copilot 토큰 생성 ===")
+    print("GitHub OAuth 디바이스 플로우를 시작합니다...")
+    
+    github_auth = GitHubAuthService()
+    
+    try:
+        # 1. 디바이스 코드 요청
+        print("GitHub에서 디바이스 코드를 요청하는 중...")
+        device_code_response = github_auth.request_device_code()
+        
+        user_code = device_code_response["user_code"]
+        verification_uri = device_code_response["verification_uri"]
+        device_code = device_code_response["device_code"]
+        expires_in = device_code_response["expires_in"]
+        interval = device_code_response.get("interval", 5)
+        
+        print(f"\n📱 인증 단계:")
+        print(f"1. 브라우저에서 {verification_uri} 로 이동합니다")
+        print(f"2. 다음 코드를 입력하세요: {user_code}")
+        print(f"3. GitHub 계정으로 로그인하고 권한을 승인하세요")
+        print(f"4. 이 프로그램은 자동으로 토큰을 확인합니다 (최대 {expires_in//60}분)")
+        
+        # 2. 브라우저 자동 열기
+        try:
+            webbrowser.open(verification_uri)
+            print(f"\n✅ 브라우저에서 {verification_uri} 페이지를 열었습니다.")
+        except Exception as e:
+            print(f"⚠️ 브라우저 자동 열기 실패: {e}")
+            print(f"수동으로 {verification_uri} 를 열어주세요.")
+        
+        print(f"\n⏳ 인증 완료를 기다리는 중... (코드: {user_code})")
+        
+        # 3. 토큰 폴링
+        max_attempts = expires_in // interval
+        for attempt in range(max_attempts):
+            try:
+                time.sleep(interval)
+                print(".", end="", flush=True)
+                
+                access_token = github_auth.poll_for_token(device_code)
+                if access_token:
+                    print(f"\n\n🎉 GitHub Copilot 토큰 생성 성공!")
+                    print(f"토큰: {access_token[:20]}...")
+                    
+                    # 4. 토큰 검증
+                    print("토큰을 검증하는 중...")
+                    is_valid, user_info = github_auth.validate_token(access_token)
+                    
+                    if is_valid:
+                        print(f"✅ 토큰 검증 성공! GitHub 사용자: {user_info.get('login', 'Unknown')}")
+                        
+                        # 5. 설정에 저장
+                        config_manager = ConfigManager()
+                        config = config_manager.load_config()
+                        config["github_copilot_enabled"] = True
+                        config["github_copilot_access_token"] = access_token
+                        config_manager.save_config(config)
+                        
+                        print(f"✅ 토큰이 설정 파일에 저장되었습니다.")
+                        print(f"\n이제 --use-github-copilot 플래그로 GitHub Copilot을 사용할 수 있습니다!")
+                        return access_token
+                    else:
+                        print(f"❌ 토큰 검증 실패: {user_info}")
+                        return None
+                        
+            except Exception as e:
+                if "authorization_pending" in str(e).lower():
+                    continue  # 아직 사용자가 인증하지 않음
+                elif "slow_down" in str(e).lower():
+                    time.sleep(interval)  # 요청 속도 조절
+                    continue
+                else:
+                    print(f"\n❌ 토큰 폴링 중 오류: {e}")
+                    return None
+        
+        print(f"\n⏰ 시간 초과: {expires_in//60}분 내에 인증이 완료되지 않았습니다.")
+        print("다시 시도해주세요.")
+        return None
+        
+    except Exception as e:
+        print(f"❌ GitHub 토큰 생성 실패: {e}")
+        return None
+
+def generate_github_copilot_token_interactive(config_file_path: Path) -> Optional[str]:
+    """
+    CLI에서 GitHub Copilot 토큰을 대화식으로 생성하고 설정 파일에 저장합니다.
+    
+    Args:
+        config_file_path: 설정 파일 경로
+        
+    Returns:
+        생성된 토큰 문자열 또는 None
+    """
+    try:
+        print("\n🚀 GitHub Copilot 토큰 생성을 시작합니다...")
+        
+        # ConfigManager 인스턴스 생성
+        config_manager = ConfigManager(config_file_path)
+        
+        # GitHub OAuth 서비스 인스턴스 생성
+        github_auth = GitHubAuthService(config_manager)
+        
+        # Device flow 시작
+        device_response = github_auth.get_device_code()
+        
+        print(f"\n🔗 다음 URL을 브라우저에서 열어주세요:")
+        print(f"   {device_response.verification_uri}")
+        print(f"\n🔑 다음 코드를 입력해주세요:")
+        print(f"   {device_response.user_code}")
+        print(f"\n⏱️  {device_response.expires_in // 60}분 내에 인증을 완료해주세요...")
+        print("   Enter 키를 눌러서 토큰 확인을 시작하거나, Ctrl+C로 취소하세요.")
+        
+        try:
+            input()  # 사용자가 Enter를 누를 때까지 대기
+        except KeyboardInterrupt:
+            print("\n❌ 사용자가 취소했습니다.")
+            return None
+        
+        # 토큰 폴링 시작
+        print("\n🔄 토큰 확인 중...")
+        token_response = github_auth.poll_for_access_token(
+            device_response.device_code,
+            device_response.interval,
+            device_response.expires_in
+        )
+        
+        if token_response and token_response.access_token:
+            # 토큰 검증
+            if github_auth.verify_token(token_response.access_token):
+                # 토큰을 설정에 저장
+                if github_auth.save_access_token(token_response.access_token):
+                    print(f"\n✅ GitHub Copilot 토큰이 성공적으로 생성되고 설정 파일에 저장되었습니다!")
+                    print(f"   설정 파일: {config_file_path}")
+                    return token_response.access_token
+                else:
+                    print(f"\n❌ 토큰 저장에 실패했습니다.")
+                    return None
+            else:
+                print(f"\n❌ 토큰 검증에 실패했습니다.")
+                return None
+        else:
+            print(f"\n❌ 토큰 생성에 실패했습니다.")
+            return None
+            
+    except Exception as e:
+        print(f"\n❌ 토큰 생성 중 오류가 발생했습니다: {e}")
+        return None
+
 def main():
     args = parse_arguments()
 
@@ -214,6 +376,22 @@ def main():
     if args.resume: cli_logger.info("이어하기 옵션 (--resume) 활성화됨.")
     if args.force_new: cli_logger.info("새로 시작 옵션 (--force-new) 활성화됨.")
 
+    # GitHub Copilot 토큰 생성 처리 (다른 작업보다 먼저 실행)
+    if args.generate_github_copilot_token:
+        cli_logger.info("GitHub Copilot 토큰 생성 요청됨...")
+        try:
+            token = generate_github_copilot_token_interactive(args.config)
+            if token:
+                print(f"GitHub Copilot 토큰이 성공적으로 생성되고 저장되었습니다.")
+                print(f"토큰: {token}")
+            else:
+                print("토큰 생성이 취소되거나 실패했습니다.")
+                sys.exit(1)
+        except Exception as e:
+            cli_logger.error(f"GitHub Copilot 토큰 생성 중 오류: {e}")
+            print(f"오류: {e}")
+            sys.exit(1)
+        return  # 토큰 생성 후 종료
 
     try:
         app_service = AppService(config_file_path=args.config)
@@ -281,7 +459,7 @@ def main():
             cli_overrides["max_glossary_chars_per_chunk_injection"] = args.max_glossary_chars_injection # Key changed
             config_changed_by_cli = True
 
-        # CLI 인자 --novel-language와 --novel-language-override 둘 다 novel_language 설정을 변경
+        # CLI 인자 --novel-language와 --novel-language-override 둘 다 novel_language 설정을 변경        # CLI 인자 --novel-language와 --novel-language-override 둘 다 novel_language 설정을 변경
         novel_lang_arg = args.novel_language or args.novel_language_override
         if novel_lang_arg:
             cli_overrides["novel_language"] = novel_lang_arg
@@ -297,6 +475,22 @@ def main():
             cli_overrides["user_override_glossary_extraction_prompt"] = args.user_override_glossary_prompt
             config_changed_by_cli = True
             cli_logger.info(f"사용자 재정의 용어집 추출 프롬프트가 CLI 인수로 설정되었습니다.")
+
+        # GitHub Copilot 관련 CLI 인수 처리
+        if args.use_github_copilot:
+            cli_overrides["github_copilot_enabled"] = True
+            config_changed_by_cli = True
+            cli_logger.info("--use-github-copilot 플래그로 GitHub Copilot이 활성화되었습니다.")
+            
+        if args.github_copilot_token:
+            cli_overrides["github_copilot_access_token"] = args.github_copilot_token
+            config_changed_by_cli = True
+            cli_logger.info("GitHub Copilot 토큰이 CLI 인수로 제공되었습니다.")
+            
+        if args.github_copilot_model:
+            cli_overrides["github_copilot_model"] = args.github_copilot_model
+            config_changed_by_cli = True
+            cli_logger.info(f"GitHub Copilot 모델이 CLI 인수로 '{args.github_copilot_model}'(으)로 설정되었습니다.")
 
         if config_changed_by_cli:
             cli_logger.info("CLI 인수로 제공된 설정을 반영하기 위해 AppService 설정을 다시 로드합니다.")

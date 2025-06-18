@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List, Union
 import os
 
 try:
+    from infrastructure.llm_client_interface import LLMClientInterface
     from infrastructure.gemini_client import (
         GeminiClient,
         GeminiContentSafetyException,
@@ -25,6 +26,7 @@ try:
     from google.genai import types as genai_types
     from core.dtos import GlossaryEntryDTO
 except ImportError:
+    from infrastructure.llm_client_interface import LLMClientInterface  # type: ignore
     from infrastructure.gemini_client import (  # type: ignore
         GeminiClient,
         GeminiContentSafetyException,
@@ -79,8 +81,8 @@ def _format_glossary_for_prompt( # 함수명 변경
     return "\n".join(selected_entries_str)
 
 class TranslationService:
-    def __init__(self, gemini_client: GeminiClient, config: Dict[str, Any]):
-        self.gemini_client = gemini_client
+    def __init__(self, llm_client: LLMClientInterface, config: Dict[str, Any]):
+        self.llm_client = llm_client
         self.config = config
         self.chunk_service = ChunkService()
         self.glossary_entries_for_injection: List[GlossaryEntryDTO] = [] # Renamed and type changed
@@ -321,53 +323,61 @@ class TranslationService:
             logger.debug(f"표준 모드: 시스템 지침 없음, 프롬프트 길이={len(api_prompt_for_gemini_client)}")
 
         try:
-            logger.debug(f"Gemini API 호출 시작. 모델: {self.config.get('model_name')}")
+            logger.debug(f"LLM API 호출 시작. 모델: {self.config.get('model_name')}")
             
-            translated_text_from_api = self.gemini_client.generate_text( # Renamed variable
-                prompt=api_prompt_for_gemini_client, # Union[str, List[Dict]]
+            # LLMClientInterface 방식으로 메시지 구성
+            messages = []
+            if api_system_instruction:
+                messages.append({"role": "system", "content": api_system_instruction})
+            messages.append({"role": "user", "content": api_prompt_for_gemini_client})
+            
+            translated_text_from_api = self.llm_client.generate_completion(
+                messages=messages,
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
-                generation_config_dict={
-                    "temperature": self.config.get("temperature", 0.7),
-                    "top_p": self.config.get("top_p", 0.9)
-                },
-                system_instruction_text=api_system_instruction, # Optional[str] 전달
-                stream=stream 
+                temperature=self.config.get("temperature", 0.7),
+                top_p=self.config.get("top_p", 0.9),
+                stream=stream
             )
 
             if translated_text_from_api is None:
-                logger.error("GeminiClient.generate_text가 None을 반환했습니다.")
+                logger.error("LLM 클라이언트가 None을 반환했습니다.")
                 raise GeminiContentSafetyException("API로부터 응답을 받지 못했습니다 (None 반환).")
 
             if not translated_text_from_api.strip() and text_chunk.strip():
                 logger.warning(f"API가 비어있지 않은 입력에 대해 빈 문자열을 반환했습니다. 원본: '{text_chunk[:100]}...'")
-                raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
-
-            logger.debug(f"Gemini API 호출 성공. 번역된 텍스트 (일부): {translated_text_from_api[:100]}...")
-            
+                raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")            
+            logger.debug(f"LLM API 호출 성공. 번역된 텍스트 (일부): {translated_text_from_api[:100]}...")            
             # 번역 후 길이 검증
             self._validate_translation_length(text_chunk, translated_text_from_api)
             
             # 문장부호 일관성 검사 로직 제거
         
-        except GeminiContentSafetyException as e_safety:
-            logger.warning(f"콘텐츠 안전 문제로 번역 실패: {e_safety}")
-            # 콘텐츠 안전 문제 발생 시, 분할 재시도 로직을 호출하도록 변경
-            # translate_text_with_content_safety_retry가 이 예외를 처리하도록 함
-            raise BtgTranslationException(f"콘텐츠 안전 문제로 번역할 수 없습니다. ({e_safety})", original_exception=e_safety) from e_safety
+        except Exception as e_safety:
+            # LLM 백엔드에 따라 다른 안전성 예외가 발생할 수 있음
+            # Gemini: GeminiContentSafetyException, OpenAI: content filter 등
+            error_msg = str(e_safety).lower()
+            if ("safety" in error_msg or "content" in error_msg or 
+                type(e_safety).__name__ == "GeminiContentSafetyException"):
+                logger.warning(f"콘텐츠 안전 문제로 번역 실패: {e_safety}")
+                raise BtgTranslationException(f"콘텐츠 안전 문제로 번역할 수 없습니다. ({e_safety})", original_exception=e_safety) from e_safety
+            elif ("rate" in error_msg or "limit" in error_msg or "quota" in error_msg or
+                  type(e_safety).__name__ in ["GeminiRateLimitException", "RateLimitError"]):
+                logger.error(f"API 사용량 제한 초과: {e_safety}")
+                raise BtgApiClientException(f"API 사용량 제한을 초과했습니다. 잠시 후 다시 시도해주세요. ({e_safety})", original_exception=e_safety) from e_safety
+            elif ("invalid" in error_msg or "bad request" in error_msg or
+                  type(e_safety).__name__ in ["GeminiInvalidRequestException", "InvalidRequestError"]):
+                logger.error(f"잘못된 API 요청: {e_safety}")
+                raise BtgApiClientException(f"잘못된 API 요청입니다: {e_safety}", original_exception=e_safety) from e_safety
+            elif ("key" in error_msg and ("exhaust" in error_msg or "invalid" in error_msg) or
+                  type(e_safety).__name__ == "GeminiAllApiKeysExhaustedException"):
+                logger.error(f"API 키 문제: {e_safety}")
+                raise BtgApiClientException(f"API 키 설정을 확인하세요. ({e_safety})", original_exception=e_safety) from e_safety
+            else:
+                # 기타 LLM API 관련 예외들
+                logger.error(f"LLM API 호출 중 오류 발생: {e_safety}")
+                raise BtgApiClientException(f"API 호출 중 오류가 발생했습니다: {e_safety}", original_exception=e_safety) from e_safety
         except BtgInvalidTranslationLengthException: # 새로 추가된 예외 처리
             raise # 이미 로깅되었으므로 그대로 다시 발생시켜 상위에서 처리하도록 함
-        except GeminiAllApiKeysExhaustedException as e_keys:
-            logger.error(f"API 키 회전 실패: 모든 API 키 소진 또는 유효하지 않음. 원본 오류: {e_keys}")
-            raise BtgApiClientException(f"모든 API 키를 사용했으나 요청에 실패했습니다. API 키 설정을 확인하세요. ({e_keys})", original_exception=e_keys) from e_keys
-        except GeminiRateLimitException as e_rate:
-            logger.error(f"API 사용량 제한 초과 (키 회전 후에도 발생): {e_rate}")
-            raise BtgApiClientException(f"API 사용량 제한을 초과했습니다. 잠시 후 다시 시도해주세요. ({e_rate})", original_exception=e_rate) from e_rate
-        except GeminiInvalidRequestException as e_invalid:
-            logger.error(f"잘못된 API 요청: {e_invalid}")
-            raise BtgApiClientException(f"잘못된 API 요청입니다: {e_invalid}", original_exception=e_invalid) from e_invalid
-        except GeminiApiException as e_api: # Catches other general API errors from GeminiClient
-            logger.error(f"Gemini API 호출 중 일반 오류 발생: {e_api}")
-            raise BtgApiClientException(f"API 호출 중 오류가 발생했습니다: {e_api}", original_exception=e_api) from e_api
         # BtgTranslationException for empty string is now caught here if raised from above
         except BtgTranslationException: # Re-raise if it's our specific empty string exception
             raise

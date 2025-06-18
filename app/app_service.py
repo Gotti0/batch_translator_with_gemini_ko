@@ -28,7 +28,10 @@ try:
         save_merged_chunks_to_file
     )
     from ..core.config.config_manager import ConfigManager
+    from infrastructure.llm_client_interface import LLMClientInterface
     from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
+    from infrastructure.openai_compatible_client import OpenAICompatibleClient
+    from infrastructure.github_copilot_client import GitHubCopilotClient
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
     from ..utils.chunk_service import ChunkService
@@ -47,7 +50,10 @@ except ImportError:
         save_merged_chunks_to_file
     )
     from core.config.config_manager import ConfigManager
+    from infrastructure.llm_client_interface import LLMClientInterface
     from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
+    from infrastructure.openai_compatible_client import OpenAICompatibleClient
+    from infrastructure.github_copilot_client import GitHubCopilotClient
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
     from utils.chunk_service import ChunkService
@@ -62,11 +68,11 @@ class AppService:
     애플리케이션의 주요 유스케이스를 조정하는 서비스 계층입니다.
     프레젠테이션 계층과 비즈니스 로직/인프라 계층 간의 인터페이스 역할을 합니다.
     """
-
+    
     def __init__(self, config_file_path: Optional[Union[str, Path]] = None):
         self.config_manager = ConfigManager(config_file_path)
         self.config: Dict[str, Any] = {}
-        self.gemini_client: Optional[GeminiClient] = None
+        self.llm_client: Optional[LLMClientInterface] = None
         self.translation_service: Optional[TranslationService] = None
         self.glossary_service: Optional[SimpleGlossaryService] = None # Renamed from pronoun_service
         self.chunk_service = ChunkService()
@@ -145,7 +151,7 @@ class AppService:
             else:
                 logger.info("Gemini Developer API 사용 모드입니다.")
                 auth_credentials_for_gemini_client = None # 기본값 None으로 시작
-
+                
                 api_keys_list_val = self.config.get("api_keys", [])
                 if isinstance(api_keys_list_val, list):
                     valid_api_keys = [key for key in api_keys_list_val if isinstance(key, str) and key.strip()]
@@ -177,7 +183,13 @@ class AppService:
                     logger.warning("Gemini Developer API 모드이지만 사용할 API 키가 설정에 없습니다.")
 
             should_initialize_client = False
-            if auth_credentials_for_gemini_client:
+            
+            # GitHub Copilot 확인
+            github_copilot_config = self.config_manager.get_github_copilot_config()
+            if github_copilot_config.get("github_copilot_enabled", False) and github_copilot_config.get("github_copilot_access_token"):
+                should_initialize_client = True
+                logger.debug("GitHub Copilot이 활성화되어 클라이언트 초기화 조건 충족.")
+            elif auth_credentials_for_gemini_client:
                 if isinstance(auth_credentials_for_gemini_client, str) and auth_credentials_for_gemini_client.strip():
                     should_initialize_client = True
                 elif isinstance(auth_credentials_for_gemini_client, list) and auth_credentials_for_gemini_client:
@@ -189,52 +201,64 @@ class AppService:
                 should_initialize_client = True
                 logger.info("Vertex AI 사용 및 프로젝트 ID 존재 (설정 또는 환경변수)로 클라이언트 초기화 조건 충족 (인증정보는 ADC 기대).")
 
-
             logger.debug(f"[AppService.load_app_config] GeminiClient 초기화 전: should_initialize_client={should_initialize_client}")
             logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client 타입: {type(auth_credentials_for_gemini_client)}")
             if isinstance(auth_credentials_for_gemini_client, str) and len(auth_credentials_for_gemini_client) > 200:
-                 logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client (일부): {auth_credentials_for_gemini_client[:100]}...{auth_credentials_for_gemini_client[-100:]}")
+                logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client (일부): {auth_credentials_for_gemini_client[:100]}...{auth_credentials_for_gemini_client[-100:]}")
             elif isinstance(auth_credentials_for_gemini_client, dict):
-                 logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client (키 목록): {list(auth_credentials_for_gemini_client.keys())}")
+                logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client (키 목록): {list(auth_credentials_for_gemini_client.keys())}")
             else:
-                 logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client: {auth_credentials_for_gemini_client}")
+                logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client: {auth_credentials_for_gemini_client}")
 
             if should_initialize_client:
                 try:
                     project_to_pass_to_client = gcp_project_from_config if gcp_project_from_config and gcp_project_from_config.strip() else None
                     rpm_value = self.config.get("requests_per_minute")
-                    logger.info(f"GeminiClient 초기화 시도: project='{project_to_pass_to_client}', location='{gcp_location}', RPM='{rpm_value}'")
-                    self.gemini_client = GeminiClient(
-                        auth_credentials=auth_credentials_for_gemini_client,
-                        project=project_to_pass_to_client,
-                        location=gcp_location,
-                        requests_per_minute=rpm_value
-                    )
+                    logger.info(f"LLM 클라이언트 초기화 시도...")
+                    
+                    # GitHub Copilot 우선 확인
+                    github_copilot_config = self.config_manager.get_github_copilot_config()
+                    if github_copilot_config.get("github_copilot_enabled", False) and github_copilot_config.get("github_copilot_access_token"):
+                        logger.info("GitHub Copilot 클라이언트 초기화 중...")
+                        self.llm_client = GitHubCopilotClient(self.config_manager)
+                        logger.info("GitHub Copilot 클라이언트가 성공적으로 초기화되었습니다.")
+                    else:
+                        # Gemini 클라이언트 사용
+                        logger.info(f"Gemini 클라이언트 초기화 중: project='{project_to_pass_to_client}', location='{gcp_location}', RPM='{rpm_value}'")
+                        gemini_client = GeminiClient(
+                            auth_credentials=auth_credentials_for_gemini_client,
+                            project=project_to_pass_to_client,
+                            location=gcp_location,
+                            requests_per_minute=rpm_value
+                        )
+                        self.llm_client = gemini_client
+                        logger.info("Gemini 클라이언트가 성공적으로 초기화되었습니다.")
+                    
                 except GeminiInvalidRequestException as e_inv:
-                    logger.error(f"GeminiClient 초기화 실패 (잘못된 요청/인증): {e_inv}")
-                    self.gemini_client = None
+                    logger.error(f"LLM 클라이언트 초기화 실패 (잘못된 요청/인증): {e_inv}")
+                    self.llm_client = None
                 except Exception as e_client:
-                    logger.error(f"GeminiClient 초기화 중 예상치 못한 오류 발생: {e_client}", exc_info=True)
-                    self.gemini_client = None
+                    logger.error(f"LLM 클라이언트 초기화 중 예상치 못한 오류 발생: {e_client}", exc_info=True)
+                    self.llm_client = None
             else:
-                logger.warning("API 키 또는 Vertex AI 설정이 충분하지 않아 Gemini 클라이언트 초기화를 시도하지 않습니다.")
-                self.gemini_client = None
+                logger.warning("API 키 또는 LLM 설정이 충분하지 않아 클라이언트 초기화를 시도하지 않습니다.")
+                self.llm_client = None
 
-            if self.gemini_client:
-                self.translation_service = TranslationService(self.gemini_client, self.config)
-                self.glossary_service = SimpleGlossaryService(self.gemini_client, self.config) # Changed to SimpleGlossaryService
-                logger.info("TranslationService 및 SimpleGlossaryService가 성공적으로 초기화되었습니다.") # Message updated
+            if self.llm_client:
+                self.translation_service = TranslationService(self.llm_client, self.config)
+                self.glossary_service = SimpleGlossaryService(self.llm_client, self.config)
+                logger.info("TranslationService 및 SimpleGlossaryService가 성공적으로 초기화되었습니다.")
             else:
                 self.translation_service = None
-                self.glossary_service = None # Renamed
-                logger.warning("Gemini 클라이언트가 초기화되지 않아 번역 및 고유명사 서비스가 비활성화됩니다.")
+                self.glossary_service = None
+                logger.warning("LLM 클라이언트가 초기화되지 않아 번역 및 고유명사 서비스가 비활성화됩니다.")
 
             return self.config
         except FileNotFoundError as e:
             logger.error(f"설정 파일 찾기 실패: {e}")
             self.config = self.config_manager.get_default_config()
             logger.warning("기본 설정으로 계속 진행합니다. Gemini 클라이언트는 초기화되지 않을 수 있습니다.")
-            self.gemini_client = None
+            self.llm_client = None
             self.translation_service = None # Keep
             self.glossary_service = None # Renamed
             return self.config
@@ -258,15 +282,31 @@ class AppService:
             raise BtgConfigException(f"설정 저장 오류: {e}", original_exception=e) from e
 
     def get_available_models(self) -> List[Dict[str, Any]]:
-        if not self.gemini_client:
-            logger.error("모델 목록 조회 실패: Gemini 클라이언트가 초기화되지 않았습니다.")
-            raise BtgServiceException("Gemini 클라이언트가 초기화되지 않았습니다. API 키 또는 Vertex AI 설정을 확인하세요.")
+        if not self.llm_client:
+            logger.error("모델 목록 조회 실패: LLM 클라이언트가 초기화되지 않았습니다.")
+            raise BtgServiceException("LLM 클라이언트가 초기화되지 않았습니다. API 키 또는 설정을 확인하세요.")
         logger.info("사용 가능한 모델 목록 조회 서비스 호출됨.")
         try:
-            all_models = self.gemini_client.list_models()
-            # 모델 필터링 로직 제거됨
-            logger.info(f"총 {len(all_models)}개의 모델을 API로부터 직접 반환합니다.")
-            return all_models
+            # LLMClientInterface의 get_available_models() 사용
+            model_names = self.llm_client.get_available_models()
+            
+            # Gemini 클라이언트인 경우 상세 정보도 가져오기
+            if hasattr(self.llm_client, 'list_models'):
+                all_models = self.llm_client.list_models()
+                logger.info(f"총 {len(all_models)}개의 모델을 API로부터 직접 반환합니다.")
+                return all_models
+            else:
+                # 다른 클라이언트인 경우 간단한 형식으로 반환
+                models = []
+                for model_name in model_names:
+                    models.append({
+                        "name": model_name,
+                        "short_name": model_name,
+                        "display_name": model_name,
+                        "description": f"{self.llm_client.get_client_type()} 모델"
+                    })
+                logger.info(f"총 {len(models)}개의 모델을 반환합니다.")
+                return models
             
         except BtgApiClientException as e:
             logger.error(f"모델 목록 조회 중 API 오류: {e}")

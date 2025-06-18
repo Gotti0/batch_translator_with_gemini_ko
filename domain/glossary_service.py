@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, List, Union, Tuple, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
+    from infrastructure.llm_client_interface import LLMClientInterface
     from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException
     from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file
     from infrastructure.logger_config import setup_logger
@@ -19,6 +20,7 @@ try:
     from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO
 except ImportError:
     # 단독 실행 또는 다른 경로에서의 import를 위한 fallback
+    from infrastructure.llm_client_interface import LLMClientInterface # type: ignore
     from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException # type: ignore
     from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file # type: ignore
     from utils.chunk_service import ChunkService # type: ignore
@@ -40,15 +42,15 @@ class SimpleGlossaryService:
     텍스트에서 간단한 용어집 항목(원본 용어, 번역된 용어, 출발/도착 언어, 등장 횟수)을
     추출하고 관리하는 비즈니스 로직을 담당합니다. (경량화 버전)
     """
-    def __init__(self, gemini_client: GeminiClient, config: Dict[str, Any]):
+    def __init__(self, llm_client: LLMClientInterface, config: Dict[str, Any]):
         """
         SimpleGlossaryService를 초기화합니다.
 
         Args:
-            gemini_client (GeminiClient): Gemini API와 통신하기 위한 클라이언트.
+            llm_client (LLMClientInterface): LLM API와 통신하기 위한 클라이언트 인터페이스.
             config (Dict[str, Any]): 애플리케이션 설정 (주로 파일명 접미사 등).
         """
-        self.gemini_client = gemini_client
+        self.llm_client = llm_client
         self.config = config
         self.chunk_service = ChunkService() # ChunkService 인스턴스화
         # self.all_extracted_entries: List[GlossaryEntryDTO] = [] # 추출된 모든 항목 (필요시 멤버 변수로, 아니면 로컬 변수로)
@@ -119,9 +121,7 @@ class SimpleGlossaryService:
                 glossary_entries.append(GlossaryEntryDTO(**item_dict))
             except TypeError as e:
                 logger.warning(f"딕셔너리를 GlossaryEntryDTO로 변환 중 오류: {item_dict}, 오류: {e}")
-        return glossary_entries
-
-    # _get_conflict_resolution_prompt, _group_similar_keywords_via_api 메서드는 경량화로 인해 제거 또는 대폭 단순화.
+        return glossary_entries    # _get_conflict_resolution_prompt, _group_similar_keywords_via_api 메서드는 경량화로 인해 제거 또는 대폭 단순화.
     # 여기서는 제거하는 것으로 가정. 필요하다면 매우 단순한 형태로 재구현.
 
     def _extract_glossary_entries_from_segment_via_api( # 함수명 변경
@@ -130,8 +130,8 @@ class SimpleGlossaryService:
         user_override_glossary_prompt: Optional[str] = None
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
-        단일 텍스트 세그먼트에서 Gemini API를 사용하여 용어집 항목들을 추출합니다.
-        GeminiClient의 내장 재시도 로직을 활용합니다.       
+        단일 텍스트 세그먼트에서 LLM API를 사용하여 용어집 항목들을 추출합니다.
+        LLMClientInterface의 내장 재시도 로직을 활용합니다.       
         """
         prompt = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
         model_name = self.config.get("model_name", "gemini-2.0-flash")
@@ -142,22 +142,28 @@ class SimpleGlossaryService:
         }
 
         try:
-            response_data = self.gemini_client.generate_text(
-                prompt=prompt,
-                model_name=model_name,
-                generation_config_dict=generation_config_params
+            # 범용 메시지 형식으로 변환
+            messages = [{"role": "user", "content": prompt}]
+            
+            response_data = self.llm_client.generate_response(
+                messages=messages,
+                model=model_name,
+                temperature=generation_config_params.get("temperature", 0.3),
+                max_tokens=None,
+                response_format={"type": "json_object"} if generation_config_params.get("response_mime_type") == "application/json" else None,
+                **{k: v for k, v in generation_config_params.items() if k not in ["temperature", "response_mime_type"]}
             )
 
             if isinstance(response_data, list) and all(isinstance(item, ApiGlossaryTerm) for item in response_data):
-                logger.debug("GeminiClient가 ApiGlossaryTerm 객체 리스트를 반환했습니다.")
+                logger.debug("LLM 클라이언트가 ApiGlossaryTerm 객체 리스트를 반환했습니다.")
                 return self._parse_api_glossary_terms_to_dto(response_data)
             elif isinstance(response_data, list) and all(isinstance(item, dict) for item in response_data):
-                # GeminiClient가 Pydantic 파싱에 실패하고 dict 리스트를 반환한 경우 (예: response.text 파싱)
-                logger.warning("GeminiClient가 dict 리스트를 반환했습니다. 스키마 적용이 부분적으로 성공했을 수 있습니다.")
+                # LLM 클라이언트가 Pydantic 파싱에 실패하고 dict 리스트를 반환한 경우 (예: response.text 파싱)
+                logger.warning("LLM 클라이언트가 dict 리스트를 반환했습니다. 스키마 적용이 부분적으로 성공했을 수 있습니다.")
                 return self._parse_dict_list_to_dto(response_data)
             elif isinstance(response_data, dict):
                 # 이전 프롬프트 방식("terms" 키를 가진 객체)에 대한 폴백 (스키마가 완전히 무시된 경우)
-                logger.warning(f"GeminiClient가 예상치 못한 딕셔너리를 반환했습니다 (스키마 미적용 가능성): {str(response_data)[:200]}")
+                logger.warning(f"LLM 클라이언트가 예상치 못한 딕셔너리를 반환했습니다 (스키마 미적용 가능성): {str(response_data)[:200]}")
                 raw_terms_fallback = response_data.get("terms")
                 if isinstance(raw_terms_fallback, list):
                     return self._parse_dict_list_to_dto(raw_terms_fallback)
@@ -165,19 +171,19 @@ class SimpleGlossaryService:
                     logger.error(f"API 응답이 예상된 리스트나 'terms' 키를 포함한 딕셔너리가 아닙니다: {response_data}")
                     return [] # 유효한 'terms'가 없으면 빈 리스트 반환
             elif response_data is None:
-                logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다 (GeminiClient가 None 반환). 세그먼트: {segment_text[:50]}...")
+                logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다 (LLM 클라이언트가 None 반환). 세그먼트: {segment_text[:50]}...")
                 return []
-            elif isinstance(response_data, str): # GeminiClient가 JSON 파싱에 실패하여 문자열을 반환한 경우
-                logger.warning(f"GeminiClient가 JSON 파싱에 실패하여 문자열을 반환했습니다. 응답: {response_data[:200]}... 세그먼트: {segment_text[:50]}...")
-                # 이 경우, API가 유효하지 않은 JSON을 생성했거나 GeminiClient의 파서에 문제가 있을 수 있습니다.
+            elif isinstance(response_data, str): # LLM 클라이언트가 JSON 파싱에 실패하여 문자열을 반환한 경우
+                logger.warning(f"LLM 클라이언트가 JSON 파싱에 실패하여 문자열을 반환했습니다. 응답: {response_data[:200]}... 세그먼트: {segment_text[:50]}...")
+                # 이 경우, API가 유효하지 않은 JSON을 생성했거나 LLM 클라이언트의 파서에 문제가 있을 수 있습니다.
                 # 서비스 레벨에서 단순 API 재시도는 도움이 되지 않을 가능성이 높습니다.                          
                 return []
             else:
-                logger.warning(f"GeminiClient로부터 예상치 않은 타입의 응답 ({type(response_data)})을 받았습니다. 세그먼트: {segment_text[:50]}...")              
+                logger.warning(f"LLM 클라이언트로부터 예상치 않은 타입의 응답 ({type(response_data)})을 받았습니다. 세그먼트: {segment_text[:50]}...")              
                 return []
             
-        except GeminiApiException as e_api: # GeminiClient의 자체 재시도 후에도 해결되지 않은 API 오류
-            logger.error(f"용어집 추출 API 호출 최종 실패 (GeminiClient 재시도 후 발생): {e_api}. 세그먼트: {segment_text[:50]}...")
+        except Exception as e_api: # LLM 클라이언트의 자체 재시도 후에도 해결되지 않은 API 오류
+            logger.error(f"용어집 추출 API 호출 최종 실패 (LLM 클라이언트 재시도 후 발생): {e_api}. 세그먼트: {segment_text[:50]}...")
             raise BtgApiClientException(f"용어집 추출 API 호출 최종 실패: {e_api}", original_exception=e_api) from e_api       
         except Exception as e:
             logger.error(f"용어집 추출 중 예상치 못한 내부 오류: {e}. 세그먼트: {segment_text[:50]}...", exc_info=True)

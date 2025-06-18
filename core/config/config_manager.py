@@ -138,10 +138,17 @@ class ConfigManager:
             # 동적 로어북 주입 설정
             "enable_dynamic_glossary_injection": False,
             "max_glossary_entries_per_chunk_injection": 3,
-            "max_glossary_chars_per_chunk_injection": 500,
-            # 번역 길이 검증 설정
+            "max_glossary_chars_per_chunk_injection": 500,            # 번역 길이 검증 설정
             "translation_min_length_ratio": 0.15, # 원본 대비 최소 길이 비율
             "translation_max_length_ratio": 2.5,  # 원본 대비 최대 길이 비율
+            
+            # GitHub Copilot 연동 설정
+            "github_copilot_enabled": False,  # GitHub Copilot 사용 여부
+            "github_copilot_access_token": "",  # GitHub Copilot 액세스 토큰
+            "github_copilot_api_url": "https://api.githubcopilot.com/chat/completions",  # GitHub Copilot API URL
+            "github_copilot_model_name": "gpt-4o",  # GitHub Copilot 모델명
+            "github_copilot_prompt_has_first_system": True,  # 첫 번째 시스템 프롬프트 포함 여부
+            "github_copilot_prompt_requires_alternate_role": True,  # 교대 역할 요구 여부
         }
 
     def load_config(self, use_default_if_missing: bool = True) -> Dict[str, Any]:
@@ -254,6 +261,96 @@ class ConfigManager:
             print(f"오류: 설정 파일 '{self.config_file_path}' 저장 중 오류 발생: {e}")
             return False
 
+    def get_github_copilot_config(self) -> Dict[str, Any]:
+        """
+        GitHub Copilot 관련 설정만 추출하여 반환합니다.
+        
+        Returns:
+            Dict[str, Any]: GitHub Copilot 관련 설정 딕셔너리
+        """
+        config = self.load_config()
+        return {
+            "github_copilot_enabled": config.get("github_copilot_enabled", False),
+            "github_copilot_access_token": config.get("github_copilot_access_token", ""),
+            "github_copilot_api_url": config.get("github_copilot_api_url", "https://api.githubcopilot.com/chat/completions"),
+            "github_copilot_model_name": config.get("github_copilot_model_name", "gpt-4o"),
+            "github_copilot_prompt_has_first_system": config.get("github_copilot_prompt_has_first_system", True),
+            "github_copilot_prompt_requires_alternate_role": config.get("github_copilot_prompt_requires_alternate_role", True)
+        }
+    
+    def update_github_copilot_config(self, copilot_config: Dict[str, Any]) -> bool:
+        """
+        GitHub Copilot 관련 설정만 업데이트합니다.
+        
+        Args:
+            copilot_config (Dict[str, Any]): 업데이트할 GitHub Copilot 설정
+            
+        Returns:
+            bool: 업데이트 성공 시 True, 실패 시 False
+        """
+        try:
+            config = self.load_config()
+            
+            # GitHub Copilot 설정 키만 업데이트
+            copilot_keys = [
+                "github_copilot_enabled",
+                "github_copilot_access_token", 
+                "github_copilot_api_url",
+                "github_copilot_model_name",
+                "github_copilot_prompt_has_first_system",
+                "github_copilot_prompt_requires_alternate_role"
+            ]
+            
+            for key in copilot_keys:
+                if key in copilot_config:
+                    config[key] = copilot_config[key]
+            
+            return self.save_config(config)
+        except Exception as e:
+            print(f"오류: GitHub Copilot 설정 업데이트 중 오류 발생: {e}")
+            return False
+    
+    def is_github_copilot_enabled(self) -> bool:
+        """
+        GitHub Copilot이 활성화되어 있는지 확인합니다.
+        
+        Returns:
+            bool: GitHub Copilot 활성화 여부
+        """
+        config = self.load_config()
+        return config.get("github_copilot_enabled", False)
+    
+    def validate_github_copilot_config(self) -> Dict[str, str]:
+        """
+        GitHub Copilot 설정의 유효성을 검사합니다.
+        
+        Returns:
+            Dict[str, str]: 검사 결과. 키는 설정 이름, 값은 오류 메시지 (오류가 없으면 빈 딕셔너리)
+        """
+        config = self.get_github_copilot_config()
+        errors = {}
+        
+        # GitHub Copilot이 활성화된 경우에만 검사
+        if not config.get("github_copilot_enabled", False):
+            return errors
+        
+        # 액세스 토큰 검사
+        if not config.get("github_copilot_access_token", "").strip():
+            errors["github_copilot_access_token"] = "GitHub Copilot 액세스 토큰이 설정되지 않았습니다."
+        
+        # API URL 검사
+        api_url = config.get("github_copilot_api_url", "").strip()
+        if not api_url:
+            errors["github_copilot_api_url"] = "GitHub Copilot API URL이 설정되지 않았습니다."
+        elif not api_url.startswith(("http://", "https://")):
+            errors["github_copilot_api_url"] = "올바른 URL 형식이 아닙니다."
+        
+        # 모델명 검사
+        if not config.get("github_copilot_model_name", "").strip():
+            errors["github_copilot_model_name"] = "GitHub Copilot 모델명이 설정되지 않았습니다."
+        
+        return errors
+
 if __name__ == '__main__':
     test_output_dir = Path("test_config_manager_output")
     test_output_dir.mkdir(exist_ok=True)
@@ -278,10 +375,16 @@ if __name__ == '__main__':
     assert config1["novel_language_fallback"] == "ja"
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
     assert config1["requests_per_minute"] == 60 # RPM 기본값 확인
-    assert config1["thinking_budget"] is None # thinking_budget 기본값 확인
-    assert config1["enable_dynamic_glossary_injection"] is False
+    assert config1["thinking_budget"] is None # thinking_budget 기본값 확인    assert config1["enable_dynamic_glossary_injection"] is False
     assert config1["max_glossary_entries_per_chunk_injection"] == 3
     assert config1["max_glossary_chars_per_chunk_injection"] == 500
+    # GitHub Copilot 기본 설정 확인
+    assert config1["github_copilot_enabled"] is False
+    assert config1["github_copilot_access_token"] == ""
+    assert config1["github_copilot_api_url"] == "https://api.githubcopilot.com/chat/completions"
+    assert config1["github_copilot_model_name"] == "gpt-4o"
+    assert config1["github_copilot_prompt_has_first_system"] is True
+    assert config1["github_copilot_prompt_requires_alternate_role"] is True
 
     print("\n--- 2. 설정 저장 테스트 (api_keys 및 max_workers 사용) ---")
     config_to_save = manager_no_file.get_default_config()
@@ -375,5 +478,52 @@ if __name__ == '__main__':
     assert config4["chunk_size"] == 7000
     assert config4["model_name"] == "gemini-2.0-flash"
     assert config4["max_workers"] == (os.cpu_count() or 1) # 0 이하의 값일 경우 기본값으로 복원
+
+    print("\n--- 6. GitHub Copilot 설정 관리 테스트 ---")
+    # GitHub Copilot 설정 가져오기 테스트
+    copilot_config = manager_no_file.get_github_copilot_config()
+    print(f"GitHub Copilot 기본 설정: {json.dumps(copilot_config, indent=2, ensure_ascii=False)}")
+    assert copilot_config["github_copilot_enabled"] is False
+    assert copilot_config["github_copilot_access_token"] == ""
+    
+    # GitHub Copilot 활성화 여부 확인 테스트
+    assert manager_no_file.is_github_copilot_enabled() is False
+    
+    # GitHub Copilot 설정 업데이트 테스트
+    new_copilot_config = {
+        "github_copilot_enabled": True,
+        "github_copilot_access_token": "test_token_123",
+        "github_copilot_model_name": "gpt-4o-mini"
+    }
+    update_success = manager_no_file.update_github_copilot_config(new_copilot_config)
+    print(f"GitHub Copilot 설정 업데이트 성공: {update_success}")
+    assert update_success
+    
+    # 업데이트된 설정 확인
+    updated_copilot_config = manager_no_file.get_github_copilot_config()
+    assert updated_copilot_config["github_copilot_enabled"] is True
+    assert updated_copilot_config["github_copilot_access_token"] == "test_token_123"
+    assert updated_copilot_config["github_copilot_model_name"] == "gpt-4o-mini"
+    assert manager_no_file.is_github_copilot_enabled() is True
+    
+    # GitHub Copilot 설정 유효성 검사 테스트
+    validation_errors = manager_no_file.validate_github_copilot_config()
+    print(f"GitHub Copilot 설정 검증 결과: {validation_errors}")
+    assert len(validation_errors) == 0  # 유효한 설정이므로 오류가 없어야 함
+    
+    # 잘못된 설정으로 유효성 검사 테스트
+    invalid_copilot_config = {
+        "github_copilot_enabled": True,
+        "github_copilot_access_token": "",  # 빈 토큰
+        "github_copilot_api_url": "invalid_url",  # 잘못된 URL
+        "github_copilot_model_name": ""  # 빈 모델명
+    }
+    manager_no_file.update_github_copilot_config(invalid_copilot_config)
+    validation_errors_invalid = manager_no_file.validate_github_copilot_config()
+    print(f"잘못된 GitHub Copilot 설정 검증 결과: {validation_errors_invalid}")
+    assert len(validation_errors_invalid) > 0  # 오류가 있어야 함
+    assert "github_copilot_access_token" in validation_errors_invalid
+    assert "github_copilot_api_url" in validation_errors_invalid
+    assert "github_copilot_model_name" in validation_errors_invalid
 
     print("\n테스트 완료.")

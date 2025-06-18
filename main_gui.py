@@ -25,6 +25,8 @@ try:
     from core.exceptions import BtgConfigException, BtgServiceException, BtgFileHandlerException, BtgApiClientException, BtgBusinessLogicException, BtgException
     from infrastructure.logger_config import setup_logger
     from infrastructure.file_handler import get_metadata_file_path, load_metadata, _hash_config_for_metadata, delete_file
+    from core.github_auth_service import GitHubAuthService
+    from core.config.config_manager import ConfigManager
 except ImportError as e:
     # Critical error: GUI cannot function without these core components.
     # Print to stderr and a simple dialog if tkinter is available enough for that.
@@ -241,10 +243,12 @@ class BatchTranslatorGUI:
         style.theme_use('clam') 
         style.configure("TButton", padding=6, relief="flat", background="#ddd")
         style.map("TButton", background=[('active', '#ccc')])
-        style.configure("TNotebook.Tab", padding=[10, 5], font=('Helvetica', 10))
-
-        # 노트북 생성
+        style.configure("TNotebook.Tab", padding=[10, 5], font=('Helvetica', 10))        # 노트북 생성
         self.notebook = ttk.Notebook(master)
+        
+        # GitHub 인증 서비스 초기화
+        self.github_auth_service = GitHubAuthService()
+        self.config_manager = ConfigManager()
         
         # 스크롤 가능한 프레임들로 탭 생성
         self.settings_scroll = ScrollableFrame(self.notebook)
@@ -308,6 +312,22 @@ class BatchTranslatorGUI:
             self.gcp_location_entry.insert(0, gcp_location_val if gcp_location_val is not None else "")
 
             self._toggle_vertex_fields() 
+            
+            # GitHub Copilot 설정 로드
+            self.use_github_copilot_var.set(config.get("github_copilot_enabled", False))
+            
+            github_token = config.get("github_copilot_access_token", "")
+            self.github_copilot_token_entry.delete(0, tk.END)
+            if github_token:
+                self.github_copilot_token_entry.insert(0, github_token)
+                self._update_github_copilot_status(True)
+            else:
+                self._update_github_copilot_status(False)
+            
+            github_model = config.get("github_copilot_model_name", "gpt-4o")
+            self.github_copilot_model_combobox.set(github_model)
+            
+            self._toggle_github_copilot_fields()  # 초기 상태 설정
             
             model_name_from_config = config.get("model_name", "gemini-2.0-flash")
             logger.debug(f"Config에서 가져온 model_name: {model_name_from_config}")
@@ -513,12 +533,46 @@ class BatchTranslatorGUI:
         model_name_label = ttk.Label(api_frame, text="모델 이름:")
         model_name_label.grid(row=5, column=0, padx=5, pady=5, sticky="w")
         Tooltip(model_name_label, "번역에 사용할 AI 모델의 이름입니다.")
-        self.model_name_combobox = ttk.Combobox(api_frame, width=57) 
+        self.model_name_combobox = ttk.Combobox(api_frame, width=57)
         self.model_name_combobox.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
         Tooltip(self.model_name_combobox, "사용 가능한 모델 목록에서 선택하거나 직접 입력하세요.\n'새로고침' 버튼으로 목록을 업데이트할 수 있습니다.")
         self.refresh_models_button = ttk.Button(api_frame, text="새로고침", command=self._update_model_list_ui)
         self.refresh_models_button.grid(row=5, column=2, padx=5, pady=5)
         Tooltip(self.refresh_models_button, "사용 가능한 모델 목록을 API에서 새로 가져옵니다.")
+
+        # GitHub Copilot 설정
+        self.use_github_copilot_var = tk.BooleanVar()
+        self.use_github_copilot_check = ttk.Checkbutton(api_frame, text="GitHub Copilot 사용", 
+                                                       variable=self.use_github_copilot_var, 
+                                                       command=self._toggle_github_copilot_fields)
+        self.use_github_copilot_check.grid(row=6, column=0, columnspan=3, padx=5, pady=2, sticky="w")
+        Tooltip(self.use_github_copilot_check, "GitHub Copilot을 LLM 백엔드로 사용하려면 선택하세요.\nGitHub 계정 인증이 필요합니다.")
+
+        self.github_copilot_token_label = ttk.Label(api_frame, text="GitHub Copilot 액세스 토큰:")
+        self.github_copilot_token_label.grid(row=7, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(self.github_copilot_token_label, "GitHub Copilot API 액세스를 위한 인증 토큰입니다.")
+        
+        self.github_copilot_token_entry = ttk.Entry(api_frame, width=40, show="*")
+        self.github_copilot_token_entry.grid(row=7, column=1, padx=5, pady=5, sticky="ew")
+        Tooltip(self.github_copilot_token_entry, "GitHub Copilot 액세스 토큰이 표시됩니다.")
+        
+        self.github_copilot_auth_button = ttk.Button(api_frame, text="토큰 생성", command=self._start_github_auth)
+        self.github_copilot_auth_button.grid(row=7, column=2, padx=5, pady=5)
+        Tooltip(self.github_copilot_auth_button, "GitHub OAuth를 통해 새로운 액세스 토큰을 생성합니다.")
+
+        self.github_copilot_status_label = ttk.Label(api_frame, text="상태: 미인증", foreground="red")
+        self.github_copilot_status_label.grid(row=8, column=0, columnspan=3, padx=5, pady=2, sticky="w")
+        Tooltip(self.github_copilot_status_label, "현재 GitHub Copilot 인증 상태를 표시합니다.")
+
+        self.github_copilot_model_label = ttk.Label(api_frame, text="Copilot 모델:")
+        self.github_copilot_model_label.grid(row=9, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(self.github_copilot_model_label, "GitHub Copilot에서 사용할 모델을 선택합니다.")
+        
+        self.github_copilot_model_combobox = ttk.Combobox(api_frame, width=40, 
+                                                         values=["gpt-4o", "gpt-4", "gpt-3.5-turbo"])
+        self.github_copilot_model_combobox.grid(row=9, column=1, padx=5, pady=5, sticky="ew")
+        self.github_copilot_model_combobox.set("gpt-4o")  # 기본값 설정
+        Tooltip(self.github_copilot_model_combobox, "GitHub Copilot에서 사용할 모델을 선택하세요.")
 
         # 생성 파라미터
         gen_param_frame = ttk.LabelFrame(settings_frame, text="생성 파라미터", padding="10")
@@ -838,6 +892,138 @@ class BatchTranslatorGUI:
         if hasattr(self, 'gcp_location_entry'): self.gcp_location_entry.config(state=vertex_related_state)
         logger.debug(f"Vertex 필드 상태: {vertex_related_state}, API 키 필드 상태: {api_related_state}")
 
+    def _toggle_github_copilot_fields(self):
+        """GitHub Copilot 설정 필드들의 활성화/비활성화를 토글합니다."""
+        use_copilot = self.use_github_copilot_var.get()
+        logger.debug(f"_toggle_github_copilot_fields 호출됨. use_github_copilot_var: {use_copilot}")
+        copilot_state = tk.NORMAL if use_copilot else tk.DISABLED
+
+        if hasattr(self, 'github_copilot_token_label'): 
+            self.github_copilot_token_label.config(state=copilot_state)
+        if hasattr(self, 'github_copilot_token_entry'): 
+            self.github_copilot_token_entry.config(state=copilot_state)
+        if hasattr(self, 'github_copilot_auth_button'): 
+            self.github_copilot_auth_button.config(state=copilot_state)
+        if hasattr(self, 'github_copilot_model_label'): 
+            self.github_copilot_model_label.config(state=copilot_state)
+        if hasattr(self, 'github_copilot_model_combobox'): 
+            self.github_copilot_model_combobox.config(state=copilot_state)
+        
+        logger.debug(f"GitHub Copilot 필드 상태: {copilot_state}")
+
+    def _update_github_copilot_status(self, is_authenticated: bool):
+        """GitHub Copilot 인증 상태를 업데이트합니다."""
+        if is_authenticated:
+            self.github_copilot_status_label.config(text="상태: 인증됨", foreground="green")
+        else:
+            self.github_copilot_status_label.config(text="상태: 미인증", foreground="red")
+
+    def _start_github_auth(self):
+        """GitHub OAuth 인증 프로세스를 시작합니다."""
+        try:
+            self._log_message("GitHub OAuth 인증 시작...", "INFO")
+            self.github_copilot_auth_button.config(state=tk.DISABLED, text="인증 중...")
+            
+            # 백그라운드 스레드에서 인증 처리
+            def auth_thread():
+                try:
+                    # 디바이스 코드 요청
+                    device_response = self.github_auth_service.get_device_code()
+                    device_code = device_response["device_code"]
+                    user_code = device_response["user_code"]
+                    verification_uri = device_response["verification_uri"]
+                    
+                    # 사용자에게 인증 안내
+                    self.master.after(0, lambda: self._show_github_auth_dialog(
+                        user_code, verification_uri, device_code))
+                    
+                except Exception as e:
+                    logger.error(f"GitHub 인증 오류: {e}")
+                    self.master.after(0, lambda: self._on_github_auth_error(str(e)))
+            
+            threading.Thread(target=auth_thread, daemon=True).start()
+            
+        except Exception as e:
+            logger.error(f"GitHub 인증 시작 오류: {e}")
+            self._log_message(f"GitHub 인증 시작 실패: {e}", "ERROR")
+            self.github_copilot_auth_button.config(state=tk.NORMAL, text="토큰 생성")
+
+    def _show_github_auth_dialog(self, user_code: str, verification_uri: str, device_code: str):
+        """GitHub 인증을 위한 다이얼로그를 표시합니다."""
+        import webbrowser
+        
+        # 브라우저에서 인증 페이지 열기
+        webbrowser.open(verification_uri)
+        
+        # 사용자에게 안내 메시지 표시
+        message = (f"웹브라우저에서 GitHub 인증 페이지가 열렸습니다.\n\n"
+                  f"인증 코드: {user_code}\n"
+                  f"인증 페이지: {verification_uri}\n\n"
+                  f"1. 웹브라우저에서 위 코드를 입력하세요\n"
+                  f"2. GitHub에 로그인하고 권한을 승인하세요\n"
+                  f"3. 완료되면 '확인'을 눌러주세요")
+        
+        result = messagebox.askokcancel("GitHub 인증", message)
+        
+        if result:
+            # 사용자가 확인을 눌렀을 때 토큰 폴링 시작
+            self._start_token_polling(device_code)
+        else:
+            # 사용자가 취소했을 때
+            self.github_copilot_auth_button.config(state=tk.NORMAL, text="토큰 생성")
+            self._log_message("GitHub 인증이 취소되었습니다.", "WARNING")
+
+    def _start_token_polling(self, device_code: str):
+        """토큰 폴링을 시작합니다."""
+        def polling_thread():
+            try:
+                # 토큰 폴링 (최대 5분)
+                access_token = self.github_auth_service.poll_for_token(device_code, timeout=300)
+                
+                if access_token:
+                    # 토큰 검증
+                    is_valid = self.github_auth_service.validate_token(access_token)
+                    if is_valid:
+                        # 설정에 토큰 저장
+                        config = self.config_manager.load_config()
+                        config["github_copilot_access_token"] = access_token
+                        config["github_copilot_enabled"] = True
+                        self.config_manager.save_config(config)
+                        
+                        # UI 업데이트
+                        self.master.after(0, lambda: self._on_github_auth_success(access_token))
+                    else:
+                        self.master.after(0, lambda: self._on_github_auth_error("토큰 검증 실패"))
+                else:
+                    self.master.after(0, lambda: self._on_github_auth_error("토큰 획득 실패"))
+                    
+            except Exception as e:
+                logger.error(f"토큰 폴링 오류: {e}")
+                self.master.after(0, lambda: self._on_github_auth_error(str(e)))
+        
+        threading.Thread(target=polling_thread, daemon=True).start()
+
+    def _on_github_auth_success(self, access_token: str):
+        """GitHub 인증 성공 처리"""
+        # UI 업데이트
+        self.github_copilot_token_entry.delete(0, tk.END)
+        self.github_copilot_token_entry.insert(0, access_token)
+        self._update_github_copilot_status(True)
+        self.use_github_copilot_var.set(True)
+        
+        # 버튼 상태 복원
+        self.github_copilot_auth_button.config(state=tk.NORMAL, text="토큰 생성")
+        
+        self._log_message("GitHub Copilot 인증이 완료되었습니다.", "INFO")
+        messagebox.showinfo("인증 완료", "GitHub Copilot 인증이 성공적으로 완료되었습니다.")
+
+    def _on_github_auth_error(self, error_message: str):
+        """GitHub 인증 실패 처리"""
+        # 버튼 상태 복원
+        self.github_copilot_auth_button.config(state=tk.NORMAL, text="토큰 생성")
+        
+        self._log_message(f"GitHub 인증 실패: {error_message}", "ERROR")
+        messagebox.showerror("인증 실패", f"GitHub 인증에 실패했습니다:\n{error_message}")
 
     def _create_glossary_widgets(self): # Renamed from _create_lorebook_widgets
         # 스크롤 가능한 프레임의 내부 프레임 사용
@@ -1072,16 +1258,14 @@ class BatchTranslatorGUI:
         if not app_service:
             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
             self._log_message("모델 목록 업데이트 시도 실패: AppService 없음", "ERROR")
-            return
-
-        # 변수 스코프 문제 해결: try 블록 밖에서 정의
+            return        # 변수 스코프 문제 해결: try 블록 밖에서 정의
         current_user_input_model = self.model_name_combobox.get()
         
         try:
             self._log_message("모델 목록 새로고침 중...")
             
             # 1단계: 클라이언트 유무 확인
-            if not app_service.gemini_client:
+            if not app_service.llm_client:
                 # 클라이언트가 없다면, 설정을 저장하지 않고 사용자에게 알림.
                 # AppService의 load_app_config를 호출하여 (저장 없이) 클라이언트 재설정을 시도할 수 있으나,
                 # 여기서는 단순히 사용자에게 알리고 모델 목록 조회를 중단하는 것이 안전합니다.
@@ -1226,19 +1410,19 @@ class BatchTranslatorGUI:
                 thinking_budget_ui_val = int(thinking_budget_str)
             except ValueError:
                 messagebox.showwarning("입력 오류", f"Thinking Budget은 숫자여야 합니다. '{thinking_budget_str}'은(는) 유효하지 않습니다. 이 값은 무시됩니다.")
-                self.thinking_budget_entry.delete(0, tk.END) # 잘못된 값 제거
-                thinking_budget_ui_val = None # 잘못된 값이면 None으로 처리 (모델 기본값 사용)
+                self.thinking_budget_entry.delete(0, tk.END) # 잘못된 값 제거                thinking_budget_ui_val = None # 잘못된 값이면 None으로 처리 (모델 기본값 사용)
 
-
-
-        
         config_data = {
             "api_keys": api_keys_list if not use_vertex else [],
             "service_account_file_path": self.service_account_file_entry.get().strip() if use_vertex else None,
             "use_vertex_ai": use_vertex,
             "gcp_project": self.gcp_project_entry.get().strip() if use_vertex else None,
             "gcp_location": self.gcp_location_entry.get().strip() if use_vertex else None,
-            "model_name": self.model_name_combobox.get().strip(), 
+            # GitHub Copilot 설정
+            "github_copilot_enabled": self.use_github_copilot_var.get(),
+            "github_copilot_access_token": self.github_copilot_token_entry.get().strip(),
+            "github_copilot_model_name": self.github_copilot_model_combobox.get().strip(),
+            "model_name": self.model_name_combobox.get().strip(),
             "temperature": self.temperature_scale.get(),
             "top_p": self.top_p_scale.get(),
             "thinking_budget": thinking_budget_ui_val, # UI에서 가져온 thinking_budget 값
@@ -1398,7 +1582,7 @@ class BatchTranslatorGUI:
     def _start_translation_thread(self, start_new_translation: bool = False): 
         app_service = self.app_service
         if not app_service: return
-
+        
         input_file = self.input_file_entry.get()
         output_file = self.output_file_entry.get()
         
@@ -1406,8 +1590,7 @@ class BatchTranslatorGUI:
             current_ui_config = self._get_config_from_ui()
             app_service.load_app_config(runtime_overrides=current_ui_config)
 
-
-            if not self.app_service.gemini_client:
+            if not self.app_service.llm_client:
                  if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. (인증 정보 확인 필요)\n계속 진행하시겠습니까?"):
                     self.start_button.config(state=tk.NORMAL) 
                     return
@@ -1473,8 +1656,8 @@ class BatchTranslatorGUI:
         try:
             current_ui_config = self._get_config_from_ui()
             app_service.load_app_config(runtime_overrides=current_ui_config)
-
-            if not app_service.gemini_client:
+            
+            if not app_service.llm_client:
                  if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. 계속 진행하시겠습니까?"):
                     return
                  

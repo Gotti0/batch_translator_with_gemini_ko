@@ -24,6 +24,13 @@ try:
     from ..infrastructure.logger_config import setup_logger # Relative import if logger_config is in the same parent package
 except ImportError:
     from infrastructure.logger_config import setup_logger # Absolute for fallback or direct run
+
+# LLM 클라이언트 인터페이스 import
+try:
+    from .llm_client_interface import LLMClientInterface
+except ImportError:
+    from infrastructure.llm_client_interface import LLMClientInterface
+
 logger = setup_logger(__name__)
 
 class GeminiApiException(Exception):
@@ -98,7 +105,7 @@ class ContentFilterException(GeminiContentSafetyException):
 
 
 
-class GeminiClient:
+class GeminiClient(LLMClientInterface):
     _RATE_LIMIT_PATTERNS = [
         "rateLimitExceeded", "429", "Too Many Requests", "QUOTA_EXCEEDED",
         "The model is overloaded", "503", "Service Unavailable", 
@@ -724,79 +731,194 @@ class GeminiClient:
         
         raise GeminiApiException("모델 목록 조회에 실패했습니다 (알 수 없는 내부 오류).")
 
+    # LLMClientInterface 구현 메서드들
+    def generate_completion(
+        self, 
+        messages: List[Dict[str, Any]], 
+        **kwargs
+    ) -> str:
+        """
+        LLMClientInterface의 generate_completion 메서드 구현.
+        
+        메시지 목록을 Gemini 클라이언트에 맞는 형식으로 변환하여 텍스트 생성.
+        """
+        # kwargs에서 필요한 매개변수 추출
+        model_name = kwargs.get("model_name", "gemini-2.0-flash")
+        temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", None)
+        system_instruction = kwargs.get("system_instruction", None)
+        stream = kwargs.get("stream", False)
+        thinking_budget = kwargs.get("thinking_budget", None)
+        
+        # 메시지를 Gemini 형식으로 변환
+        prompt_content = self._convert_messages_to_gemini_format(messages)
+        
+        # generation_config 설정
+        generation_config = {"temperature": temperature}
+        if max_tokens:
+            generation_config["max_output_tokens"] = max_tokens
+        
+        try:
+            result = self.generate_text(
+                prompt=prompt_content,
+                model_name=model_name,
+                generation_config_dict=generation_config,
+                system_instruction_text=system_instruction,
+                thinking_budget=thinking_budget,
+                stream=stream
+            )
+            return result or ""
+        except Exception as e:
+            logger.error(f"generate_completion 실행 중 오류: {e}")
+            raise
+    
+    def get_available_models(self) -> List[str]:
+        """
+        LLMClientInterface의 get_available_models 메서드 구현.
+        
+        사용 가능한 Gemini 모델 목록을 반환.
+        """
+        try:
+            models_info = self.list_models()
+            return [model["short_name"] for model in models_info]
+        except Exception as e:
+            logger.error(f"get_available_models 실행 중 오류: {e}")
+            return []
+    
+    def is_available(self) -> bool:
+        """
+        LLMClientInterface의 is_available 메서드 구현.
+        
+        Gemini 클라이언트가 현재 사용 가능한지 확인.
+        """
+        try:
+            return self.client is not None and (
+                (self.auth_mode == "API_KEY" and bool(self.current_api_key)) or
+                (self.auth_mode == "VERTEX_AI" and bool(self.vertex_credentials))
+            )
+        except Exception:
+            return False
+    
+    def validate_config(self) -> Dict[str, str]:
+        """
+        LLMClientInterface의 validate_config 메서드 구현.
+        
+        Gemini 클라이언트 설정의 유효성을 검사.
+        """
+        errors = {}
+        
+        if not self.client:
+            errors["client"] = "Gemini 클라이언트가 초기화되지 않았습니다."
+        
+        if self.auth_mode == "API_KEY":
+            if not self.api_keys_list or not any(key.strip() for key in self.api_keys_list):
+                errors["api_keys"] = "유효한 API 키가 설정되지 않았습니다."
+        elif self.auth_mode == "VERTEX_AI":
+            if not self.vertex_project:
+                errors["vertex_project"] = "Vertex AI 프로젝트가 설정되지 않았습니다."
+            if not self.vertex_location:
+                errors["vertex_location"] = "Vertex AI 위치가 설정되지 않았습니다."
+            if not self.vertex_credentials:
+                errors["vertex_credentials"] = "Vertex AI 인증 정보가 설정되지 않았습니다."
+        else:
+            errors["auth_mode"] = "인증 모드가 올바르게 설정되지 않았습니다."
+        
+        return errors
+    
+    def supports_streaming(self) -> bool:
+        """Gemini는 스트리밍을 지원합니다."""
+        return True
+    
+    def get_max_context_length(self) -> Optional[int]:
+        """
+        Gemini 모델의 최대 컨텍스트 길이를 반환합니다.
+        
+        모델에 따라 다르지만, 일반적으로 1M 토큰을 지원합니다.
+        """
+        return 1048576  # 1M 토큰 (대부분의 Gemini 모델)
+    
+    def get_supported_formats(self) -> List[str]:
+        """Gemini는 텍스트, 이미지, 오디오를 지원합니다."""
+        return ["text", "image", "audio"]
+    
+    def _convert_messages_to_gemini_format(self, messages: List[Dict[str, Any]]) -> List[genai_types.Content]:
+        """
+        표준 메시지 형식을 Gemini Content 형식으로 변환합니다.
+        
+        Args:
+            messages: [{"role": "user/assistant/system", "content": "text"}] 형식의 메시지 목록
+            
+        Returns:
+            Gemini Content 객체 목록
+        """
+        contents = []
+        
+        for message in messages:
+            role = message.get("role", "user")
+            content = message.get("content", "")
+            
+            # Gemini에서 system 역할은 별도로 처리됨 (system_instruction으로)
+            if role == "system":
+                continue  # system 메시지는 system_instruction 매개변수로 처리
+            elif role == "assistant":
+                gemini_role = "model"
+            else:  # user 또는 기타
+                gemini_role = "user"
+            
+            contents.append(
+                genai_types.Content(                    role=gemini_role,
+                    parts=[genai_types.Part.from_text(text=content)]
+                )
+            )
+        
+        return contents
+
 
 if __name__ == '__main__':
-    # ... (테스트 코드는 이전과 유사하게 유지하되, Client 및 generate_content 호출 방식 변경에 맞춰 수정 필요) ...
+    # Gemini 클라이언트 테스트 코드
     print("Gemini 클라이언트 (신 SDK 패턴) 테스트 시작...")
     logging.basicConfig(level=logging.INFO)  # type: ignore
 
     api_key_single_valid = os.environ.get("TEST_GEMINI_API_KEY_SINGLE_VALID")
-    sa_json_string_valid = os.environ.get("TEST_VERTEX_SA_JSON_STRING_VALID")
-    gcp_project_for_vertex = os.environ.get("TEST_GCP_PROJECT_FOR_VERTEX") 
-    gcp_location_for_vertex_from_env = os.environ.get("TEST_GCP_LOCATION_FOR_VERTEX", "asia-northeast3")
-
-    print("\n--- 시나리오 1: Gemini Developer API (유효한 단일 API 키 - 환경 변수 사용) ---")
+    
     if api_key_single_valid:
-        original_env_key = os.environ.get("GOOGLE_API_KEY")
-        os.environ["GOOGLE_API_KEY"] = api_key_single_valid
+        print(f"  [정보] 단일 API 키 테스트 시작 (키: {api_key_single_valid[:5]}...)")
         try:
-            client_dev_single = GeminiClient() # auth_credentials 없이 환경 변수 사용
-            print(f"  [성공] Gemini Developer API 클라이언트 생성 (환경변수 GOOGLE_API_KEY 사용)")
+            client_single = GeminiClient(auth_credentials=api_key_single_valid)
+            print(f"  [성공] API 키 클라이언트 생성")
             
-            models_dev = client_dev_single.list_models() # type: ignore
-            if models_dev:
-                print(f"  [정보] DEV API 모델 수: {len(models_dev)}. 첫 모델: {models_dev[0].get('display_name', models_dev[0].get('short_name'))}")
-                test_model_name = "gemini-2.0-flash" # 신 SDK에서는 'models/' 접두사 없이 사용 가능할 수 있음
+            models_single = client_single.list_models()
+            if models_single:
+                print(f"  [정보] API 키 모델 수: {len(models_single)}. 첫 모델: {models_single[0].get('display_name', models_single[0].get('short_name')) if models_single else '없음'}")
                 
-                print(f"  [테스트] 텍스트 생성 (모델: {test_model_name})...")
-                # API 키는 Client가 환경 변수에서 가져오거나, 모델 이름에 포함시켜야 함.
-                # 여기서는 Client가 환경 변수를 사용한다고 가정.
-                response = client_dev_single.generate_text("Hello Gemini with new SDK!", model_name=test_model_name)
-                print(f"  [응답] {response[:100] if response else '없음'}...")
+                test_model_name_short = "gemini-2.0-flash"
+                found_model_info = next((m for m in models_single if m.get('short_name') == test_model_name_short), None)
+                
+                if not found_model_info and models_single:
+                    found_model_info = next((m for m in models_single if "text" in m.get("name","").lower() and "vision" not in m.get("name","").lower()), models_single[0])
+
+                if found_model_info:
+                    actual_model_to_test = found_model_info['short_name'] or found_model_info['name']
+                    print(f"  [테스트] 텍스트 생성 (모델: {actual_model_to_test})...")
+                    response = client_single.generate_text("Hello Gemini with new SDK!", model_name=actual_model_to_test)
+                    print(f"  [응답] {response[:100] if response else '없음'}...")
+                    
+                    # LLMClientInterface 메서드 테스트
+                    print(f"  [인터페이스 테스트] 사용 가능 여부: {client_single.is_available()}")
+                    print(f"  [인터페이스 테스트] 클라이언트 타입: {client_single.get_client_type()}")
+                    
+                    # generate_completion 테스트
+                    test_messages = [{"role": "user", "content": "안녕하세요"}]
+                    completion_response = client_single.generate_completion(test_messages, model_name=actual_model_to_test)
+                    print(f"  [인터페이스 테스트] generate_completion 응답: {completion_response[:50] if completion_response else '없음'}...")
+                else:
+                    print(f"  [경고] 텍스트 생성을 위한 적절한 모델을 찾지 못했습니다.")
             else:
-                print("  [경고] DEV API에서 모델 목록을 가져오지 못했습니다.")
+                print("  [경고] API 키로 모델을 가져오지 못했습니다.")
         except Exception as e:
             print(f"  [오류] 시나리오 1: {type(e).__name__} - {e}")
             logger.error("시나리오 1 상세 오류:", exc_info=True)
-        finally:
-            if original_env_key is not None: os.environ["GOOGLE_API_KEY"] = original_env_key
-            else: os.environ.pop("GOOGLE_API_KEY", None)
     else:
         print("  [건너뜀] TEST_GEMINI_API_KEY_SINGLE_VALID 환경 변수 없음.")
-
-    print("\n--- 시나리오 2: Vertex AI API (유효한 서비스 계정 JSON 문자열) ---")
-    if sa_json_string_valid and gcp_project_for_vertex: 
-        try:
-            client_vertex_json_str = GeminiClient(
-                auth_credentials=sa_json_string_valid,
-                project=gcp_project_for_vertex, 
-                location=gcp_location_for_vertex_from_env 
-            )
-            print(f"  [성공] Vertex AI API 클라이언트 생성 (SA JSON, project='{client_vertex_json_str.vertex_project}', location='{client_vertex_json_str.vertex_location}')")
-            
-            models_vertex_json = client_vertex_json_str.list_models()
-            if models_vertex_json:
-                print(f"  [정보] Vertex AI 모델 수: {len(models_vertex_json)}. 첫 모델: {models_vertex_json[0].get('display_name', models_vertex_json[0].get('short_name')) if models_vertex_json else '없음'}")
-                
-                test_vertex_model_name_short = "gemini-1.5-flash-001" # 예시
-                found_vertex_model_info = next((m for m in models_vertex_json if m.get('short_name') == test_vertex_model_name_short), None)
-                
-                if not found_vertex_model_info and models_vertex_json: 
-                    found_vertex_model_info = next((m for m in models_vertex_json if "text" in m.get("name","").lower() and "vision" not in m.get("name","").lower()), models_vertex_json[0])
-
-                if found_vertex_model_info:
-                    actual_vertex_model_to_test = found_vertex_model_info['short_name'] or found_vertex_model_info['name']
-                    print(f"  [테스트] 텍스트 생성 (모델: {actual_vertex_model_to_test})...")
-                    response = client_vertex_json_str.generate_text("Hello Vertex AI with new SDK!", model_name=actual_vertex_model_to_test)
-                    print(f"  [응답] {response[:100] if response else '없음'}...")
-                else:
-                     print(f"  [경고] 텍스트 생성을 위한 적절한 Vertex 모델을 찾지 못했습니다.")
-            else:
-                print("  [경고] Vertex AI에서 모델을 가져오지 못했습니다.")
-        except Exception as e:
-            print(f"  [오류] 시나리오 2: {type(e).__name__} - {e}")
-            logger.error("시나리오 2 상세 오류:", exc_info=True)
-    else:
-        print("  [건너뜀] TEST_VERTEX_SA_JSON_STRING_VALID 또는 TEST_GCP_PROJECT_FOR_VERTEX 환경 변수 없음.")
     
     print("\nGemini 클라이언트 (신 SDK 패턴) 테스트 종료.")
