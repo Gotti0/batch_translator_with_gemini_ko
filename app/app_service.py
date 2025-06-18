@@ -456,11 +456,18 @@ class AppService:
             with self._progress_lock:
                 # 1단계: 먼저 processed_chunks_count 증가
                 self.processed_chunks_count += 1
-                
-                # 2단계: 결과에 따라 성공/실패 카운트 업데이트
+                  # 2단계: 결과에 따라 성공/실패 카운트 업데이트
                 if success:
                     self.successful_chunks_count += 1
-                    # 메타데이터 업데이트
+                    # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
+                    try:
+                        metadata_updated = update_metadata_for_chunk_completion(input_file_path_for_metadata, chunk_index)
+                        if metadata_updated:
+                            logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
+                        else:
+                            logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
+                    except Exception as meta_e:
+                        logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
                 elif not self.stop_requested:
                     self.failed_chunks_count += 1
                 
