@@ -121,6 +121,15 @@ class GeminiClient:
     _VERTEX_AI_SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
 
 
+    def _get_api_key_identifier(self, api_key: str) -> str:
+        """API 키의 안전한 식별자를 반환합니다."""
+        if not self.api_keys_list or api_key not in self.api_keys_list:
+            return f"단일키(...{api_key[-8:]})"
+        
+        key_index = self.api_keys_list.index(api_key)
+        total_keys = len(self.api_keys_list)
+        return f"키#{key_index+1}/{total_keys}(...{api_key[-8:]})"
+
     def __init__(self,
                  auth_credentials: Optional[Union[str, List[str], Dict[str, Any]]] = None,
                  project: Optional[str] = None,
@@ -128,16 +137,12 @@ class GeminiClient:
                  requests_per_minute: Optional[int] = None): # 분당 요청 수 추가
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
 
-        self.client: Optional[genai.Client] = None 
-        # self.generative_model_instance: Optional[genai.GenerativeModel] = None # 모델 인스턴스 저장용
-        self.auth_mode: Optional[str] = None 
+        # Initialize attributes first
         self.api_keys_list: List[str] = []
         self.current_api_key_index: int = 0
         self.current_api_key: Optional[str] = None
-        self.vertex_project: Optional[str] = None
-        self.vertex_location: Optional[str] = None
-        self.vertex_credentials: Optional[ServiceAccountCredentials] = None
-        self._key_rotation_lock = threading.Lock() # For thread-safe key rotation
+        self.client_pool: Dict[str, genai.Client] = {}
+        self._key_rotation_lock = threading.Lock()
 
         self.requests_per_minute = requests_per_minute
         self.delay_between_requests = 0.0
@@ -151,8 +156,33 @@ class GeminiClient:
 
         if isinstance(auth_credentials, list) and all(isinstance(key, str) for key in auth_credentials):
             self.api_keys_list = [key.strip() for key in auth_credentials if key.strip()]
-            if self.api_keys_list:
-                is_api_key_mode = True
+            self.auth_mode = "API_KEY"
+            
+            # 각 API 키에 대해 SDK 클라이언트 인스턴스를 미리 생성
+            successful_keys = []
+            
+            for key_value in self.api_keys_list:
+                try:
+                    sdk_client = genai.Client(api_key=key_value)
+                    self.client_pool[key_value] = sdk_client
+                    successful_keys.append(key_value)
+                    
+                    key_id = self._get_api_key_identifier(key_value)
+                    logger.info(f"API {key_id}에 대한 SDK 클라이언트 생성 성공.")
+                except Exception as e_sdk_init:
+                    key_id = self._get_api_key_identifier(key_value)
+                    logger.warning(f"API {key_id}에 대한 SDK 클라이언트 생성 실패: {e_sdk_init}")
+            
+            if not successful_keys:
+                raise GeminiAllApiKeysExhaustedException("제공된 모든 API 키에 대해 SDK 클라이언트를 초기화하지 못했습니다.")
+            
+            self.api_keys_list = successful_keys # Use only keys for which clients were created
+            self.current_api_key_index = 0
+            self.current_api_key = self.api_keys_list[self.current_api_key_index]
+            self.client = self.client_pool.get(self.current_api_key) # Get the first valid client
+            if not self.client: # Should not happen if successful_keys is not empty
+                raise GeminiAllApiKeysExhaustedException("초기 클라이언트 설정에 실패했습니다 (풀에서 클라이언트를 찾을 수 없음).")
+            logger.info(f"API 키 모드 설정 완료. 활성 클라이언트 풀 크기: {len(self.client_pool)}. 현재 사용 키: {key_id}")
         elif isinstance(auth_credentials, str):
             try:
                 parsed_json = json.loads(auth_credentials)
