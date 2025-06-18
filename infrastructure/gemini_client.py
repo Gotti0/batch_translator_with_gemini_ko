@@ -134,31 +134,40 @@ class GeminiClient:
                  auth_credentials: Optional[Union[str, List[str], Dict[str, Any]]] = None,
                  project: Optional[str] = None,
                  location: Optional[str] = None,
-                 requests_per_minute: Optional[int] = None): # 분당 요청 수 추가
+                 requests_per_minute: Optional[int] = None):
+        
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
-
-        # Initialize attributes first
+        
+        # Initialize all attributes first
+        self.auth_mode: Optional[str] = None
+        self.client: Optional[genai.Client] = None
         self.api_keys_list: List[str] = []
         self.current_api_key_index: int = 0
         self.current_api_key: Optional[str] = None
         self.client_pool: Dict[str, genai.Client] = {}
         self._key_rotation_lock = threading.Lock()
-
-        self.requests_per_minute = requests_per_minute
-        self.delay_between_requests = 0.0
-        if self.requests_per_minute and self.requests_per_minute > 0:
-            self.delay_between_requests = 60.0 / self.requests_per_minute
-        self.last_request_timestamp = 0.0  # time.monotonic() 사용
+        
+        # Vertex AI related attributes
+        self.vertex_credentials: Optional[Any] = None
+        self.vertex_project: Optional[str] = None
+        self.vertex_location: Optional[str] = None
+        
+        # RPM control
+        self.requests_per_minute = requests_per_minute or 140
+        self.last_request_timestamp = 0.0
         self._rpm_lock = threading.Lock()
 
+        # Determine authentication mode and process credentials
         service_account_info: Optional[Dict[str, Any]] = None
         is_api_key_mode = False
 
         if isinstance(auth_credentials, list) and all(isinstance(key, str) for key in auth_credentials):
+            # Multiple API keys provided
             self.api_keys_list = [key.strip() for key in auth_credentials if key.strip()]
             self.auth_mode = "API_KEY"
+            is_api_key_mode = True
             
-            # 각 API 키에 대해 SDK 클라이언트 인스턴스를 미리 생성
+            # Create client instances for each API key
             successful_keys = []
             
             for key_value in self.api_keys_list:
@@ -173,17 +182,20 @@ class GeminiClient:
                     key_id = self._get_api_key_identifier(key_value)
                     logger.warning(f"API {key_id}에 대한 SDK 클라이언트 생성 실패: {e_sdk_init}")
             
-            if not successful_keys:
-                raise GeminiAllApiKeysExhaustedException("제공된 모든 API 키에 대해 SDK 클라이언트를 초기화하지 못했습니다.")
-            
-            self.api_keys_list = successful_keys # Use only keys for which clients were created
-            self.current_api_key_index = 0
-            self.current_api_key = self.api_keys_list[self.current_api_key_index]
-            self.client = self.client_pool.get(self.current_api_key) # Get the first valid client
-            if not self.client: # Should not happen if successful_keys is not empty
-                raise GeminiAllApiKeysExhaustedException("초기 클라이언트 설정에 실패했습니다 (풀에서 클라이언트를 찾을 수 없음).")
-            logger.info(f"API 키 모드 설정 완료. 활성 클라이언트 풀 크기: {len(self.client_pool)}. 현재 사용 키: {key_id}")
+            if successful_keys:
+                self.api_keys_list = successful_keys
+                self.current_api_key_index = 0
+                self.current_api_key = self.api_keys_list[self.current_api_key_index]
+                self.client = self.client_pool.get(self.current_api_key)
+                
+                key_id = self._get_api_key_identifier(self.current_api_key)
+                logger.info(f"API 키 모드 설정 완료. 활성 클라이언트 풀 크기: {len(self.client_pool)}. 현재 사용 키: {key_id}")
+            else:
+                logger.error("모든 API 키에 대한 클라이언트 생성이 실패했습니다.")
+                raise GeminiInvalidRequestException("제공된 API 키들로 유효한 클라이언트를 생성할 수 없습니다.")
+
         elif isinstance(auth_credentials, str):
+            # Single API key or service account JSON string
             try:
                 parsed_json = json.loads(auth_credentials)
                 if isinstance(parsed_json, dict) and parsed_json.get("type") == "service_account":
@@ -196,146 +208,127 @@ class GeminiClient:
                 if auth_credentials.strip():
                     self.api_keys_list = [auth_credentials.strip()]
                     is_api_key_mode = True
+
         elif isinstance(auth_credentials, dict) and auth_credentials.get("type") == "service_account":
             service_account_info = auth_credentials
 
+        # Handle Vertex AI mode
         use_vertex_env_str = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower()
         explicit_vertex_flag = use_vertex_env_str == "true"
 
         if service_account_info: 
-            self.auth_mode = "VERTEX_AI"
-            logger.info("서비스 계정 정보 감지. Vertex AI 모드로 설정 시도.")
-            try:
-                self.vertex_credentials = ServiceAccountCredentials.from_service_account_info(
-                    service_account_info,
-                    scopes=self._VERTEX_AI_SCOPES
-                )
-                logger.info(f"서비스 계정 정보로부터 Credentials 객체 생성 완료 (범위: {self._VERTEX_AI_SCOPES}).")
-            except Exception as e_sa_cred:
-                logger.error(f"서비스 계정 정보로 Credentials 객체 생성 중 오류: {e_sa_cred}", exc_info=True)
-                raise GeminiInvalidRequestException(f"서비스 계정 인증 정보 처리 중 오류: {e_sa_cred}") from e_sa_cred
-
-            self.vertex_project = project or service_account_info.get("project_id") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-            self.vertex_location = location or os.environ.get("GOOGLE_CLOUD_LOCATION") or "asia-northeast3" 
-            if not self.vertex_project:
-                raise GeminiInvalidRequestException("Vertex AI 사용 시 프로젝트 ID가 필수입니다 (인자, SA JSON, 또는 GOOGLE_CLOUD_PROJECT 환경 변수).")
-            if not self.vertex_location:
-                raise GeminiInvalidRequestException("Vertex AI 사용 시 위치(location)가 필수입니다.")
-            logger.info(f"Vertex AI 모드 설정: project='{self.vertex_project}', location='{self.vertex_location}'")
+            # Vertex AI with service account
+            self._setup_vertex_ai_with_service_account(service_account_info, project, location)
         elif explicit_vertex_flag: 
-            self.auth_mode = "VERTEX_AI"
-            logger.info("GOOGLE_GENAI_USE_VERTEXAI=true 감지. Vertex AI 모드로 설정 (ADC 또는 환경 기반 인증 기대).")
-            self.vertex_project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
-            self.vertex_location = location or os.environ.get("GOOGLE_CLOUD_LOCATION") or "asia-northeast3"
-            if not self.vertex_project:
-                raise GeminiInvalidRequestException("Vertex AI 사용 시 프로젝트 ID가 필수입니다 (인자 또는 GOOGLE_CLOUD_PROJECT 환경 변수).")
-            if not self.vertex_location: 
-                raise GeminiInvalidRequestException("Vertex AI 사용 시 위치(location)가 필수입니다.")
-            logger.info(f"Vertex AI 모드 (ADC) 설정: project='{self.vertex_project}', location='{self.vertex_location}'")
+            # Vertex AI with ADC
+            self._setup_vertex_ai_with_adc(project, location)
         elif is_api_key_mode:
-            self.auth_mode = "API_KEY"
-            if not self.api_keys_list:
-                raise GeminiInvalidRequestException("API 키 모드이지만 유효한 API 키가 제공되지 않았습니다.")
-            
-            self.client_pool: Dict[str, genai.Client] = {}
-            successful_keys = []
-            for key_value in self.api_keys_list:
-                try:
-                    # Attempt to create an SDK client instance for each key
-                    sdk_client = genai.Client(api_key=key_value)
-                    self.client_pool[key_value] = sdk_client
-                    successful_keys.append(key_value)
-                    
-                    key_id = self._get_api_key_identifier(key_value)
-                    logger.info(f"API {key_id}에 대한 SDK 클라이언트 생성 성공.")
-                except Exception as e_sdk_init:
-                    key_id = self._get_api_key_identifier(key_value)
-                    logger.warning(f"API {key_id}에 대한 SDK 클라이언트 생성 실패: {e_sdk_init}")
-            
-            if not successful_keys:
-                raise GeminiAllApiKeysExhaustedException("제공된 모든 API 키에 대해 SDK 클라이언트를 초기화하지 못했습니다.")
-            
-            self.api_keys_list = successful_keys # Use only keys for which clients were created
-            self.current_api_key_index = 0
-            self.current_api_key = self.api_keys_list[self.current_api_key_index]
-            self.client = self.client_pool.get(self.current_api_key) # Get the first valid client
-            if not self.client: # Should not happen if successful_keys is not empty
-                raise GeminiAllApiKeysExhaustedException("초기 클라이언트 설정에 실패했습니다 (풀에서 클라이언트를 찾을 수 없음).")
-            logger.info(f"API 키 모드 설정 완료. 활성 클라이언트 풀 크기: {len(self.client_pool)}. 현재 사용 키: {key_id}")
-        elif os.environ.get("GOOGLE_API_KEY"): 
-            env_api_key = os.environ.get("GOOGLE_API_KEY","").strip()
-            if env_api_key:
-                self.auth_mode = "API_KEY"
-                self.api_keys_list = [env_api_key] # 환경 변수 키를 목록의 첫 번째로 사용
-                self.current_api_key = self.api_keys_list[0]
-                logger.info(f"GOOGLE_API_KEY 환경 변수 사용. 키: {self.current_api_key[:5]}...")
-                # For environment variable key, initialize the client directly
-                # and the pool will contain this single client.
-                try:
-                    self.client = genai.Client(api_key=self.current_api_key) # Or genai.Client() if it picks up env var
-                    self.client_pool = {self.current_api_key: self.client}
-                    logger.info(f"환경 변수 API 키 '{self.current_api_key[:7]}...'에 대한 SDK 클라이언트 생성 성공.")
-                except Exception as e_sdk_init_env:
-                    logger.error(f"환경 변수 API 키 '{self.current_api_key[:7]}...'로 SDK 클라이언트 생성 실패: {e_sdk_init_env}")
-                    raise GeminiInvalidRequestException(f"환경 변수 API 키로 클라이언트 초기화 실패: {e_sdk_init_env}") from e_sdk_init_env
-            else: 
-                raise GeminiInvalidRequestException("GOOGLE_API_KEY 환경 변수가 설정되어 있으나 값이 비어있습니다.")
+            # API Key mode
+            self._setup_api_key_mode()
+        elif os.environ.get("GOOGLE_API_KEY"):
+            # Environment variable API key
+            self._setup_environment_api_key()
         else:
             raise GeminiInvalidRequestException("클라이언트 초기화를 위한 유효한 인증 정보(API 키 또는 서비스 계정)를 찾을 수 없습니다.")
 
+        # Final client initialization
         try:
             if self.auth_mode == "VERTEX_AI":
-                # 신 SDK에서 Vertex AI Client 초기화 방식 확인 필요
-                # 마이그레이션 가이드에 따르면 genai.Client(vertexai=True, project=...) 형태일 수 있음
-                # 또는 vertexai.init(project=...) 후 genai.Client() 일 수도 있음
-                # 우선은 project, location, credentials를 직접 전달 시도
-                client_options = {}
-                if self.vertex_project: client_options['project'] = self.vertex_project
-                if self.vertex_location: client_options['location'] = self.vertex_location
-                if self.vertex_credentials: client_options['credentials'] = self.vertex_credentials
-                client_options['vertexai'] = True
-                
-                # google-genai SDK에서는 Client()가 project, location 등을 직접 받지 않을 수 있음.
-                # 이 경우, vertexai.init() 등을 사용해야 할 수 있음.
-                # 우선은 이전 google.generativeai SDK의 Client와 유사하게 시도.
-                self.client = genai.Client(**client_options)
-                logger.info(f"Vertex AI용 Client 초기화 시도: {client_options}")
+                self._initialize_vertex_client()
             elif self.auth_mode == "API_KEY":
-                # API 키 모드에서는 Client()가 API 키를 직접 받지 않을 가능성이 높음.
-                # GOOGLE_API_KEY 환경 변수를 사용하거나,
-                # self.client is already set from the client_pool or env var initialization
-                if not self.client: # Should have been set if API_KEY mode was successful
-                    raise GeminiInvalidRequestException("API 키 모드이지만 self.client가 초기화되지 않았습니다.")
-                logger.info(f"Gemini Developer API용 Client 초기화 (API 키는 환경 변수 또는 호출 시 전달 가정).")
-            else: 
-                raise GeminiInvalidRequestException("클라이언트 초기화 로직 오류: 인증 모드가 설정되었으나 필요한 정보가 부족합니다.")
-        except AttributeError as e_attr: # 'Client' 클래스 또는 인자 관련 오류
-             logger.error(f"Client 초기화 중 AttributeError: {e_attr}. 'from google import genai'로 가져온 모듈에 Client 클래스가 없거나, 인자가 다를 수 있습니다.", exc_info=True)
-             raise GeminiInvalidRequestException(f"SDK Client 초기화 실패 (AttributeError): {e_attr}") from e_attr
-        except GoogleAuthError as auth_e:
-            logger.error(f"Gemini 클라이언트 인증 오류: {auth_e}", exc_info=True)
-            if isinstance(auth_e, RefreshError) and 'invalid_scope' in str(auth_e).lower():
-                 logger.error(f"OAuth 범위 문제로 인한 인증 실패 가능성: {auth_e}")
-                 raise GeminiInvalidRequestException(f"클라이언트 인증 실패 (OAuth 범위 문제 가능성): {auth_e}") from auth_e
-            raise GeminiInvalidRequestException(f"클라이언트 인증 실패: {auth_e}") from auth_e
-        except Exception as e: 
-            logger.error(f"Gemini API 클라이언트 생성 중 예상치 못한 오류: {type(e).__name__} - {e}", exc_info=True)
-            raise GeminiInvalidRequestException(f"Gemini API 클라이언트 생성 실패: {e}") from e
+                self._initialize_api_key_client()
+        except Exception as e:
+            logger.error(f"클라이언트 초기화 실패: {e}", exc_info=True)
+            raise
 
-    def _normalize_model_name(self, model_name: str, for_api_key_mode: bool = False) -> str:
-        """
-        모델명을 정규화합니다.
-        새 SDK에서는 API 키를 모델명에 포함시키지 않습니다.
-        """
-        # API 키 모드에서는 간단한 모델명만 사용
-        if for_api_key_mode:
-            # "models/" 접두사가 있으면 제거
-            if model_name.startswith("models/"):
-                return model_name.split("/")[-1]
-            return model_name
+    def _setup_api_key_mode(self):
+        """API 키 모드 설정"""
+        self.auth_mode = "API_KEY"
         
-        # Vertex AI에서는 전체 경로 또는 간단한 모델명 모두 허용
-        return model_name
+        if not self.client and self.api_keys_list:
+            # Single API key case - create client
+            api_key = self.api_keys_list[0]
+            try:
+                self.client = genai.Client(api_key=api_key)
+                self.current_api_key = api_key
+                self.current_api_key_index = 0
+                
+                key_id = self._get_api_key_identifier(api_key)
+                logger.info(f"단일 API 키 모드 설정 완료: {key_id}")
+            except Exception as e:
+                logger.error(f"단일 API 키 클라이언트 생성 실패: {e}")
+                raise GeminiInvalidRequestException(f"API 키로 클라이언트 생성 실패: {e}")
+
+    def _setup_environment_api_key(self):
+        """환경 변수 API 키 설정"""
+        self.auth_mode = "API_KEY"
+        env_api_key = os.environ.get("GOOGLE_API_KEY")
+        
+        try:
+            self.client = genai.Client()  # Environment variable will be used
+            self.current_api_key = env_api_key
+            self.api_keys_list = [env_api_key] if env_api_key else []
+            
+            logger.info(f"환경 변수 API 키로 클라이언트 생성 성공: ...{env_api_key[-8:] if env_api_key else 'N/A'}")
+        except Exception as e:
+            logger.error(f"환경 변수 API 키 클라이언트 생성 실패: {e}")
+            raise GeminiInvalidRequestException(f"환경 변수 API 키로 클라이언트 생성 실패: {e}")
+
+    def _initialize_api_key_client(self):
+        """API 키 클라이언트 최종 초기화"""
+        if not self.client:
+            logger.info("Gemini Developer API용 Client 초기화 (API 키는 환경 변수 또는 호출 시 전달 가정).")
+        else:
+            logger.info("API 키 클라이언트가 이미 초기화되었습니다.")
+
+    def _setup_vertex_ai_with_service_account(self, service_account_info: Dict[str, Any], project: Optional[str], location: Optional[str]):
+        """서비스 계정 정보를 사용하여 Vertex AI 모드 설정"""
+        self.auth_mode = "VERTEX_AI"
+        logger.info("서비스 계정 정보 감지. Vertex AI 모드로 설정 시도.")
+        try:
+            self.vertex_credentials = ServiceAccountCredentials.from_service_account_info(
+                service_account_info,
+                scopes=self._VERTEX_AI_SCOPES
+            )
+            logger.info(f"서비스 계정 정보로부터 Credentials 객체 생성 완료 (범위: {self._VERTEX_AI_SCOPES}).")
+        except Exception as e_sa_cred:
+            logger.error(f"서비스 계정 정보로 Credentials 객체 생성 중 오류: {e_sa_cred}", exc_info=True)
+            raise GeminiInvalidRequestException(f"서비스 계정 인증 정보 처리 중 오류: {e_sa_cred}") from e_sa_cred
+
+        self.vertex_project = project or service_account_info.get("project_id") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        self.vertex_location = location or os.environ.get("GOOGLE_CLOUD_LOCATION") or "asia-northeast3" 
+        if not self.vertex_project:
+            raise GeminiInvalidRequestException("Vertex AI 사용 시 프로젝트 ID가 필수입니다 (인자, SA JSON, 또는 GOOGLE_CLOUD_PROJECT 환경 변수).")
+        if not self.vertex_location:
+            raise GeminiInvalidRequestException("Vertex AI 사용 시 위치(location)가 필수입니다.")
+        logger.info(f"Vertex AI 모드 설정: project='{self.vertex_project}', location='{self.vertex_location}'")
+
+    def _setup_vertex_ai_with_adc(self, project: Optional[str], location: Optional[str]):
+        """ADC (Application Default Credentials)를 사용하여 Vertex AI 모드 설정"""
+        self.auth_mode = "VERTEX_AI"
+        logger.info("GOOGLE_GENAI_USE_VERTEXAI=true 감지. Vertex AI 모드로 설정 (ADC 또는 환경 기반 인증 기대).")
+        self.vertex_project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        self.vertex_location = location or os.environ.get("GOOGLE_CLOUD_LOCATION") or "asia-northeast3"
+        if not self.vertex_project:
+            raise GeminiInvalidRequestException("Vertex AI 사용 시 프로젝트 ID가 필수입니다 (인자 또는 GOOGLE_CLOUD_PROJECT 환경 변수).")
+        if not self.vertex_location: 
+            raise GeminiInvalidRequestException("Vertex AI 사용 시 위치(location)가 필수입니다.")
+        logger.info(f"Vertex AI 모드 (ADC) 설정: project='{self.vertex_project}', location='{self.vertex_location}'")
+
+    def _initialize_vertex_client(self):
+        """Vertex AI 클라이언트 초기화"""
+        client_options = {}
+        if self.vertex_project: client_options['project'] = self.vertex_project
+        if self.vertex_location: client_options['location'] = self.vertex_location
+        if self.vertex_credentials: client_options['credentials'] = self.vertex_credentials
+        client_options['vertexai'] = True
+        
+        # google-genai SDK에서는 Client()가 project, location 등을 직접 받지 않을 수 있음.
+        # 이 경우, vertexai.init() 등을 사용해야 할 수 있음.
+        # 우선은 이전 google.generativeai SDK의 Client와 유사하게 시도.
+        self.client = genai.Client(**client_options)
+        logger.info(f"Vertex AI용 Client 초기화 시도: {client_options}")
+
 
     def _apply_rpm_delay(self):
         """요청 속도 제어를 위한 지연 적용"""
