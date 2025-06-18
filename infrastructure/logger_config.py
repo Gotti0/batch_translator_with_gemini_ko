@@ -58,18 +58,33 @@ def setup_logger(
     if log_to_file:
         if log_file is None:
             log_file = Path(DEFAULT_LOG_FILENAME)
-        
-        # 로그 파일 디렉토리 생성 (존재하지 않는 경우)
+          # 로그 파일 디렉토리 생성 (존재하지 않는 경우)
         log_file.parent.mkdir(parents=True, exist_ok=True)
+          # 파일 핸들러 (Windows 멀티프로세스 환경을 위한 ConcurrentRotatingFileHandler 시도)
+        try:
+            # Windows에서 멀티프로세스 안전한 로그 핸들러 시도
+            from concurrent_log_handler import ConcurrentRotatingFileHandler
+            file_handler = ConcurrentRotatingFileHandler(
+                log_file, 
+                maxBytes=max_bytes, 
+                backupCount=backup_count,
+                encoding='utf-8',
+                delay=True
+            )
+        except ImportError:
+            # concurrent-log-handler가 설치되지 않은 경우 기본 핸들러 사용
+            # Windows 멀티프로세스 환경에서는 파일명에 프로세스 ID 추가로 충돌 방지
+            import os
+            process_id = os.getpid()
+            log_file_with_pid = log_file.parent / f"{log_file.stem}_{process_id}{log_file.suffix}"
             
-        # 파일 핸들러 (RotatingFileHandler 사용)
-        file_handler = RotatingFileHandler(
-            log_file, 
-            maxBytes=max_bytes, 
-            backupCount=backup_count,
-            encoding='utf-8',
-            delay=True  # 파일 열기를 지연시켜 동시 접근 문제 완화 시도
-        )
+            file_handler = RotatingFileHandler(
+                log_file_with_pid, 
+                maxBytes=max_bytes, 
+                backupCount=backup_count,
+                encoding='utf-8',
+                delay=True
+            )
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
         # logger.debug(f"File handler added to logger '{logger_name}' for file '{log_file}'.")
