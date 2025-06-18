@@ -473,10 +473,13 @@ class GeminiClient:
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
                             threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                    ]
+                        ),                    ]
                     final_generation_config_params['safety_settings'] = forced_safety_settings
                     
+                    # response_schema 디버깅 로깅 추가
+                    if 'response_schema' in final_generation_config_params:
+                        logger.debug(f"response_schema 내용: {final_generation_config_params['response_schema']}")
+                        logger.debug(f"response_schema 타입: {type(final_generation_config_params['response_schema'])}")
 
                     
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None

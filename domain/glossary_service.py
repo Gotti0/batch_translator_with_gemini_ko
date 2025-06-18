@@ -131,14 +131,14 @@ class SimpleGlossaryService:
     ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
         """
         단일 텍스트 세그먼트에서 Gemini API를 사용하여 용어집 항목들을 추출합니다.
-        GeminiClient의 내장 재시도 로직을 활용합니다.       
-        """
+        GeminiClient의 내장 재시도 로직을 활용합니다.         """
         prompt = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
-        model_name = self.config.get("model_name", "gemini-2.0-flash")
-        generation_config_params = { # 변수명 변경 (선택 사항이지만, 명확성을 위해)
+        model_name = self.config.get("model_name", "gemini-2.0-flash")        # 새로운 google-genai SDK의 올바른 구조화된 출력 방식
+        # 문서: https://ai.google.dev/gemini-api/docs/structured-output?hl=ko
+        generation_config_params = { 
             "temperature": self.config.get("glossary_extraction_temperature", 0.3),
             "response_mime_type": "application/json",
-            "response_schema": List[ApiGlossaryTerm] # 구조화된 출력 스키마
+            "response_schema": list[ApiGlossaryTerm]  # Pydantic 모델을 직접 전달
         }
 
         try:
