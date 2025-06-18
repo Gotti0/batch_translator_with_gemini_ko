@@ -130,6 +130,33 @@ class GeminiClient:
         total_keys = len(self.api_keys_list)
         return f"키#{key_index+1}/{total_keys}(...{api_key[-8:]})"
 
+    def _normalize_model_name(self, model_name: str, for_api_key_mode: bool = False) -> str:
+        """
+        모델명을 정규화합니다.
+        API 키 모드에서는 모델명에 API 키를 포함시킬 수 있습니다.
+        
+        Args:
+            model_name: 원본 모델명
+            for_api_key_mode: API 키 모드인지 여부
+            
+        Returns:
+            정규화된 모델명
+        """
+        if not model_name:
+            raise ValueError("모델명이 제공되지 않았습니다.")
+        
+        # API 키 모드에서 현재 API 키를 모델명에 포함
+        if for_api_key_mode and self.current_api_key:
+            # google-genai SDK에서는 모델명에 API 키를 직접 포함시키지 않을 수 있음
+            # 대신 Client 인스턴스가 API 키를 관리
+            # 여기서는 단순히 모델명을 반환하되, 로그용으로 키 정보를 포함
+            key_id = self._get_api_key_identifier(self.current_api_key)
+            logger.debug(f"모델명 정규화: '{model_name}' (사용 키: {key_id})")
+            return model_name
+        
+        # Vertex AI 모드 또는 환경 변수 API 키 모드에서는 모델명 그대로 사용
+        return model_name
+
     def __init__(self,
                  auth_credentials: Optional[Union[str, List[str], Dict[str, Any]]] = None,
                  project: Optional[str] = None,
