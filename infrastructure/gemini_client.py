@@ -358,18 +358,27 @@ class GeminiClient:
 
 
     def _apply_rpm_delay(self):
-        """요청 속도 제어를 위한 지연 적용"""
-        if self.delay_between_requests > 0:
-            with self._rpm_lock:
-                current_time = time.monotonic()
-                time_since_last_request = current_time - self.last_request_timestamp
-                if time_since_last_request < self.delay_between_requests:
-                    sleep_duration = self.delay_between_requests - time_since_last_request
-                    if sleep_duration > 0: # 음수 sleep 방지
-                        logger.debug(f"RPM: {self.requests_per_minute}, Sleeping for {sleep_duration:.3f}s.")
-                        time.sleep(sleep_duration)
-                self.last_request_timestamp = time.monotonic() # 실제 요청 직전 또는 직후에 업데이트 (여기서는 sleep 후)
+        """요청 속도 제어를 위한 지연 적용 (동시성 개선)"""
+        if self.delay_between_requests <= 0:
+            return
 
+        sleep_time = 0
+        with self._rpm_lock:
+            current_time = time.time()
+            
+            # 다음 요청이 가능한 가장 빠른 시간을 계산합니다.
+            # (이전 요청 예약 시간 + 딜레이)와 현재 시간 중 더 나중의 시간을 선택하여,
+            # 여러 스레드가 동시에 요청할 때 순차적으로 실행되도록 예약합니다.
+            next_slot = max(self.last_request_timestamp + self.delay_between_requests, current_time)
+            
+            sleep_time = next_slot - current_time
+            
+            # 현재 요청이 실행될 예약 시간을 다음 요청을 위해 기록합니다.
+            self.last_request_timestamp = next_slot
+
+        if sleep_time > 0:
+            logger.debug(f"RPM: {self.requests_per_minute}, Sleeping for {sleep_time:.3f}s to maintain rate limit.")
+            time.sleep(sleep_time)
 
     def _is_rate_limit_error(self, error_obj: Any) -> bool:
         from google.api_core import exceptions as gapi_exceptions
