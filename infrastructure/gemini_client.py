@@ -377,7 +377,13 @@ class GeminiClient:
             self.last_request_timestamp = next_slot
 
         if sleep_time > 0:
-            logger.debug(f"RPM: {self.requests_per_minute}, Sleeping for {sleep_time:.3f}s to maintain rate limit.")
+            # [[가이드]] sleep_time이 1초 이상일 경우, INFO 레벨로 로깅하여 지연 상황을 쉽게 인지하도록 함
+            log_level = logging.INFO if sleep_time >= 1.0 else logging.DEBUG
+            
+            # 예약된 시작 시간 로깅 추가
+            scheduled_start_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.last_request_timestamp))
+            
+            logger.log(log_level, f"RPM({self.requests_per_minute}) 제어: 다음 요청까지 {sleep_time:.3f}초 대기합니다. (예약된 시작: {scheduled_start_time_str})")
             time.sleep(sleep_time)
 
     def _is_rate_limit_error(self, error_obj: Any) -> bool:
@@ -576,19 +582,6 @@ class GeminiClient:
                             # system_instruction 파라미터 제거
                         )
 
-                        # [[가이드]] 응답 객체 전체 분석 로깅 추가
-                        logger.debug("비스트리밍 API 응답 객체 속성:")
-                        for attr_name in dir(response):
-                            if not attr_name.startswith('_'):
-                                try:
-                                    attr_value = getattr(response, attr_name)
-                                    # 값의 길이가 너무 길면 일부만 로깅
-                                    value_str = str(attr_value)
-                                    if len(value_str) > 200:
-                                        value_str = value_str[:200] + "..."
-                                    logger.debug(f"  response.{attr_name}: {value_str}")
-                                except Exception:
-                                    logger.debug(f"  response.{attr_name}: <접근 불가>")
                         
                         # 구조화된 출력 (스키마 사용 시) 처리
                         if sdk_generation_config and sdk_generation_config.response_schema and \
@@ -701,7 +694,9 @@ class GeminiClient:
 
 
     def _rotate_api_key_and_reconfigure(self) -> bool:
+        logger.debug("API 키 회전: 락 획득 대기 중...")
         with self._key_rotation_lock:
+            logger.debug("API 키 회전: 락 획득.")
             if not self.api_keys_list or len(self.api_keys_list) <= 1: # No keys or only one successful key
                 logger.warning("API 키 목록이 비어있거나 단일 유효 키만 있어 회전할 수 없습니다.")
                 # If only one key, and it failed, there's nothing to rotate to.
@@ -729,6 +724,7 @@ class GeminiClient:
             
             logger.error("유효한 다음 API 키로 회전하지 못했습니다. 모든 풀의 클라이언트가 유효하지 않을 수 있습니다.")
             self.client = None # No valid client found after trying all pooled keys
+            logger.debug("API 키 회전: 락 해제.")
             return False
 
     def list_models(self) -> List[Dict[str, Any]]:
