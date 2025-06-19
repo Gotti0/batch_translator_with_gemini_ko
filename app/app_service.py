@@ -713,13 +713,34 @@ class AppService:
 
             final_merged_chunks: Dict[int, str] = {}
             if resume_translation and final_output_file_path_obj.exists(): 
-                logger.info(f"이전 번역 결과 파일 '{final_output_file_path_obj}'에서 청크를 로드합니다.")
-                try:
-                    previously_translated_chunks_from_main_output = load_chunks_from_file(final_output_file_path_obj)
-                    final_merged_chunks.update(previously_translated_chunks_from_main_output)
-                    logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨.")
-                except Exception as e:
-                    logger.error(f"이전 최종 출력 파일 '{final_output_file_path_obj}' 로드 중 오류: {e}. 이전 내용은 병합되지 않을 수 있습니다.", exc_info=True)
+                # ✅ 개선: 먼저 청크 인덱스가 있는 파일(.chunked.txt)에서 로드 시도
+                chunked_file_path = final_output_file_path_obj.with_suffix('.chunked.txt')
+                
+                if chunked_file_path.exists():
+                    logger.info(f"이전 번역 결과를 청크 파일 '{chunked_file_path}'에서 로드합니다.")
+                    try:
+                        previously_translated_chunks_from_main_output = load_chunks_from_file(chunked_file_path)
+                        final_merged_chunks.update(previously_translated_chunks_from_main_output)
+                        logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨 (청크 파일에서).")
+                    except Exception as e:
+                        logger.error(f"청크 파일 '{chunked_file_path}' 로드 중 오류: {e}. 메인 파일에서 시도합니다.", exc_info=True)
+                        # 청크 파일 로드 실패 시 메인 파일에서 시도
+                        try:
+                            logger.info(f"메인 번역 파일 '{final_output_file_path_obj}'에서 청크 로드를 시도합니다.")
+                            previously_translated_chunks_from_main_output = load_chunks_from_file(final_output_file_path_obj)
+                            final_merged_chunks.update(previously_translated_chunks_from_main_output)
+                            logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨 (메인 파일에서).")
+                        except Exception as e2:
+                            logger.error(f"메인 파일 '{final_output_file_path_obj}' 로드 중 오류: {e2}. 이전 내용은 병합되지 않을 수 있습니다.", exc_info=True)
+                else:
+                    # 청크 파일이 없으면 메인 파일에서 시도
+                    logger.info(f"청크 파일이 없습니다. 메인 번역 파일 '{final_output_file_path_obj}'에서 청크 로드를 시도합니다.")
+                    try:
+                        previously_translated_chunks_from_main_output = load_chunks_from_file(final_output_file_path_obj)
+                        final_merged_chunks.update(previously_translated_chunks_from_main_output)
+                        logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨 (메인 파일에서).")
+                    except Exception as e:
+                        logger.error(f"메인 파일 '{final_output_file_path_obj}' 로드 중 오류: {e}. 이전 내용은 병합되지 않을 수 있습니다.", exc_info=True)
 
             final_merged_chunks.update(newly_translated_chunks) 
             logger.info(f"{len(newly_translated_chunks)}개의 새 청크 추가/덮어쓰기됨. 총 {len(final_merged_chunks)} 청크 병합 준비 완료.")
@@ -812,28 +833,6 @@ class AppService:
         finally:
             with self._translation_lock:
                 self.is_translation_running = False
-
-        try:
-            # 1단계: 청크 내용 후처리 (청크 인덱스는 유지)
-            logger.info("번역 결과 청크 내용 후처리 시작...")
-            processed_chunks = self.post_processing_service.post_process_merged_chunks(final_merged_chunks)
-            
-            # 2단계: 후처리된 청크들을 파일에 저장 (청크 인덱스 포함)
-            save_merged_chunks_to_file(final_output_file_path_obj, processed_chunks)
-            logger.info(f"후처리된 번역 결과가 '{final_output_file_path_obj}'에 저장되었습니다.")
-            
-            # 3단계: 최종 파일에서 청크 인덱스 마커들 제거
-            logger.info("최종 파일에서 청크 인덱스 제거 중...")
-            index_removal_success = self.post_processing_service.remove_chunk_indexes_from_final_file(final_output_file_path_obj)
-            
-            if index_removal_success:
-                logger.info(f"최종 후처리 완료: '{final_output_file_path_obj}' (청크 인덱스 제거됨)")
-            else:
-                logger.warning(f"청크 인덱스 제거에 실패했지만 번역 파일은 저장됨: '{final_output_file_path_obj}'")
-            
-        except Exception as e:
-            logger.error(f"최종 번역 결과 파일 '{final_output_file_path_obj}' 저장 중 오류: {e}", exc_info=True)
-            raise BtgFileHandlerException(f"최종 출력 파일 저장 오류: {e}", original_exception=e)
 
     def request_stop_translation(self):
         if self.is_translation_running:
