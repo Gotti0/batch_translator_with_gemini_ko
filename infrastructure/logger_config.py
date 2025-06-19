@@ -6,7 +6,7 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 DEFAULT_LOG_FILENAME = "btg_app.log"
-DEFAULT_LOG_LEVEL = logging.DEBUG
+DEFAULT_LOG_LEVEL = logging.INFO  # 기본 로깅 레벨
 DEFAULT_LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 DEFAULT_MAX_BYTES = 10*1024*1024  # 10 MB
 DEFAULT_BACKUP_COUNT = 5
