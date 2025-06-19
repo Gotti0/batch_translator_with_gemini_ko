@@ -732,8 +732,7 @@ class AppService:
                             logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨 (메인 파일에서).")
                         except Exception as e2:
                             logger.error(f"메인 파일 '{final_output_file_path_obj}' 로드 중 오류: {e2}. 이전 내용은 병합되지 않을 수 있습니다.", exc_info=True)
-                else:
-                    # 청크 파일이 없으면 메인 파일에서 시도
+                else:                    # 청크 파일이 없으면 메인 파일에서 시도
                     logger.info(f"청크 파일이 없습니다. 메인 번역 파일 '{final_output_file_path_obj}'에서 청크 로드를 시도합니다.")
                     try:
                         previously_translated_chunks_from_main_output = load_chunks_from_file(final_output_file_path_obj)
@@ -742,12 +741,57 @@ class AppService:
                     except Exception as e:
                         logger.error(f"메인 파일 '{final_output_file_path_obj}' 로드 중 오류: {e}. 이전 내용은 병합되지 않을 수 있습니다.", exc_info=True)
 
-            final_merged_chunks.update(newly_translated_chunks) 
+            final_merged_chunks.update(newly_translated_chunks)
             logger.info(f"{len(newly_translated_chunks)}개의 새 청크 추가/덮어쓰기됨. 총 {len(final_merged_chunks)} 청크 병합 준비 완료.")
-
+            
             try:
                 save_merged_chunks_to_file(final_output_file_path_obj, final_merged_chunks)
                 logger.info(f"최종 번역 결과가 '{final_output_file_path_obj}'에 저장되었습니다.")
+                  # ✅ 개선: 후처리 실행 (설정에서 활성화된 경우)
+                if self.config.get("enable_post_processing", True):
+                    logger.info("번역 완료 후 후처리를 시작합니다...")
+                    try:
+                        # 1. 먼저 청크 인덱스가 포함된 백업 파일 저장 (후처리 전 원본 보존)
+                        chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
+                        save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
+                        logger.info(f"이어하기용 청크 백업 파일 저장 완료: {chunked_backup_path}")
+                        
+                        # 2. 청크 단위 후처리 (헤더 제거, HTML 정리 등)
+                        processed_chunks = self.post_processing_service.post_process_merged_chunks(final_merged_chunks)
+                        
+                        # 3. 후처리된 내용을 임시로 저장 (청크 인덱스는 여전히 포함)
+                        save_merged_chunks_to_file(final_output_file_path_obj, processed_chunks)
+                        logger.info("청크 단위 후처리 완료 및 임시 저장됨.")
+                        
+                        # 4. 최종적으로 청크 인덱스 마커 제거 (사용자가 보는 최종 파일)
+                        if self.post_processing_service.remove_chunk_indexes_from_final_file(final_output_file_path_obj):
+                            logger.info("최종 출력 파일에서 청크 인덱스 마커 제거 완료.")
+                        else:
+                            logger.warning("청크 인덱스 마커 제거에 실패했습니다.")
+                            
+                        # 5. 후처리된 내용도 백업 파일에 업데이트 (청크 인덱스 포함)
+                        save_merged_chunks_to_file(chunked_backup_path, processed_chunks)
+                        logger.info(f"후처리된 청크 백업 파일 업데이트 완료: {chunked_backup_path}")
+                        
+                    except Exception as post_proc_e:
+                        logger.error(f"후처리 중 오류 발생: {post_proc_e}. 후처리를 건너뜁니다.", exc_info=True)
+                        # 후처리 실패 시에도 청크 백업 파일은 보장
+                        try:
+                            chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
+                            save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
+                            logger.info(f"후처리 실패 시 원본 청크 백업 파일 저장: {chunked_backup_path}")
+                        except Exception as backup_fallback_e:
+                            logger.error(f"원본 청크 백업 파일 저장 중 오류: {backup_fallback_e}", exc_info=True)
+                else:
+                    logger.info("후처리가 설정에서 비활성화되어 건너뜁니다.")
+                    # 후처리가 비활성화된 경우에도 청크 백업 파일은 저장 (이어하기용)
+                    try:
+                        chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
+                        save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
+                        logger.info(f"청크 인덱스 포함 백업 파일 저장: {chunked_backup_path} (후처리 비활성화됨)")
+                    except Exception as backup_e:
+                        logger.error(f"청크 백업 파일 저장 중 오류: {backup_e}", exc_info=True)
+                        
             except Exception as e:
                 logger.error(f"최종 번역 결과 파일 '{final_output_file_path_obj}' 저장 중 오류: {e}", exc_info=True)
                 raise BtgFileHandlerException(f"최종 출력 파일 저장 오류: {e}", original_exception=e)
