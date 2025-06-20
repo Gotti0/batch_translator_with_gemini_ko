@@ -583,6 +583,20 @@ class GeminiClient:
                         )
 
                         
+                        # [[가이드]] 응답 객체 전체 분석 로깅 추가
+                        logger.debug("비스트리밍 API 응답 객체 속성:")
+                        for attr_name in dir(response):
+                            if not attr_name.startswith('_'):
+                                try:
+                                    attr_value = getattr(response, attr_name)
+                                    # 값의 길이가 너무 길면 일부만 로깅
+                                    value_str = str(attr_value)
+                                    if len(value_str) > 2000:
+                                        value_str = value_str[:2000] + "..."
+                                    logger.debug(f"  response.{attr_name}: {value_str}")
+                                except Exception:
+                                    logger.debug(f"  response.{attr_name}: <접근 불가>")
+                        
                         # 구조화된 출력 (스키마 사용 시) 처리
                         if sdk_generation_config and sdk_generation_config.response_schema and \
                            sdk_generation_config.response_mime_type == "application/json" and \
