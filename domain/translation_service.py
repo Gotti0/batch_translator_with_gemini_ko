@@ -18,7 +18,7 @@ try:
     )
     from infrastructure.file_handler import read_json_file
     from infrastructure.logger_config import setup_logger
-    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException
+    from core.exceptions import BtgTranslationException, BtgApiClientException
     from utils.chunk_service import ChunkService
     # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다. # 로어북 -> 용어집
     # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다. # 로어북 -> 용어집
@@ -35,7 +35,7 @@ except ImportError:
     )
     from infrastructure.file_handler import read_json_file  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
-    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgInvalidTranslationLengthException  # type: ignore
+    from core.exceptions import BtgTranslationException, BtgApiClientException  # type: ignore
     from utils.chunk_service import ChunkService  # type: ignore
     from core.dtos import GlossaryEntryDTO # type: ignore
     from google.genai import types as genai_types # Fallback import
@@ -215,54 +215,7 @@ class TranslationService:
         
         # 3. Main content slot - This should be done *after* all other placeholders are processed.
         final_prompt = final_prompt.replace("{{slot}}", chunk_text)
-        
         return final_prompt
-
-    def _validate_translation_length(self, original_text: str, translated_text: str):
-        """
-        번역된 텍스트의 길이가 원본과 비교하여 적절한지 검사합니다.
-        지나치게 짧거나 길 경우 BtgInvalidTranslationLengthException을 발생시킵니다.
-        """
-        original_len = len(original_text.strip())
-        translated_len = len(translated_text.strip())
-
-        if original_len == 0 and translated_len > 0:
-            logger.warning(f"원본 텍스트는 비어있으나 번역 결과는 내용이 있습니다. 원본 길이: {original_len}, 번역 길이: {translated_len}")
-            return
-
-        if original_len > 0 and translated_len == 0:
-            # 이 경우는 translate_text 메서드에서 이미 GeminiContentSafetyException 등으로 처리될 수 있음
-            logger.warning(f"원본 텍스트는 내용이 있으나 번역 결과가 비어있습니다. 원본 길이: {original_len}, 번역 길이: {translated_len}")
-            # translate_text에서 이미 예외 처리되므로 여기서는 별도 예외 발생 안 함 (또는 다른 예외로 래핑 가능)
-            return
-
-        if original_len == 0 and translated_len == 0:
-            return # 둘 다 비어있으면 정상
-
-        min_length_ratio = self.config.get("translation_min_length_ratio", 0.15)
-        max_length_ratio = self.config.get("translation_max_length_ratio", 2.5)
-
-        ratio = translated_len / original_len
-
-        if ratio < min_length_ratio:
-            message = (
-                f"번역된 텍스트의 길이가 원본에 비해 너무 짧습니다. "
-                f"원본 길이: {original_len}, 번역 길이: {translated_len} (비율: {ratio:.2f}, 최소 허용 비율: {min_length_ratio}). "
-                f"원본 미리보기: '{original_text[:50]}...', 번역 미리보기: '{translated_text[:50]}...'"
-            )
-            logger.error(message)
-            raise BtgInvalidTranslationLengthException(message)
-
-        if ratio > max_length_ratio:
-            message = (
-                f"번역된 텍스트의 길이가 원본에 비해 너무 깁니다. "
-                f"원본 길이: {original_len}, 번역 길이: {translated_len} (비율: {ratio:.2f}, 최대 허용 비율: {max_length_ratio}). "
-                f"원본 미리보기: '{original_text[:50]}...', 번역 미리보기: '{translated_text[:50]}...'"
-            )
-            logger.error(message)
-            raise BtgInvalidTranslationLengthException(message)
-
-        logger.debug(f"번역 길이 검증 통과: 원본 길이 {original_len}, 번역 길이 {translated_len} (비율: {ratio:.2f})")
 
     def translate_text(self, text_chunk: str, stream: bool = False) -> str:
         """
@@ -323,13 +276,14 @@ class TranslationService:
         try:
             logger.debug(f"Gemini API 호출 시작. 모델: {self.config.get('model_name')}")
             
-            translated_text_from_api = self.gemini_client.generate_text( # Renamed variable
+            translated_text_from_api = self.gemini_client.generate_text( # Renamed variable                
                 prompt=api_prompt_for_gemini_client, # Union[str, List[Dict]]
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict={
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)
                 },
+                thinking_budget= self.config.get("thinking_budget", None), # Optional[int]
                 system_instruction_text=api_system_instruction, # Optional[str] 전달
                 stream=stream 
             )
@@ -344,18 +298,12 @@ class TranslationService:
 
             logger.debug(f"Gemini API 호출 성공. 번역된 텍스트 (일부): {translated_text_from_api[:100]}...")
             
-            # 번역 후 길이 검증
-            self._validate_translation_length(text_chunk, translated_text_from_api)
-            
             # 문장부호 일관성 검사 로직 제거
         
         except GeminiContentSafetyException as e_safety:
             logger.warning(f"콘텐츠 안전 문제로 번역 실패: {e_safety}")
-            # 콘텐츠 안전 문제 발생 시, 분할 재시도 로직을 호출하도록 변경
-            # translate_text_with_content_safety_retry가 이 예외를 처리하도록 함
+            # 콘텐츠 안전 문제 발생 시, 분할 재시도 로직을 호출하도록 변경            # translate_text_with_content_safety_retry가 이 예외를 처리하도록 함
             raise BtgTranslationException(f"콘텐츠 안전 문제로 번역할 수 없습니다. ({e_safety})", original_exception=e_safety) from e_safety
-        except BtgInvalidTranslationLengthException: # 새로 추가된 예외 처리
-            raise # 이미 로깅되었으므로 그대로 다시 발생시켜 상위에서 처리하도록 함
         except GeminiAllApiKeysExhaustedException as e_keys:
             logger.error(f"API 키 회전 실패: 모든 API 키 소진 또는 유효하지 않음. 원본 오류: {e_keys}")
             raise BtgApiClientException(f"모든 API 키를 사용했으나 요청에 실패했습니다. API 키 설정을 확인하세요. ({e_keys})", original_exception=e_keys) from e_keys
@@ -398,13 +346,11 @@ class TranslationService:
             # 1차 시도: 전체 청크 번역
             return self.translate_text(text_chunk)
         except BtgTranslationException as e:
-            # 콘텐츠 안전 문제 또는 문장부호 불일치 문제가 아닌 경우, 그대로 예외 발생
-            # BtgInvalidTranslationLengthException도 재시도 대상에 포함
-            if not ("콘텐츠 안전 문제" in str(e) or \
-                    isinstance(e, BtgInvalidTranslationLengthException)):
+            # 콘텐츠 안전 문제가 아닌 경우, 그대로 예외 발생
+            if not ("콘텐츠 안전 문제" in str(e)):
                 raise e
             
-            error_type_for_log = "콘텐츠 안전 문제" if "콘텐츠 안전 문제" in str(e) else "번역 길이 문제"
+            error_type_for_log = "콘텐츠 안전 문제"
             logger.warning(f"{error_type_for_log} 감지. 청크 분할 재시도 시작: {str(e)}")
             return self._translate_with_recursive_splitting(
                 text_chunk, max_split_attempts, min_chunk_size, current_attempt=1
@@ -486,12 +432,10 @@ class TranslationService:
                 
             except BtgTranslationException as sub_e:
                 processing_time = time.time() - start_time
-                
-                # 콘텐츠 안전 문제 또는 문장부호 불일치 문제인 경우 재귀 시도
-                if "콘텐츠 안전 문제" in str(sub_e) or \
-                   isinstance(sub_e, BtgInvalidTranslationLengthException):
-                    error_type_for_log_sub = "콘텐츠 안전 문제" if "콘텐츠 안전 문제" in str(sub_e) else "번역 길이 문제"
-                    logger.warning(f"   🛡️ {sub_chunk_info} {error_type_for_log_sub} 발생 (소요: {processing_time:.2f}초)") # 문장부호 관련 메시지 제거
+                  # 콘텐츠 안전 문제인 경우 재귀 시도
+                if "콘텐츠 안전 문제" in str(sub_e):
+                    error_type_for_log_sub = "콘텐츠 안전 문제"
+                    logger.warning(f"   🛡️ {sub_chunk_info} {error_type_for_log_sub} 발생 (소요: {processing_time:.2f}초)")
                     logger.info(f"   🔄 재귀 분할 시도 (깊이: {current_attempt} → {current_attempt+1})")
                     
                     # 재귀적으로 더 작게 분할 시도
