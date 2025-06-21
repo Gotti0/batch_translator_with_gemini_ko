@@ -604,17 +604,12 @@ class BatchTranslatorGUI:
         # RPM 설정
         rpm_label_widget = ttk.Label(chunk_worker_frame, text="분당 요청 수 (RPM):")
         rpm_label_widget.pack(side="left", padx=(10,5))
-        Tooltip(rpm_label_widget, "API에 분당 보낼 수 있는 최대 요청 수입니다. 0은 제한 없음을 의미합니다.")      
+        Tooltip(rpm_label_widget, "API에 분당 보낼 수 있는 최대 요청 수입니다. 0은 제한 없음을 의미합니다.")
+        
         self.rpm_entry = ttk.Entry(chunk_worker_frame, width=5)
         self.rpm_entry.pack(side="left")
         Tooltip(self.rpm_entry, "분당 요청 수를 입력하세요 (예: 60).")
 
-        # Helper method to update toggle button text
-        def update_toggle_text(button, var, base_text):
-            if var.get():
-                button.config(text=f"▲ {base_text} 숨기기")
-            else:
-                button.config(text=f"▼ {base_text} 보기")
         # Language Settings Frame
         language_settings_frame = ttk.LabelFrame(settings_frame, text="언어 설정", padding="10")
         language_settings_frame.pack(fill="x", padx=5, pady=5)
@@ -669,96 +664,36 @@ class BatchTranslatorGUI:
         prefill_cached_history_label.pack(anchor="w", padx=5, pady=(5,0))
         Tooltip(prefill_cached_history_label, "미리 정의된 대화 기록을 JSON 형식으로 입력합니다.\n예: [{\"role\": \"user\", \"parts\": [\"안녕\"]}, {\"role\": \"model\", \"parts\": [\"안녕하세요.\"]}]")
         self.prefill_cached_history_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=10, width=70) # 기본 높이 조정
-        self.prefill_cached_history_text.pack(fill="both", expand=True, padx=5, pady=5)
-
-
-
-        # 콘텐츠 안전 재시도 설정
-        content_safety_outer_frame = ttk.LabelFrame(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
-        content_safety_outer_frame.pack(fill="x", padx=5, pady=5)
-
-        self.content_safety_expanded_var = tk.BooleanVar(value=True)
-        self.content_safety_toggle_button = ttk.Checkbutton(
-            content_safety_outer_frame,
-            variable=self.content_safety_expanded_var,
-            command=self._toggle_content_safety_details
-        )
-        Tooltip(self.content_safety_toggle_button, "콘텐츠 안전 재시도 관련 세부 설정을 보거나 숨깁니다.")
-        self.content_safety_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        
-        self.content_safety_details_frame = ttk.Frame(content_safety_outer_frame)
-        self.content_safety_details_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+        self.prefill_cached_history_text.pack(fill="both", expand=True, padx=5, pady=5)        # 콘텐츠 안전 재시도 설정
+        content_safety_frame = ttk.LabelFrame(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
+        content_safety_frame.pack(fill="x", padx=5, pady=5)
 
         self.use_content_safety_retry_var = tk.BooleanVar()
         self.use_content_safety_retry_check = ttk.Checkbutton(
-            self.content_safety_details_frame, # Parent changed
+            content_safety_frame,
             text="검열 오류시 청크 분할 재시도 사용",
             variable=self.use_content_safety_retry_var
         )
         Tooltip(self.use_content_safety_retry_check, "API에서 콘텐츠 안전 문제로 응답이 차단될 경우,\n텍스트를 더 작은 조각으로 나누어 재시도합니다.")
         self.use_content_safety_retry_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
         
-        ttk.Label(self.content_safety_details_frame, text="최대 분할 시도:").grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(ttk.Label(self.content_safety_details_frame, text="최대 분할 시도:"), "콘텐츠 안전 문제 발생 시 청크를 나누어 재시도할 최대 횟수입니다.")
-        self.max_split_attempts_entry = ttk.Entry(self.content_safety_details_frame, width=5) # Parent changed
+        max_split_label = ttk.Label(content_safety_frame, text="최대 분할 시도:")
+        max_split_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(max_split_label, "콘텐츠 안전 문제 발생 시 청크를 나누어 재시도할 최대 횟수입니다.")
+        self.max_split_attempts_entry = ttk.Entry(content_safety_frame, width=5)
         self.max_split_attempts_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         self.max_split_attempts_entry.insert(0, "3")
         Tooltip(self.max_split_attempts_entry, "최대 분할 시도 횟수를 입력하세요.")
         
-        ttk.Label(self.content_safety_details_frame, text="최소 청크 크기:").grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(ttk.Label(self.content_safety_details_frame, text="최소 청크 크기:"), "분할 재시도 시 청크가 이 크기보다 작아지지 않도록 합니다.")
-        self.min_chunk_size_entry = ttk.Entry(self.content_safety_details_frame, width=10) # Parent changed
+        min_chunk_label = ttk.Label(content_safety_frame, text="최소 청크 크기:")
+        min_chunk_label.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(min_chunk_label, "분할 재시도 시 청크가 이 크기보다 작아지지 않도록 합니다.")
+        self.min_chunk_size_entry = ttk.Entry(content_safety_frame, width=10)
         self.min_chunk_size_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         self.min_chunk_size_entry.insert(0, "100")
         Tooltip(self.min_chunk_size_entry, "최소 청크 크기를 입력하세요.")
 
-        self._toggle_content_safety_details() # Set initial state and text
-
-        # 동적 로어북 주입 설정
-        dynamic_glossary_outer_frame = ttk.LabelFrame(settings_frame, text="동적 용어집 주입 설정", padding="10") # Text changed
-        dynamic_glossary_outer_frame.pack(fill="x", padx=5, pady=5)
-
-        self.dynamic_glossary_expanded_var = tk.BooleanVar(value=True) # Var name changed
-        self.dynamic_glossary_toggle_button = ttk.Checkbutton( # Widget name changed
-            dynamic_glossary_outer_frame,
-            variable=self.dynamic_glossary_expanded_var, # Var name changed
-            command=self._toggle_dynamic_glossary_details # Command changed
-        )
-        Tooltip(self.dynamic_glossary_toggle_button, "번역 시 동적으로 용어집 내용을 프롬프트에 주입하는 기능의 세부 설정을 보거나 숨깁니다.") # Text changed
-        self.dynamic_glossary_toggle_button.grid(row=0, column=0, sticky="w", padx=5, pady=2)
-
-        self.dynamic_glossary_details_frame = ttk.Frame(dynamic_glossary_outer_frame) # Widget name changed
-        self.dynamic_glossary_details_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
-
-        self.enable_dynamic_glossary_injection_var = tk.BooleanVar() # Var name changed
-        self.enable_dynamic_glossary_injection_check = ttk.Checkbutton( # Widget name changed
-            self.dynamic_glossary_details_frame, # Parent changed
-            text="동적 용어집 주입 활성화", # Text changed
-            variable=self.enable_dynamic_glossary_injection_var # Var name changed
         
-        )
-        Tooltip(self.enable_dynamic_glossary_injection_check, "번역 시 용어집 탭에서 설정된 용어집 JSON 파일의 내용을\n프롬프트에 동적으로 주입하여 번역 일관성을 높입니다.") # Text changed
-        self.enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
-
-        max_entries_injection_label = ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 항목 수:")
-        max_entries_injection_label.grid(row=1, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(max_entries_injection_label, "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.") # Text changed
-        # max_glossary_entries_injection_entry는 Tooltip이 이미 올바르게 적용되어 있습니다.     
-        self.max_glossary_entries_injection_entry = ttk.Entry(self.dynamic_glossary_details_frame, width=5) # Widget name changed, Parent changed
-        self.max_glossary_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        Tooltip(self.max_glossary_entries_injection_entry, "최대 주입 항목 수를 입력하세요.")
-
-        max_chars_injection_label = ttk.Label(self.dynamic_glossary_details_frame, text="청크당 최대 주입 문자 수:")
-        max_chars_injection_label.grid(row=2, column=0, padx=5, pady=5, sticky="w") # Parent changed
-        Tooltip(max_chars_injection_label, "하나의 번역 청크에 주입될 용어집 내용의 최대 총 문자 수입니다.") # Text changed
-        # max_glossary_chars_injection_entry는 Tooltip이 이미 올바르게 적용되어 있습니다.
-        self.max_glossary_chars_injection_entry = ttk.Entry(self.dynamic_glossary_details_frame, width=10) # Widget name changed, Parent changed
-        self.max_glossary_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
-        Tooltip(self.max_glossary_chars_injection_entry, "최대 주입 문자 수를 입력하세요.")
-
-        self._toggle_dynamic_glossary_details() # Set initial state and text, function name changed
-
-
 
         # 주입용 로어북 JSON 경로 입력 필드는 "로어북 관리" 탭의 경로를 사용하므로 여기서는 제거합니다.
         # 액션 버튼들
@@ -792,23 +727,6 @@ class BatchTranslatorGUI:
         self.progress_label = ttk.Label(progress_frame, text="대기 중...")
         self.progress_label.pack(pady=2)
         Tooltip(self.progress_label, "번역 작업의 현재 상태 및 진행 상황을 텍스트로 표시합니다.")
-
-    def _toggle_content_safety_details(self):
-        if self.content_safety_expanded_var.get():
-            self.content_safety_details_frame.grid()
-            self.content_safety_toggle_button.config(text="▲ 세부 설정 숨기기")
-        else:
-            self.content_safety_details_frame.grid_remove()
-            self.content_safety_toggle_button.config(text="▼ 세부 설정 보기")
-
-    def _toggle_dynamic_glossary_details(self): # Function name changed
-        if self.dynamic_glossary_expanded_var.get(): # Var name changed
-            self.dynamic_glossary_details_frame.grid() # Widget name changed
-            self.dynamic_glossary_toggle_button.config(text="▲ 세부 설정 숨기기") # Widget name changed
-        
-        else:
-            self.dynamic_glossary_details_frame.grid_remove() # Widget name changed
-            self.dynamic_glossary_toggle_button.config(text="▼ 세부 설정 보기") # Widget name changed
 
 
     def _browse_service_account_file(self):
@@ -894,6 +812,8 @@ class BatchTranslatorGUI:
         self.sample_ratio_label = ttk.Label(sample_ratio_frame, text="25.0%", width=8)
         self.sample_ratio_label.pack(side="left")
         Tooltip(self.sample_ratio_label, "현재 설정된 샘플링 비율입니다.")
+        
+
         
         # 제거된 UI 요소들:
         # - 세그먼트 당 최대 항목 수 (max_entries_per_segment_spinbox, max_entries_per_segment_label)
@@ -1035,6 +955,32 @@ class BatchTranslatorGUI:
         self.edit_glossary_button = ttk.Button(glossary_display_buttons_frame, text="용어집 편집", command=self._open_glossary_editor) # Widget name, text, command changed
         self.edit_glossary_button.pack(side="left", padx=5)
         Tooltip(self.edit_glossary_button, "표시된 용어집 내용을 별도의 편집기 창에서 수정합니다.") # Text changed
+        # 동적 용어집 주입 설정
+        dynamic_glossary_frame = ttk.LabelFrame(glossary_frame, text="동적 용어집 주입 설정", padding="10")
+        dynamic_glossary_frame.pack(fill="x", padx=5, pady=5)
+
+        self.enable_dynamic_glossary_injection_var = tk.BooleanVar()
+        self.enable_dynamic_glossary_injection_check = ttk.Checkbutton(
+            dynamic_glossary_frame,
+            text="동적 용어집 주입 활성화",
+            variable=self.enable_dynamic_glossary_injection_var
+        )
+        Tooltip(self.enable_dynamic_glossary_injection_check, "번역 시 용어집 탭에서 설정된 용어집 JSON 파일의 내용을\n프롬프트에 동적으로 주입하여 번역 일관성을 높입니다.")
+        self.enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
+
+        max_entries_injection_label = ttk.Label(dynamic_glossary_frame, text="청크당 최대 주입 항목 수:")
+        max_entries_injection_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(max_entries_injection_label, "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.")
+        self.max_glossary_entries_injection_entry = ttk.Entry(dynamic_glossary_frame, width=5)
+        self.max_glossary_entries_injection_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        Tooltip(self.max_glossary_entries_injection_entry, "최대 주입 항목 수를 입력하세요.")
+
+        max_chars_injection_label = ttk.Label(dynamic_glossary_frame, text="청크당 최대 주입 문자 수:")
+        max_chars_injection_label.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(max_chars_injection_label, "하나의 번역 청크에 주입될 용어집 내용의 최대 총 문자 수입니다.")
+        self.max_glossary_chars_injection_entry = ttk.Entry(dynamic_glossary_frame, width=10)
+        self.max_glossary_chars_injection_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        Tooltip(self.max_glossary_chars_injection_entry, "최대 주입 문자 수를 입력하세요.")
 
 
 
