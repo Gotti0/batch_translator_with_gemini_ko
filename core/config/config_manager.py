@@ -96,7 +96,12 @@ class ConfigManager:
             "thinking_budget": None, # thinking_budget 기본값 (None이면 모델 기본값 사용 또는 자동)
             "top_p": 0.9, # type: ignore
             "prompts": ( # type: ignore
-                "# 용어집 컨텍스트 (제공된 경우 참고)\n\n{{glossary_context}}\n\n"
+                "# 용어집 컨텍스트 (제공된 경우 아래 용어집에 명시된 번역어를 반드시 준수하세요.)\n"
+                "- 용어집에 있는 용어는 반드시 해당 번역어로 번역해야 하며, 변경하거나 다른 표현을 사용하지 마세요.\n"
+                "- 문맥에 따라 자연스럽게 번역하되, 용어집 우선 적용을 최우선으로 합니다.\n"
+                "- 원문의 의미, 뉘앙스, 톤을 유지하면서 자연스럽고 유창한 한국어로 번역해주세요.\n"
+                "- 번역 결과에 용어집 외의 임의 번역어가 포함되지 않도록 주의하세요."
+                "\n\n{{glossary_context}}\n\n"
                 "## 번역할 원문\n\n"
                 "<main id=\"content\">{{slot}}</main>\n\n"
                 "## 번역 결과 (한국어):\n"

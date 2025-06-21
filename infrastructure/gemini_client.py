@@ -547,11 +547,54 @@ class GeminiClient:
                     # response_schema 디버깅 로깅 추가
                     if 'response_schema' in final_generation_config_params:
                         logger.debug(f"response_schema 내용: {final_generation_config_params['response_schema']}")
-                        logger.debug(f"response_schema 타입: {type(final_generation_config_params['response_schema'])}")
-
-                    
+                        logger.debug(f"response_schema 타입: {type(final_generation_config_params['response_schema'])}")                    
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
 
+                    # [[디버깅]] 전체 API 요청 본문 로깅
+                    logger.debug("=== 전체 API 요청 정보 ===")
+                    logger.debug(f"모델명: {effective_model_name}")
+                    logger.debug(f"스트림 모드: {stream}")
+                    
+                    # 프롬프트 내용 로깅
+                    logger.debug("요청 프롬프트 (contents):")
+                    for i, content in enumerate(final_sdk_contents):
+                        logger.debug(f"  Content[{i}] - role: {content.role}")
+                        for j, part in enumerate(content.parts):
+                            if hasattr(part, 'text') and part.text:
+                                # 너무 긴 텍스트는 잘라서 로깅
+                                text_preview = part.text[:1000] + "..." if len(part.text) > 1000 else part.text
+                                logger.debug(f"    Part[{j}] - text: {text_preview}")
+                            else:
+                                logger.debug(f"    Part[{j}] - type: {type(part)} (non-text)")
+                    
+                    # 생성 설정 로깅
+                    if sdk_generation_config:
+                        logger.debug("생성 설정 (GenerateContentConfig):")
+                        config_dict = {}
+                        for attr in dir(sdk_generation_config):
+                            if not attr.startswith('_') and hasattr(sdk_generation_config, attr):
+                                try:
+                                    value = getattr(sdk_generation_config, attr)
+                                    if not callable(value):
+                                        config_dict[attr] = value
+                                except Exception:
+                                    config_dict[attr] = "<접근 불가>"
+                        
+                        for key, value in config_dict.items():
+                            if key == 'system_instruction' and value:
+                                # 시스템 지시사항은 길 수 있으므로 일부만 로깅
+                                value_str = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
+                                logger.debug(f"  {key}: {value_str}")
+                            elif key == 'safety_settings' and value:
+                                logger.debug(f"  {key}: {len(value)} 개의 안전 설정")
+                                for i, setting in enumerate(value):
+                                    logger.debug(f"    [{i}] category: {setting.category}, threshold: {setting.threshold}")
+                            else:
+                                logger.debug(f"  {key}: {value}")
+                    else:
+                        logger.debug("생성 설정: None")
+                    
+                    logger.debug("=== API 요청 정보 끝 ===")
                     
                     text_content_from_api: Optional[str] = None
                     if stream:

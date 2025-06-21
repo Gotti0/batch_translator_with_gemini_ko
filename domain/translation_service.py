@@ -596,11 +596,10 @@ if __name__ == '__main__':
     print("\n--- 1. 용어집 주입 번역 테스트 ---")
     config1 = sample_config_base.copy()
     
-    # 테스트용 용어집 파일 생성
     test_glossary_data = [
-        {"keyword": "Alice", "translated_keyword": "앨리스", "source_language": "en", "target_language": "ko", "occurrence_count": 10},
-        {"keyword": "Bob", "translated_keyword": "밥", "source_language": "en", "target_language": "ko", "occurrence_count": 8}
-    ]
+    {"keyword": "Alice", "translated_keyword": "앨리스", "target_language": "ko", "occurrence_count": 10},
+    {"keyword": "Bob", "translated_keyword": "밥", "target_language": "ko", "occurrence_count": 8}
+]
     from infrastructure.file_handler import write_json_file, delete_file
     test_glossary_file = Path(config1["glossary_json_path"]) # Use path from config
     if test_glossary_file.exists(): delete_file(test_glossary_file)
@@ -621,7 +620,7 @@ if __name__ == '__main__':
     # 2. 로어북 비활성화 테스트
     print("\n--- 2. 로어북 비활성화 테스트 ---")
     config2 = sample_config_base.copy()
-    config2["enable_dynamic_lorebook_injection"] = False
+    config2["enable_dynamic_glossary_injection"] = False
     translation_service2 = TranslationService(gemini_client_instance, config2)
     text_to_translate2 = "This is a test sentence."
     try:
