@@ -507,6 +507,10 @@ class GeminiClient:
                     final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {} # type: ignore
                     
 
+                    # 명시적 로깅을 위해 클라이언트의 http_options를 요청 설정에 포함
+                    if 'http_options' not in final_generation_config_params:
+                        final_generation_config_params['http_options'] = self.http_options
+
                     # 항상 BLOCK_NONE으로 안전 설정 강제 적용
                     # 사용자가 safety_settings_list_of_dicts를 제공하더라도 무시됩니다.
                     
