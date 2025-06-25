@@ -104,10 +104,12 @@ class GeminiClient:
         "The model is overloaded", "503", "Service Unavailable", 
         "Resource has been exhausted", "RESOURCE_EXHAUSTED"
     ]
+    _TIMEOUT_SECONDS = 300.0 # 5분
 
     _CONTENT_SAFETY_PATTERNS = [
         "PROHIBITED_CONTENT", "SAFETY", "response was blocked",
-        "BLOCKED_PROMPT", "SAFETY_BLOCKED", "blocked due to safety"
+        "BLOCKED_PROMPT", "SAFETY_BLOCKED", "blocked due to safety",
+        "INTERNAL", "500"
     ]
 
     _INVALID_REQUEST_PATTERNS = [
@@ -178,7 +180,11 @@ class GeminiClient:
         self.vertex_credentials: Optional[Any] = None
         self.vertex_project: Optional[str] = None
         self.vertex_location: Optional[str] = None
-          # RPM control
+        
+        # HTTP Client Options for Timeout
+        self.http_options = genai_types.HttpOptions(client_args={'timeout': self._TIMEOUT_SECONDS})
+        
+        # RPM control
         self.requests_per_minute = requests_per_minute or 140
         self.delay_between_requests = 60.0 / self.requests_per_minute  # 요청 간 지연 시간 계산
         self.last_request_timestamp = 0.0
@@ -199,7 +205,7 @@ class GeminiClient:
             
             for key_value in self.api_keys_list:
                 try:
-                    sdk_client = genai.Client(api_key=key_value)
+                    sdk_client = genai.Client(api_key=key_value, http_options=self.http_options)
                     self.client_pool[key_value] = sdk_client
                     successful_keys.append(key_value)
                     
@@ -276,7 +282,7 @@ class GeminiClient:
             # Single API key case - create client
             api_key = self.api_keys_list[0]
             try:
-                self.client = genai.Client(api_key=api_key)
+                self.client = genai.Client(api_key=api_key, http_options=self.http_options)
                 self.current_api_key = api_key
                 self.current_api_key_index = 0
                 
@@ -292,7 +298,7 @@ class GeminiClient:
         env_api_key = os.environ.get("GOOGLE_API_KEY")
         
         try:
-            self.client = genai.Client()  # Environment variable will be used
+            self.client = genai.Client(http_options=self.http_options)  # Environment variable will be used
             self.current_api_key = env_api_key
             self.api_keys_list = [env_api_key] if env_api_key else []
             
@@ -349,6 +355,7 @@ class GeminiClient:
         if self.vertex_location: client_options['location'] = self.vertex_location
         if self.vertex_credentials: client_options['credentials'] = self.vertex_credentials
         client_options['vertexai'] = True
+        client_options['http_options'] = self.http_options
         
         # google-genai SDK에서는 Client()가 project, location 등을 직접 받지 않을 수 있음.
         # 이 경우, vertexai.init() 등을 사용해야 할 수 있음.
@@ -726,6 +733,9 @@ class GeminiClient:
                             continue
                         else:
                             break
+                    elif self._is_content_safety_error(error_obj=e):
+                        logger.error(f"콘텐츠 안전 관련 오류 감지(예외 기반): {error_message}")
+                        raise GeminiContentSafetyException(f"콘텐츠 안전 문제로 요청이 차단되었습니다(예외 기반): {error_message}") from e
                     else:
                         if current_retry_for_this_key < max_retries:
                             time.sleep(current_backoff + random.uniform(0,1))
