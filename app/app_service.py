@@ -6,7 +6,7 @@ import os
 import json
 import csv
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait # ThreadPoolExecutor를 사용하여 병렬 처리
 import time
 from tqdm import tqdm # tqdm 임포트 확인
 import sys # sys 임포트 확인 (tqdm_file_stream=sys.stdout 에 사용될 수 있음)
@@ -396,6 +396,10 @@ class AppService:
             logger.info(f"  ✅ {current_chunk_info_msg} 번역 완료 (소요: {translation_time:.2f}초)")
             logger.debug(f"    번역 결과 길이: {translated_length} 글자")
             logger.debug(f"    번역 속도: {chunk_chars/translation_time:.1f} 글자/초" if translation_time > 0 else "    번역 속도: 즉시 완료")# 새로운 검열 재시도 로직 사용
+            if self.stop_requested:
+                logger.warning(f"  ⚠️ {current_chunk_info_msg}의 번역 결과를 받았지만, 시스템이 중지되어 결과를 저장하지 않고 폐기합니다.")
+                return False
+
             # 파일 저장 과정 로깅
             logger.debug(f"  💾 {current_chunk_info_msg} 결과 저장 시작...")
             save_start_time = time.time()
@@ -411,6 +415,9 @@ class AppService:
             logger.info(f"  🎯 {current_chunk_info_msg} 전체 처리 완료 (총 소요: {total_processing_time:.2f}초)")
 
         except BtgTranslationException as e_trans:
+            if self.stop_requested:
+                logger.warning(f"  ⚠️ {current_chunk_info_msg}에서 번역 예외가 발생했으나, 시스템이 중지되어 오류 기록을 생략합니다.")
+                return False
             processing_time = time.time() - start_time
             logger.error(f"  ❌ {current_chunk_info_msg} 번역 실패 (소요: {processing_time:.2f}초)")
             logger.error(f"    오류 유형: 번역 서비스 오류")
@@ -424,6 +431,9 @@ class AppService:
             success = False
 
         except BtgApiClientException as e_api:
+            if self.stop_requested:
+                logger.warning(f"  ⚠️ {current_chunk_info_msg}에서 API 예외가 발생했으나, 시스템이 중지되어 오류 기록을 생략합니다.")
+                return False
             processing_time = time.time() - start_time
             logger.error(f"  ❌ {current_chunk_info_msg} API 오류로 번역 실패 (소요: {processing_time:.2f}초)")
             logger.error(f"    오류 유형: API 클라이언트 오류")
@@ -440,6 +450,9 @@ class AppService:
             success = False
 
         except Exception as e_gen:
+            if self.stop_requested:
+                logger.warning(f"  ⚠️ {current_chunk_info_msg}에서 일반 예외가 발생했으나, 시스템이 중지되어 오류 기록을 생략합니다.")
+                return False
             processing_time = time.time() - start_time
             logger.error(f"  ❌ {current_chunk_info_msg} 예상치 못한 오류 (소요: {processing_time:.2f}초)", exc_info=True)
             logger.error(f"    오류 유형: {type(e_gen).__name__}")
@@ -454,60 +467,68 @@ class AppService:
         finally:
             total_time = time.time() - start_time
             with self._progress_lock:
-                # 1단계: 먼저 processed_chunks_count 증가
-                self.processed_chunks_count += 1
-                  # 2단계: 결과에 따라 성공/실패 카운트 업데이트
-                if success:
-                    self.successful_chunks_count += 1
-                    # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
-                    try:
-                        metadata_updated = update_metadata_for_chunk_completion(input_file_path_for_metadata, chunk_index)
-                        if metadata_updated:
-                            logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
-                        else:
-                            logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
-                    except Exception as meta_e:
-                        logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
-                elif not self.stop_requested:
-                    self.failed_chunks_count += 1
-                
-                # 3단계: 모든 카운트 업데이트 완료 후 진행률 계산
-                progress_percentage = (self.processed_chunks_count / total_chunks) * 100
-                logger.info(f"  📈 전체 진행률: {progress_percentage:.1f}% ({self.processed_chunks_count}/{total_chunks})")
-                
-                # 성공률 계산
-                if self.processed_chunks_count > 0:
-                    success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100
-                    logger.info(f"  📊 성공률: {success_rate:.1f}% (성공: {self.successful_chunks_count}, 실패: {self.failed_chunks_count})")
-
-                # 예상 완료 시간 계산 (선택사항)
-                if total_time > 0 and self.processed_chunks_count > 0:
-                    avg_time_per_chunk = total_time / 1  # 현재 청크 기준
-                    remaining_chunks = total_chunks - self.processed_chunks_count
-                    estimated_remaining_time = remaining_chunks * avg_time_per_chunk
-                    logger.debug(f"  ⏱️ 예상 남은 시간: {estimated_remaining_time:.1f}초 (평균 {avg_time_per_chunk:.2f}초/청크)")
-
-
-                if progress_callback:
+                # 시스템이 중지 상태가 아니라면, 진행 상황을 업데이트합니다.
+                # 이 검사를 _progress_lock 안에서 수행하여, 플래그 확인과 카운터 업데이트 사이의
+                # 경쟁 조건을 완벽하게 방지합니다. 이것이 데이터 정합성을 보장하는 최종 방어선입니다.
+                if not self.stop_requested:
+                    # 1단계: 먼저 processed_chunks_count 증가
+                    self.processed_chunks_count += 1
+                    # 2단계: 결과에 따라 성공/실패 카운트 업데이트
                     if success:
-                        status_msg_for_dto = f"✅ 청크 {chunk_index + 1}/{total_chunks} 완료 ({total_time:.1f}초)"
-                    else:
-                        status_msg_for_dto = f"❌ 청크 {chunk_index + 1}/{total_chunks} 실패 ({total_time:.1f}초)"
-                        if last_error:
-                            status_msg_for_dto += f" - {last_error[:50]}..."
+                        self.successful_chunks_count += 1
+                        # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
+                        try:
+                            metadata_updated = update_metadata_for_chunk_completion(input_file_path_for_metadata, chunk_index)
+                            if metadata_updated:
+                                logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
+                            else:
+                                logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
+                        except Exception as meta_e:
+                            logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
+                    else: # 'success'가 False인 경우, 실패 카운터를 증가시킵니다.
+                        self.failed_chunks_count += 1
+                    
+                    # 3단계: 모든 카운트 업데이트 완료 후 진행률 계산
+                    progress_percentage = (self.processed_chunks_count / total_chunks) * 100
+                    logger.info(f"  📈 전체 진행률: {progress_percentage:.1f}% ({self.processed_chunks_count}/{total_chunks})")
+                    
+                    # 성공률 계산
+                    if self.processed_chunks_count > 0:
+                        success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100
+                        logger.info(f"  📊 성공률: {success_rate:.1f}% (성공: {self.successful_chunks_count}, 실패: {self.failed_chunks_count})")
 
-                    progress_dto = TranslationJobProgressDTO(
-                        total_chunks=total_chunks,
-                        processed_chunks=self.processed_chunks_count,
-                        successful_chunks=self.successful_chunks_count,
-                        failed_chunks=self.failed_chunks_count,
-                        current_status_message=status_msg_for_dto,
-                        current_chunk_processing=chunk_index + 1,
-                        last_error_message=last_error
-                    )
-                    progress_callback(progress_dto)
-                
-            logger.debug(f"  🏁 {current_chunk_info_msg} 처리 완료 반환: {success}")
+                    # 예상 완료 시간 계산 (선택사항)
+                    if total_time > 0 and self.processed_chunks_count > 0:
+                        avg_time_per_chunk = total_time / 1  # 현재 청크 기준
+                        remaining_chunks = total_chunks - self.processed_chunks_count
+                        estimated_remaining_time = remaining_chunks * avg_time_per_chunk
+                        logger.debug(f"  ⏱️ 예상 남은 시간: {estimated_remaining_time:.1f}초 (평균 {avg_time_per_chunk:.2f}초/청크)")
+
+
+                    if progress_callback:
+                        if success:
+                            status_msg_for_dto = f"✅ 청크 {chunk_index + 1}/{total_chunks} 완료 ({total_time:.1f}초)"
+                        else:
+                            status_msg_for_dto = f"❌ 청크 {chunk_index + 1}/{total_chunks} 실패 ({total_time:.1f}초)"
+                            if last_error:
+                                status_msg_for_dto += f" - {last_error[:50]}..."
+
+                        progress_dto = TranslationJobProgressDTO(
+                            total_chunks=total_chunks,
+                            processed_chunks=self.processed_chunks_count,
+                            successful_chunks=self.successful_chunks_count,
+                            failed_chunks=self.failed_chunks_count,
+                            current_status_message=status_msg_for_dto,
+                            current_chunk_processing=chunk_index + 1,
+                            last_error_message=last_error
+                        )
+                        progress_callback(progress_dto)
+                else:
+                    # stop_requested가 True이면, 아무 작업도 수행하지 않고 조용히 종료합니다.
+                    # 이 좀비 스레드의 결과는 버려지며, 어떤 공유 상태도 오염시키지 않습니다.
+                    logger.warning(f"  ⚠️ {current_chunk_info_msg}의 최종 처리(진행률, 메타데이터)를 건너뜁니다 (시스템 중지됨).")
+            
+            logger.debug(f"  {current_chunk_info_msg} 처리 완료 반환: {success}")
             return success
 
 
@@ -674,32 +695,44 @@ class AppService:
                             leave=False)
 
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            self.executor = ThreadPoolExecutor(max_workers=max_workers)
+            try:
                 future_to_chunk_index: Dict[Any, int] = {}
                 for i, chunk_text in chunks_to_process_with_indices:
                     if self.stop_requested:
                         logger.info("새 작업 제출 중단됨 (사용자 요청).")
                         break
-                    future = executor.submit(self._translate_and_save_chunk, i, chunk_text,
-                                    current_run_output_file_path,
-                                    total_chunks, 
-                                    input_file_path_obj, progress_callback)
+                    future = self.executor.submit(self._translate_and_save_chunk, i, chunk_text,
+                                            current_run_output_file_path,
+                                            total_chunks, 
+                                            input_file_path_obj, progress_callback)
                     future_to_chunk_index[future] = i
 
-                if self.stop_requested and not future_to_chunk_index: 
-                     logger.info("번역 시작 전 중지 요청됨.")
-                     if pbar: pbar.close() 
+                if self.stop_requested and not future_to_chunk_index:
+                    logger.info("번역 시작 전 중지 요청됨.")
+                    if pbar: pbar.close()
 
+                # as_completed에서 결과를 기다리되, stop_requested가 True가 되면 루프를 중단합니다.
                 for future in as_completed(future_to_chunk_index.keys()):
+                    if self.stop_requested:
+                        # 실행 중인 future들을 취소합니다.
+                        for f in future_to_chunk_index.keys():
+                            if not f.done():
+                                f.cancel()
+                        logger.info("진행 중인 작업들이 취소되었습니다.")
+                        break
+
                     chunk_idx_completed = future_to_chunk_index[future]
                     try:
-                        future.result() 
+                        future.result()
                     except Exception as e_future:
                         logger.error(f"병렬 작업 (청크 {chunk_idx_completed + 1}) 실행 중 오류 (as_completed): {e_future}", exc_info=True)
                     finally:
-                        if pbar: pbar.update(1) 
-
-            if pbar: pbar.close() 
+                        if pbar: pbar.update(1)
+            finally:
+                if pbar: pbar.close()
+                self.executor.shutdown(wait=False) # 모든 스레드가 즉시 종료되도록 보장
+                logger.info("ThreadPoolExecutor가 종료되었습니다. 결과 병합을 시작합니다.") 
 
 
             logger.info("모든 대상 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
@@ -875,14 +908,35 @@ class AppService:
                 logger.info(f"오류 발생으로 임시 파일 '{current_run_output_file_path}' 삭제 시도됨.")
             raise BtgServiceException(f"번역 서비스 오류: {e}", original_exception=e) from e
         finally:
-            with self._translation_lock:
-                self.is_translation_running = False
+            # 중지 요청이 있었던 경우, is_translation_running은 이미 False로 설정되었을 수 있습니다.
+            if not self.stop_requested:
+                with self._translation_lock:
+                    self.is_translation_running = False
+
+    def stop_translation(self):
+        if not self.is_translation_running:
+            logger.info("번역 작업이 실행 중이 아니므로 중지할 수 없습니다.")
+            return
+
+        logger.info("번역 중지를 요청합니다...")
+        self.stop_requested = True
+
+        # ThreadPoolExecutor를 직접 종료하여 실행 중인 모든 스레드를 정리합니다.
+        if hasattr(self, 'executor') and self.executor:
+            # shutdown(wait=False)는 대기 중인 future를 취소하고, 실행 중인 스레드가 완료될 때까지 기다리지 않습니다.
+            self.executor.shutdown(wait=False)
+            logger.info("ThreadPoolExecutor가 종료되었습니다.")
+
+        # is_translation_running 플래그를 False로 설정하여 새로운 작업이 시작되지 않도록 합니다.
+        with self._translation_lock:
+            self.is_translation_running = False
+        
+        logger.info("번역 작업이 중지되었습니다.")
 
     def request_stop_translation(self):
         if self.is_translation_running:
             logger.info("번역 중지 요청 수신됨.")
-            with self._translation_lock: 
-                self.stop_requested = True
+            self.stop_translation()
         else:
             logger.info("실행 중인 번역 작업이 없어 중지 요청을 무시합니다.")
 

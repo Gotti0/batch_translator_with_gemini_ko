@@ -418,6 +418,9 @@ class TranslationService:
             start_time = time.time()
             
             try:
+                if self.stop_check_callback and self.stop_check_callback():
+                    logger.info(f"중단 요청 감지됨. 서브 청크 {i+1}/{total_sub_chunks} 번역 중단.")
+                    raise BtgTranslationException("번역 중단 요청됨.")
                 # 재귀 분할 시 스트리밍 사용
                 translated_part = self.translate_text(sub_chunk.strip(), stream=True)
                 processing_time = time.time() - start_time
