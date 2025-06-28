@@ -560,6 +560,11 @@ class AppService:
         logger.info(f"번역 서비스 시작: 입력={input_file_path}, 최종 출력={output_file_path}")
         if status_callback: status_callback("번역 시작됨...")
 
+        # TranslationService에 중단 확인 콜백 설정
+        if self.translation_service:
+            self.translation_service.set_stop_check_callback(lambda: self.stop_requested)
+            logger.debug("TranslationService에 중단 확인 콜백이 설정되었습니다.")
+
         input_file_path_obj = Path(input_file_path)
         final_output_file_path_obj = Path(output_file_path)
         metadata_file_path = get_metadata_file_path(input_file_path_obj)

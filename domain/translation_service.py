@@ -4,7 +4,7 @@ import random
 import re
 import csv
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Callable
 import os
 
 try:
@@ -84,6 +84,7 @@ class TranslationService:
         self.config = config
         self.chunk_service = ChunkService()
         self.glossary_entries_for_injection: List[GlossaryEntryDTO] = [] # Renamed and type changed
+        self.stop_check_callback: Optional[Callable[[], bool]] = None  # 중단 요청 확인용 콜백
 
         if self.config.get("enable_dynamic_glossary_injection", False): # Key changed
             self._load_glossary_data() # 함수명 변경
@@ -492,9 +493,14 @@ class TranslationService:
         
         return final_result
     
-
-
-
+    def set_stop_check_callback(self, callback: Optional[Callable[[], bool]]) -> None:
+        """
+        중단 요청을 확인하는 콜백 함수를 설정합니다.
+        
+        Args:
+            callback: 중단 요청 여부를 반환하는 콜백 함수
+        """
+        self.stop_check_callback = callback
 
 if __name__ == '__main__':
     # MockGeminiClient에서 types를 사용하므로, 이 블록 내에서 임포트합니다.
