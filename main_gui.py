@@ -1280,8 +1280,33 @@ class BatchTranslatorGUI:
             elif "완료" in message or "오류" in message or "중단" in message:
                 self.start_button.config(state=tk.NORMAL)
                 self.stop_button.config(state=tk.DISABLED)
+                
+                # ====================================================================
+                # ===== 번역 완료 알림 추가 =========================================
+                # ====================================================================
+                if "완료" in message and "오류" not in message and "중단" not in message:
+                    # 번역이 성공적으로 완료된 경우에만 알림 표시
+                    self._show_completion_notification()
+                # ====================================================================
+                
         if self.master.winfo_exists():
             self.master.after(0, _update)
+
+    def _show_completion_notification(self):
+        """번역 완료 시 알림 팝업을 표시합니다."""
+        try:
+            # 출력 파일 경로 가져오기
+            output_file = self.output_file_entry.get()
+            
+            # 알림 메시지 구성
+            notification_message = f"파일 번역이 성공적으로 완료되었습니다.\n\n출력 파일:\n{output_file}"
+            
+            # 번역 완료 알림 표시
+            messagebox.showinfo("번역 완료", notification_message)
+            
+        except Exception as e:
+            # 알림 표시 중 오류가 발생해도 로그만 남기고 계속 진행
+            self._log_message(f"번역 완료 알림 표시 중 오류: {e}", "ERROR")
 
     def _start_translation_thread_with_resume_check(self):
         app_service = self.app_service
