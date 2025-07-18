@@ -5,6 +5,7 @@ import threading
 import os
 from pathlib import Path
 import sys # sys 모듈 임포트
+import re
 
 # 프로젝트 루트 디렉토리를 sys.path에 추가
 project_root = Path(__file__).resolve().parent
@@ -1817,7 +1818,7 @@ class BatchTranslatorGUI:
             messagebox.showerror("JSON 오류", f"용어집 내용이 유효한 JSON 형식이 아닙니다: {e}") # Text changed           
             return
 
-        editor_window = GlossaryEditorWindow(self.master, current_json_str, self._handle_glossary_editor_save) # Class and callback changed       
+        editor_window = GlossaryEditorWindow(self.master, current_json_str, self._handle_glossary_editor_save, self.input_file_entry.get()) # Class and callback changed       
         editor_window.grab_set() # Modal-like behavior
 
     def _handle_glossary_editor_save(self, updated_json_str: str): # Renamed
@@ -1843,11 +1844,12 @@ class BatchTranslatorGUI:
 
 
 class GlossaryEditorWindow(tk.Toplevel): # Class name changed
-    def __init__(self, master, glossary_json_str: str, save_callback: Callable[[str], None]): # Parameter name changed      
+    def __init__(self, master, glossary_json_str: str, save_callback: Callable[[str], None], input_file_path: str): # Parameter name changed      
         super().__init__(master)
         self.title("용어집 편집기") # Text changed
         self.geometry("800x600")
         self.save_callback = save_callback
+        self.input_file_path = input_file_path
 
         try:
             self.glossary_data: List[Dict[str, Any]] = json.loads(glossary_json_str) # Var name changed
@@ -1917,6 +1919,11 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         ttk.Button(buttons_frame, text="변경사항 저장 후 닫기", command=self._save_and_close).pack(side=tk.RIGHT, padx=5) # type: ignore
         ttk.Button(buttons_frame, text="현재 항목 저장", command=self._save_current_entry_button_action).pack(side=tk.RIGHT, padx=5)
         ttk.Button(buttons_frame, text="취소", command=self.destroy).pack(side=tk.RIGHT)
+        
+        replace_buttons_frame = ttk.Frame(self.entry_fields_frame)
+        replace_buttons_frame.grid(row=i + 1, column=0, columnspan=2, pady=10, sticky="ew")
+        ttk.Button(replace_buttons_frame, text="선택한 용어 치환", command=self._replace_selected_term).pack(side=tk.LEFT, padx=5)
+        ttk.Button(replace_buttons_frame, text="모든 용어 치환", command=self._replace_all_terms).pack(side=tk.LEFT, padx=5)
 
         self._populate_listbox()
         if self.glossary_data: # Var name changed            
@@ -1924,6 +1931,96 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
             self._load_entry_to_fields(0)
         else:
             self._clear_entry_fields()
+
+    def _replace_all_terms(self):
+        if not self.input_file_path or not os.path.exists(self.input_file_path):
+            messagebox.showerror("오류", "입력 파일 경로가 유효하지 않습니다.", parent=self)
+            return
+
+        if not self.glossary_data:
+            messagebox.showinfo("정보", "치환할 용어집 데이터가 없습니다.", parent=self)
+            return
+
+        if not messagebox.askyesno("전체 치환 확인", f"총 {len(self.glossary_data)}개의 용어를 파일 전체에서 치환하시겠습니까?\n이 작업은 되돌릴 수 없습니다.", parent=self):
+            return
+
+        try:
+            with open(self.input_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            messagebox.showerror("파일 읽기 오류", f"파일을 읽는 중 오류가 발생했습니다: {e}", parent=self)
+            return
+
+        total_replacements = 0
+        # Sort by length of keyword, descending, to replace longer words first
+        sorted_glossary = sorted(self.glossary_data, key=lambda x: len(x.get("keyword", "")), reverse=True)
+
+        for entry in sorted_glossary:
+            keyword = entry.get("keyword")
+            translated_keyword = entry.get("translated_keyword")
+
+            if not keyword or not translated_keyword:
+                continue
+            
+            # Use word boundaries to avoid replacing parts of words
+            pattern = re.escape(keyword)
+            new_content, num_replacements = re.subn(pattern, translated_keyword, content)
+            
+            if num_replacements > 0:
+                content = new_content
+                total_replacements += num_replacements
+
+        try:
+            with open(self.input_file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            messagebox.showinfo("치환 완료", f"총 {total_replacements}개의 단어가 성공적으로 치환되었습니다.", parent=self)
+        except Exception as e:
+            messagebox.showerror("파일 쓰기 오류", f"파일을 저장하는 중 오류가 발생했습니다: {e}", parent=self)
+
+    def _replace_selected_term(self):
+        if self.current_selection_index is None:
+            messagebox.showinfo("정보", "치환할 용어를 선택해주세요.", parent=self)
+            return
+
+        if not self.input_file_path or not os.path.exists(self.input_file_path):
+            messagebox.showerror("오류", "입력 파일 경로가 유효하지 않습니다.", parent=self)
+            return
+
+        entry = self.glossary_data[self.current_selection_index]
+        keyword = entry.get("keyword")
+        translated_keyword = entry.get("translated_keyword")
+
+        if not keyword or not translated_keyword:
+            messagebox.showerror("오류", "선택된 항목에 키워드 또는 번역된 키워드가 없습니다.", parent=self)
+            return
+
+        if len(keyword) == 1:
+            if not messagebox.askyesno("경고", "한 글자로 된 용어를 치환할 경우, 문맥상 오류가 발생할 가능성이 높습니다. 그래도 바꾸시겠습니까?", parent=self):
+                return
+
+        if not messagebox.askyesno("치환 확인", f"'{keyword}'을(를) '{translated_keyword}'(으)로 치환하시겠습니까?", parent=self):
+            return
+
+        try:
+            with open(self.input_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            messagebox.showerror("파일 읽기 오류", f"파일을 읽는 중 오류가 발생했습니다: {e}", parent=self)
+            return
+
+        pattern = re.escape(keyword)
+        new_content, num_replacements = re.subn(pattern, translated_keyword, content)
+
+        if num_replacements == 0:
+            messagebox.showinfo("정보", f"'{keyword}'을(를) 파일에서 찾을 수 없습니다.", parent=self)
+            return
+
+        try:
+            with open(self.input_file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            messagebox.showinfo("치환 완료", f"{num_replacements}개의 단어가 성공적으로 치환되었습니다.", parent=self)
+        except Exception as e:
+            messagebox.showerror("파일 쓰기 오류", f"파일을 저장하는 중 오류가 발생했습니다: {e}", parent=self)
 
     def _populate_listbox(self):
         self.listbox.delete(0, tk.END)
