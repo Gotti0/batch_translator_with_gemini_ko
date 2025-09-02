@@ -426,7 +426,7 @@ class AppService:
             if "콘텐츠 안전 문제" in str(e_trans):
                 logger.warning(f"    🛡️ 콘텐츠 검열로 인한 실패")
             
-            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[번역 실패: {e_trans}]")
+            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[번역 실패: {e_trans}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_trans)
             success = False
 
@@ -445,7 +445,7 @@ class AppService:
             elif "키" in str(e_api).lower() or "인증" in str(e_api):
                 logger.warning(f"    🔑 API 인증 관련 오류")
             
-            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]")
+            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_api)
             success = False
 
@@ -458,7 +458,7 @@ class AppService:
             logger.error(f"    오류 유형: {type(e_gen).__name__}")
             logger.error(f"    오류 내용: {e_gen}")
             
-            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]")
+            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_gen)
             success = False
                     
