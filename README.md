@@ -27,119 +27,95 @@ BTG는 Google Gemini API를 사용하여 대용량 텍스트를 효율적으로 
 
 ## 시스템 아키텍처
 
-BTG는 4계층 아키텍처를 채택하여 유지보수성과 확장성을 보장합니다[3]:
+BTG는 유지보수성과 확장성을 높이기 위해 다음과 같은 4계층 아키텍처(4-Tier Architecture)를 채택했습니다.
 
+```mermaid
+graph TD
+    subgraph Presentation Layer
+        A[main_gui.py]
+        B[main_cli.py]
+    end
+
+    subgraph Service Layer
+        C[app/app_service.py]
+    end
+
+    subgraph Domain Layer
+        D[domain/translation_service.py]
+        E[domain/glossary_service.py]
+    end
+
+    subgraph Core & Utils
+        F[core/dtos.py]
+        G[core/config/config_manager.py]
+        H[utils/chunk_service.py]
+        I[utils/post_processing_service.py]
+    end
+
+    subgraph Infrastructure Layer
+        J[infrastructure/gemini_client.py]
+        K[infrastructure/file_handler.py]
+        L[infrastructure/logger_config.py]
+    end
+
+    A --> C
+    B --> C
+    C --> D
+    C --> E
+    C --> G
+    C --> H
+    C --> I
+    D --> J
+    E --> J
+    D --> F
+    E --> F
+    G --> K
+    H --> K
+    I --> K
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style B fill:#f9f,stroke:#333,stroke-width:2px
+    style C fill:#ccf,stroke:#333,stroke-width:2px
+    style D fill:#9cf,stroke:#333,stroke-width:2px
+    style E fill:#9cf,stroke:#333,stroke-width:2px
+    style F fill:#f8e5a2,stroke:#333,stroke-width:1px
+    style G fill:#f8e5a2,stroke:#333,stroke-width:1px
+    style H fill:#f8e5a2,stroke:#333,stroke-width:1px
+    style I fill:#f8e5a2,stroke:#333,stroke-width:1px
+    style J fill:#cfc,stroke:#333,stroke-width:2px
+    style K fill:#cfc,stroke:#333,stroke-width:2px
+    style L fill:#cfc,stroke:#333,stroke-width:2px
 ```
-┌─────────────────────────────────┐
-│     Presentation Layer          │
-│  (batch_translator_gui.py)      │
-├─────────────────────────────────┤
-│      Service Layer              │
-│    (app_service.py)             │
-├─────────────────────────────────┤
-│   Business Logic Layer          │
-│ (translation_service,           │
-│  pronoun_service,               │
-│  chunk_service)                 │
-├─────────────────────────────────┤
-│   Infrastructure Layer          │
-│ (gemini_client,                 │
-│  file_handler)                  │
-└─────────────────────────────────┘
-```
 
-## 설치 및 설정
-
-### 필수 요구사항
-- Python 3.8 이상
-- Google Gemini API 키 또는 Vertex AI 서비스 계정
-- 필요한 Python 패키지:
-  ```bash
-  pip install google-genai tkinter tqdm pathlib
-  ```
-
-### API 설정
-
-#### Gemini Developer API 사용
-1. [Google AI Studio](https://aistudio.google.com/)에서 API 키 발급
-2. GUI의 "API 키 목록" 필드에 키 입력 (한 줄에 하나씩)[4]
-
-#### Vertex AI 사용
-1. GCP 프로젝트 생성 및 Vertex AI API 활성화
-2. 서비스 계정 생성 및 JSON 키 다운로드
-3. GUI에서 "Vertex AI 사용" 체크 후 설정 입력[4]
-
-## 사용법
-
-### GUI 실행
-```bash
-python batch_translator_gui.py
-```
-
-### 기본 번역 워크플로우
-
-1. **설정 구성**[4]
-   - API 키 또는 Vertex AI 설정 입력
-   - 모델 선택 (gemini-2.0-flash 권장)
-   - 번역 파라미터 조정 (Temperature, Top-P)
-
-2. **파일 선택**[4]
-   - 입력 파일: 번역할 텍스트 파일
-   - 출력 파일: 번역 결과가 저장될 경로
-
-3. **고유명사 추출 (선택사항)**[1]
-   - "선택한 입력 파일에서 고유명사 추출" 버튼 클릭
-   - 추출된 고유명사를 검토 및 수정
-
-4. **번역 실행**[3]
-   - "번역 시작" 버튼 클릭
-   - 진행률과 로그를 실시간으로 확인
-
-### 고급 설정
-
-#### 청킹 설정[5]
-- **청크 크기**: 기본 6000자, 메모리와 API 제한에 따라 조정
-- **최대 작업자 수**: CPU 코어 수에 따라 자동 설정, 수동 조정 가능
-
-#### 콘텐츠 안전 재시도[3]
-- **최대 분할 시도**: 검열 오류 시 청크 분할 재시도 횟수 (기본 3회)
-- **최소 청크 크기**: 분할 시 최소 크기 제한 (기본 100자)
-
-## 설정 파일 구조
-
-`config.json` 파일로 모든 설정을 관리합니다[6]:
-
-```json
-{
-  "api_keys": ["your-api-key-1", "your-api-key-2"],
-  "use_vertex_ai": false,
-  "model_name": "gemini-2.0-flash",
-  "temperature": 0.7,
-  "top_p": 0.9,
-  "chunk_size": 6000,
-  "max_workers": 4,
-  "use_content_safety_retry": true,
-  "max_content_safety_split_attempts": 3,
-  "min_content_safety_chunk_size": 100
-}
-```
+- **Presentation Layer**: 사용자와의 상호작용을 담당합니다. GUI(`main_gui.py`)와 CLI(`main_cli.py`)가 이 계층에 속합니다.
+- **Service Layer**: 애플리케이션의 주요 유스케이스를 조정합니다. `app_service.py`가 프레젠테이션 계층과 도메인 계층을 연결하는 인터페이스 역할을 합니다.
+- **Domain Layer**: 핵심 비즈니스 로직을 포함합니다. 번역(`translation_service.py`) 및 용어집 관리(`glossary_service.py`)와 같은 도메인별 규칙이 여기에 구현됩니다.
+- **Core & Utils**: DTOs, 설정 관리, 텍스트 청킹, 후처리 등 프로젝트 전반에서 사용되는 공통 기능 및 유틸리티를 제공합니다.
+- **Infrastructure Layer**: 외부 시스템과의 통신 및 하위 레벨 작업을 처리합니다. Gemini API 클라이언트(`gemini_client.py`), 파일 입출력(`file_handler.py`), 로깅(`logger_config.py`) 등이 포함됩니다.
 
 ## 파일 구조
 
 ```
 BTG/
-├── batch_translator_gui.py      # GUI 애플리케이션
-├── app_service.py               # 서비스 레이어
-├── gemini_client.py             # Gemini API 클라이언트
-├── translation_service.py       # 번역 비즈니스 로직
-├── pronoun_service.py           # 고유명사 추출 서비스
-├── chunk_service.py             # 텍스트 청킹 서비스
-├── file_handler.py              # 파일 처리 유틸리티
-├── config_manager.py            # 설정 관리
-├── post_processing_service.py   # 후처리 서비스
-├── logger_config.py             # 로깅 설정
-├── dtos.py                      # 데이터 전송 객체
-├── exceptions.py                # 커스텀 예외
+├── main_gui.py                  # GUI 애플리케이션 실행 파일
+├── main_cli.py                  # CLI 애플리케이션 실행 파일
+├── app/
+│   └── app_service.py           # 서비스 계층: 유스케이스 조정
+├── domain/
+│   ├── translation_service.py   # 도메인 계층: 번역 비즈니스 로직
+│   └── glossary_service.py      # 도메인 계층: 용어집 추출 및 관리
+├── infrastructure/
+│   ├── gemini_client.py         # 인프라 계층: Gemini API 클라이언트
+│   ├── file_handler.py          # 인프라 계층: 파일 입출력 유틸리티
+│   └── logger_config.py         # 인프라 계층: 로깅 설정
+├── core/
+│   ├── dtos.py                  # Core: 데이터 전송 객체 (DTOs)
+│   ├── exceptions.py            # Core: 커스텀 예외
+│   └── config/
+│       └── config_manager.py    # Core: 설정 관리
+├── utils/
+│   ├── chunk_service.py         # Utils: 텍스트 청킹 서비스
+│   └── post_processing_service.py # Utils: 번역 후처리 서비스
 └── config.json                  # 설정 파일
 ```
 
@@ -170,7 +146,29 @@ BTG/
 
 ## 라이선스
 
-이 프로젝트는 개인 및 상업적 용도로 자유롭게 사용할 수 있습니다.
+이 프로젝트는 MIT 라이선스를 따릅니다.
+
+**MIT License**
+
+Copyright (c) 2025 Hyunwoo_Room
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## 주의사항
 
