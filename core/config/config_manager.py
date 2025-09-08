@@ -88,7 +88,7 @@ class ConfigManager:
                 }
             ],
             # "system_instruction": "You are a helpful translation assistant.", # 일반 시스템 지침 제거
-            "requests_per_minute": 60, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
+            "requests_per_minute": 10, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
             "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
             "novel_language_fallback": "zh", # 자동 감지 실패 시 사용할 폴백 언어
             "model_name": "gemini-2.0-flash",
@@ -112,7 +112,7 @@ class ConfigManager:
             "min_content_safety_chunk_size": 100,
             "content_safety_split_by_sentences": True,
             "max_workers": 4,
-            "chunk_size": 6000,
+            "chunk_size": 3000,
             "enable_post_processing": True,
 
             # 경량화된 용어집 관련 기본 설정
