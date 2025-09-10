@@ -539,8 +539,66 @@ class AppService:
         output_file_path: Union[str, Path],
         progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
-        tqdm_file_stream: Optional[Any] = None 
+        tqdm_file_stream: Optional[Any] = None,
+        blocking: bool = False # blocking 매개변수 추가
     ) -> None:
+        # === 용어집 동적 로딩 로직 추가 ===
+        try:
+            input_p = Path(input_file_path)
+            # 설정에서 용어집 파일 접미사를 가져옵니다.
+            glossary_suffix = self.config.get("glossary_output_json_filename_suffix", "_simple_glossary.json")
+            # 현재 입력 파일에 해당하는 용어집 파일 경로를 추정합니다.
+            assumed_glossary_path = input_p.parent / f"{input_p.stem}{glossary_suffix}"
+
+            # config에 설정된 경로와 추정된 경로를 확인합니다.
+            # 1. 추정된 경로에 파일이 존재하면, 해당 경로를 사용하도록 설정을 덮어씁니다.
+            # 2. 그렇지 않으면, config에 명시된 경로(사용자가 수동으로 지정한 경로)를 그대로 사용합니다.
+            
+            glossary_to_use = None
+            if assumed_glossary_path.exists():
+                glossary_to_use = str(assumed_glossary_path)
+                logger.info(f"'{input_p.name}'에 대한 용어집 '{assumed_glossary_path.name}'을(를) 자동으로 발견하여 사용합니다.")
+            else:
+                # 수동으로 설정된 경로가 있다면 그것을 사용합니다.
+                manual_path = self.config.get("glossary_json_path")
+                if manual_path and Path(manual_path).exists():
+                    glossary_to_use = manual_path
+                    logger.info(f"자동으로 발견된 용어집이 없어, 설정된 경로 '{manual_path}'의 용어집을 사용합니다.")
+                else:
+                    logger.info(f"'{input_p.name}'에 대한 용어집을 찾을 수 없어, 용어집 없이 번역을 진행합니다.")
+
+            # 찾은 용어집 경로를 런타임 설정에 반영하여 TranslationService가 로드하도록 합니다.
+            if self.translation_service:
+                # TranslationService가 새로운 설정을 기반으로 용어집을 다시 로드하도록 합니다.
+                self.config['glossary_json_path'] = glossary_to_use
+                self.translation_service.config = self.config
+                self.translation_service._load_glossary_data() # TranslationService 내부의 용어집 데이터를 갱신합니다.
+
+        except Exception as e:
+            logger.error(f"용어집 동적 로딩 중 오류 발생: {e}", exc_info=True)
+            # 용어집 로딩에 실패해도 번역은 계속 진행하도록 합니다.
+        # === 용어집 동적 로딩 로직 끝 ===
+        
+        # 스레드 생성 및 시작 부분 수정
+        thread = threading.Thread(
+            target=self._translation_task, # 실제 번역 로직을 별도 메서드로 분리
+            args=(input_file_path, output_file_path, progress_callback, status_callback, tqdm_file_stream),
+            daemon=not blocking # blocking 모드가 아닐 때만 데몬 스레드로 설정
+        )
+        thread.start()
+
+        if blocking:
+            thread.join() # blocking 모드일 경우 스레드가 끝날 때까지 대기
+
+
+    def _translation_task( # start_translation의 스레드 실행 로직을 이 메서드로 이동
+        self,
+        input_file_path: Union[str, Path],
+        output_file_path: Union[str, Path],
+        progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
+        status_callback: Optional[Callable[[str], None]] = None,
+        tqdm_file_stream: Optional[Any] = None
+    ):
         if not self.translation_service or not self.chunk_service:
             logger.error("번역 서비스 실패: 서비스가 초기화되지 않았습니다.")
             if status_callback: status_callback("오류: 서비스 초기화 실패")

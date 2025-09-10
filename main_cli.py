@@ -161,9 +161,10 @@ def cli_glossary_extraction_progress_callback(dto: GlossaryExtractionProgressDTO
 def parse_arguments():
     """명령줄 인수를 파싱합니다."""
     parser = argparse.ArgumentParser(description="BTG - 배치 번역기 CLI (4-Tier Refactored)")
-    parser.add_argument("input_file", type=Path, help="번역할 입력 텍스트 파일 경로")
+    # 'input_file'을 'input_files'로 변경하고 nargs='+' 추가
+    parser.add_argument("input_files", type=Path, nargs='+', help="번역할 입력 텍스트 파일 경로 (여러 개 지정 가능)")
     parser.add_argument("-o", "--output_file", type=Path, default=None, help="번역 결과를 저장할 파일 경로 (기본값: 입력파일_translated.txt)")
-    parser.add_argument("-c", "--config", type=Path, default="config.json", help="설정 파일 경로 (기본값: config.json)")
+    parser.add_argument("-c", "--config", type=Path, default="config.json", help="설정 파일 경로 (기본값: config.json")
 
     auth_group = parser.add_mutually_exclusive_group()
     auth_group.add_argument("--auth-credentials", type=str, default=None, help="Gemini API 키 (단일) 또는 Vertex AI 서비스 계정 JSON 문자열")
@@ -209,7 +210,7 @@ def main():
     setup_logger(logger_name="btg_cli", log_level=getattr(logging, args.log_level.upper()), log_file=log_file_path)
 
     cli_logger.info("BTG CLI 시작...")
-    cli_logger.info(f"입력 파일: {args.input_file}")
+    cli_logger.info(f"입력 파일: {args.input_files}")
     cli_logger.info(f"설정 파일: {args.config}")
     if args.resume: cli_logger.info("이어하기 옵션 (--resume) 활성화됨.")
     if args.force_new: cli_logger.info("새로 시작 옵션 (--force-new) 활성화됨.")
@@ -311,92 +312,103 @@ def main():
             # 현재는 AppService의 config에 직접 영향을 주지 않으므로 load_app_config 호출 불필요.
         
         # type: ignore
-        if args.extract_glossary_only: # 인수명 변경
-            cli_logger.info("용어집 추출 모드로 실행합니다.") # 메시지 변경
-            if not args.input_file.exists():
-                cli_logger.error(f"입력 파일을 찾을 수 없습니다: {args.input_file}")
+        if args.extract_glossary_only:
+            # 용어집 추출은 첫 번째 파일에 대해서만 수행하거나, 각 파일에 대해 수행하도록 선택할 수 있습니다.
+            # 여기서는 첫 번째 파일을 기준으로 합니다.
+            first_input_file = args.input_files[0]
+            cli_logger.info(f"용어집 추출 모드로 실행합니다. 대상 파일: {first_input_file}")
+            if not first_input_file.exists():
+                cli_logger.error(f"입력 파일을 찾을 수 없습니다: {first_input_file}")
                 sys.exit(1)
         
             result_glossary_path = app_service.extract_glossary(
-                args.input_file,
-                progress_callback=cli_glossary_extraction_progress_callback, # 콜백 함수명 변경
+                first_input_file,
+                progress_callback=cli_glossary_extraction_progress_callback,
                 novel_language_code=app_service.config.get("novel_language"),
                 seed_glossary_path=args.seed_glossary_file,
                 user_override_glossary_extraction_prompt=app_service.config.get("user_override_glossary_extraction_prompt")
             )
-            Tqdm.write(f"\n용어집 추출 완료. 결과 파일: {result_glossary_path}", file=sys.stdout) # 메시지 변경
+            Tqdm.write(f"\n용어집 추출 완료. 결과 파일: {result_glossary_path}", file=sys.stdout)
 
         else: # 번역 모드
-            output_file = args.output_file
-            if not output_file:
-                output_file = args.input_file.parent / f"{args.input_file.stem}_translated{args.input_file.suffix}"
-            cli_logger.info(f"출력 파일: {output_file}")
+            # 번역 모드: 모든 파일을 순차적으로 처리
+            total_files = len(args.input_files)
+            cli_logger.info(f"총 {total_files}개의 파일에 대한 번역을 시작합니다.")
 
-            if not args.input_file.exists():
-                cli_logger.error(f"입력 파일을 찾을 수 없습니다: {args.input_file}")
-                sys.exit(1)
+            for i, input_file in enumerate(args.input_files):
+                cli_logger.info(f"--- 파일 {i+1}/{total_files} 처리 시작: {input_file} ---")
 
-            metadata_file_path = get_metadata_file_path(args.input_file)
-            loaded_metadata = load_metadata(metadata_file_path)
-            current_config_hash = _hash_config_for_metadata(app_service.config)
-            previous_config_hash = loaded_metadata.get("config_hash")
+                if not input_file.exists():
+                    cli_logger.error(f"입력 파일을 찾을 수 없습니다: {input_file}. 이 파일을 건너뜁니다.")
+                    continue
 
-            should_start_new = False
+                output_file = args.output_file
+                if not output_file: # 출력 파일이 지정되지 않은 경우, 각 입력 파일에 맞춰 자동 생성
+                    output_file = input_file.parent / f"{input_file.stem}_translated{input_file.suffix}"
+                
+                cli_logger.info(f"출력 파일: {output_file}")
 
-            if args.force_new:
-                cli_logger.info("--force-new 옵션으로 강제 새로 번역을 시작합니다.")
-                should_start_new = True
-            elif args.resume:
-                if previous_config_hash and previous_config_hash == current_config_hash:
-                    cli_logger.info("--resume 옵션 및 설정 일치로 이어하기를 시도합니다.")
-                elif previous_config_hash:
-                    cli_logger.warning("설정이 이전 작업과 다릅니다. --resume 옵션이 무시되고 새로 번역을 시작합니다.")
+                metadata_file_path = get_metadata_file_path(input_file)
+                loaded_metadata = load_metadata(metadata_file_path)
+                current_config_hash = _hash_config_for_metadata(app_service.config)
+                previous_config_hash = loaded_metadata.get("config_hash")
+
+                should_start_new = False
+
+                if args.force_new:
+                    cli_logger.info("--force-new 옵션으로 강제 새로 번역을 시작합니다.")
                     should_start_new = True
-                else:
-                    cli_logger.info("이전 작업 내역이 없습니다. 새로 번역을 시작합니다. (--resume 옵션 무시)")
-                    should_start_new = True
-            else:
-                if previous_config_hash and previous_config_hash == current_config_hash:
-                    Tqdm.write(
-                        f"'{args.input_file.name}'에 대한 이전 번역 작업 내역이 있습니다.\n"
-                        f"  이어하려면: --resume\n"
-                        f"  새로 시작하려면: --force-new\n"
-                        "옵션 없이 실행하면 새로 번역을 시작합니다 (기존 내역 삭제). 계속하시겠습니까? [y/N]: ",
-                        file=sys.stdout
-                    )
-                    try:
-                        answer = input().lower()
-                        if answer != 'y':
-                            cli_logger.info("사용자 취소.")
-                            sys.exit(0)
-                        cli_logger.info("사용자 동의 하에 새로 번역을 시작합니다.")
+                elif args.resume:
+                    if previous_config_hash and previous_config_hash == current_config_hash:
+                        cli_logger.info("--resume 옵션 및 설정 일치로 이어하기를 시도합니다.")
+                    elif previous_config_hash:
+                        cli_logger.warning("설정이 이전 작업과 다릅니다. --resume 옵션이 무시되고 새로 번역을 시작합니다.")
                         should_start_new = True
-                    except Exception:
-                        cli_logger.info("입력 오류 또는 시간 초과로 프로그램을 종료합니다. 옵션을 명시하여 다시 실행해주세요.")
-                        sys.exit(0)
-
-
-                elif previous_config_hash and previous_config_hash != current_config_hash:
-                    cli_logger.info("설정이 이전 작업과 다릅니다. 새로 번역을 시작합니다.")
-                    should_start_new = True
+                    else:
+                        cli_logger.info("이전 작업 내역이 없습니다. 새로 번역을 시작합니다. (--resume 옵션 무시)")
+                        should_start_new = True
                 else:
-                    cli_logger.info("이전 작업 내역이 없습니다. 새로 번역을 시작합니다.")
-                    should_start_new = True
+                    if previous_config_hash and previous_config_hash == current_config_hash:
+                        Tqdm.write(
+                            f"'{input_file.name}'에 대한 이전 번역 작업 내역이 있습니다.\n"
+                            f"  이어하려면: --resume\n"
+                            f"  새로 시작하려면: --force-new\n"
+                            "옵션 없이 실행하면 새로 번역을 시작합니다 (기존 내역 삭제). 계속하시겠습니까? [y/N]: ",
+                            file=sys.stdout
+                        )
+                        try:
+                            answer = input().lower()
+                            if answer != 'y':
+                                cli_logger.info("사용자 취소.")
+                                sys.exit(0)
+                            cli_logger.info("사용자 동의 하에 새로 번역을 시작합니다.")
+                            should_start_new = True
+                        except Exception:
+                            cli_logger.info("입력 오류 또는 시간 초과로 프로그램을 종료합니다. 옵션을 명시하여 다시 실행해주세요.")
+                            sys.exit(0)
+                    elif previous_config_hash and previous_config_hash != current_config_hash:
+                        cli_logger.info("설정이 이전 작업과 다릅니다. 새로 번역을 시작합니다.")
+                        should_start_new = True
+                    else:
+                        cli_logger.info("이전 작업 내역이 없습니다. 새로 번역을 시작합니다.")
+                        should_start_new = True
 
-            if should_start_new:
-                cli_logger.info("새로 번역을 위해 기존 메타데이터 및 출력 파일을 삭제합니다.")
-                if metadata_file_path.exists(): delete_file(metadata_file_path)
-                if output_file.exists(): delete_file(output_file)
+                if should_start_new:
+                    cli_logger.info("새로 번역을 위해 기존 메타데이터 및 출력 파일을 삭제합니다.")
+                    if metadata_file_path.exists(): delete_file(metadata_file_path)
+                    if output_file.exists(): delete_file(output_file)
 
-            cli_logger.info("번역 모드로 실행합니다.")
-            app_service.start_translation(
-                args.input_file,
-                output_file,
-                progress_callback=cli_translation_progress_callback,
-                status_callback=cli_translation_status_callback,
-                tqdm_file_stream=sys.stdout
-            )
-            Tqdm.write(f"\n번역 작업 완료. 결과 파일: {output_file}", file=sys.stdout)
+                app_service.start_translation(
+                    input_file,
+                    output_file,
+                    progress_callback=cli_translation_progress_callback,
+                    status_callback=cli_translation_status_callback,
+                    tqdm_file_stream=sys.stdout,
+                    blocking=True # CLI에서는 순차 처리를 위해 blocking=True로 호출
+                )
+                cli_logger.info(f"--- 파일 {i+1}/{total_files} 처리 완료: {input_file} ---")
+            
+            Tqdm.write(f"\n모든 번역 작업 완료.", file=sys.stdout)
 
     except BtgException as e:
         cli_logger.error(f"BTG 애플리케이션 오류: {e}", exc_info=True)
@@ -413,6 +425,7 @@ def main():
                     tqdm_instances[task_id].close() # type: ignore
                 del tqdm_instances[task_id] # type: ignore
         cli_logger.info("BTG CLI 종료.")
+
 
 if __name__ == "__main__":
     main()

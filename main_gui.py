@@ -561,21 +561,33 @@ class BatchTranslatorGUI:
         file_chunk_frame = ttk.LabelFrame(settings_frame, text="파일 및 처리 설정", padding="10")
         file_chunk_frame.pack(fill="x", padx=5, pady=5)
         
-        # 입력 파일
-        input_file_label_widget = ttk.Label(file_chunk_frame, text="입력 파일:")
-        input_file_label_widget.grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(input_file_label_widget, "번역할 원본 텍스트 파일입니다.")       
-        self.input_file_entry = ttk.Entry(file_chunk_frame, width=50)
-        self.input_file_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        Tooltip(self.input_file_entry, "번역할 파일 경로를 입력하거나 '찾아보기'로 선택하세요.")
-        self.browse_input_button = ttk.Button(file_chunk_frame, text="찾아보기", command=self._browse_input_file)
-        self.browse_input_button.grid(row=0, column=2, padx=5, pady=5)
-        Tooltip(self.browse_input_button, "번역할 입력 파일을 찾습니다.")
+        # 입력 파일 섹션 수정
+        input_file_frame = ttk.LabelFrame(file_chunk_frame, text="입력 파일 목록", padding="5")
+        input_file_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+
+        self.input_file_listbox = tk.Listbox(input_file_frame, selectmode=tk.EXTENDED, width=70, height=5)
+        self.input_file_listbox.pack(side="left", fill="both", expand=True, padx=5, pady=5)
         
+        listbox_scrollbar = ttk.Scrollbar(input_file_frame, orient="vertical", command=self.input_file_listbox.yview)
+        listbox_scrollbar.pack(side="right", fill="y")
+        self.input_file_listbox.config(yscrollcommand=listbox_scrollbar.set)
+
+        # 파일 추가/삭제 버튼 프레임
+        file_button_frame = ttk.Frame(input_file_frame)
+        file_button_frame.pack(side="left", fill="y", padx=5)
+
+        self.add_files_button = ttk.Button(file_button_frame, text="파일 추가", command=self._browse_input_files)
+        self.add_files_button.pack(pady=2, fill="x")
+        Tooltip(self.add_files_button, "번역할 파일을 목록에 추가합니다.")
+        
+        self.remove_file_button = ttk.Button(file_button_frame, text="선택 삭제", command=self._remove_selected_files)
+        self.remove_file_button.pack(pady=2, fill="x")
+        Tooltip(self.remove_file_button, "목록에서 선택한 파일을 제거합니다.")
+
         # 출력 파일
-        output_file_label_widget = ttk.Label(file_chunk_frame, text="출력 파일:")
+        output_file_label_widget = ttk.Label(file_chunk_frame, text="출력 파일 (단일 모드):")
         output_file_label_widget.grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(output_file_label_widget, "번역된 결과를 저장할 파일입니다.")
+        Tooltip(output_file_label_widget, "단일 파일 번역 시 사용될 출력 파일 경로입니다.\n(배치 처리 시에는 각 파일별로 자동 생성됩니다)")
         self.output_file_entry = ttk.Entry(file_chunk_frame, width=50)
         self.output_file_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         Tooltip(self.output_file_entry, "번역 결과를 저장할 파일 경로를 입력하거나 '찾아보기'로 선택하세요.")
@@ -1081,20 +1093,38 @@ class BatchTranslatorGUI:
             self._reset_model_combobox(current_user_input_model)
 
 
-    def _browse_input_file(self):
-        filepath = filedialog.askopenfilename(title="입력 파일 선택", filetypes=(("텍스트 파일", "*.txt"), ("모든 파일", "*.*")))
-        if filepath:
-            self.input_file_entry.delete(0, tk.END)
-            self.input_file_entry.insert(0, filepath)
-            p = Path(filepath)
-            app_service_instance = self.app_service
-            suggested_output = p.parent / f"{p.stem}_translated{p.suffix}" # type: ignore
-            self.output_file_entry.delete(0, tk.END) # type: ignore
-            
+    def _browse_input_files(self): # 메서드 이름 변경 및 로직 수정
+        filepaths = filedialog.askopenfilenames(
+            title="입력 파일 선택",
+            filetypes=(("텍스트 파일", "*.txt"), ("모든 파일", "*.*"))
+        )
+        if filepaths:
+            for filepath in filepaths:
+                if filepath not in self.input_file_listbox.get(0, tk.END):
+                    self.input_file_listbox.insert(tk.END, filepath)
+            # 자동 출력 경로 및 용어집 경로 제안 로직은 첫 번째 파일을 기준으로 유지하거나 수정할 수 있습니다.
+            self._propose_paths_from_first_input()
+
+    def _propose_paths_from_first_input(self):
+        if self.input_file_listbox.size() > 0:
+            first_file = self.input_file_listbox.get(0)
+            p = Path(first_file)
+            suggested_output = p.parent / f"{p.stem}_translated{p.suffix}"
+            self.output_file_entry.delete(0, tk.END)
             self.output_file_entry.insert(0, str(suggested_output))
-            suggested_glossary_json = p.parent / f"{p.stem}{self.app_service.config.get('glossary_output_json_filename_suffix', '_glossary.json') if self.app_service else '_glossary.json'}" # Key changed
-            self.glossary_json_path_entry.delete(0, tk.END) # Changed
-            self.glossary_json_path_entry.insert(0, str(suggested_glossary_json))
+
+            if self.app_service:
+                suffix = self.app_service.config.get('glossary_output_json_filename_suffix', '_glossary.json')
+                suggested_glossary = p.parent / f"{p.stem}{suffix}"
+                self.glossary_json_path_entry.delete(0, tk.END)
+                self.glossary_json_path_entry.insert(0, str(suggested_glossary))
+
+
+    def _remove_selected_files(self):
+        selected_indices = self.input_file_listbox.curselection()
+        # 인덱스가 큰 것부터 삭제해야 순서가 꼬이지 않습니다.
+        for index in reversed(selected_indices):
+            self.input_file_listbox.delete(index)
 
 
 
@@ -1272,41 +1302,25 @@ class BatchTranslatorGUI:
 
     def _update_translation_status(self, message: str):
         def _update():
-            if not self.master.winfo_exists(): return
-            self.progress_label.config(text=message)
+            # This method is now only for logging and button state management,
+            # not for progress text or completion popups.
             self._log_message(f"번역 상태: {message}")
             if "번역 시작됨" in message or "번역 중..." in message or "처리 중" in message or "준비 중" in message :
                 self.start_button.config(state=tk.DISABLED)
                 self.stop_button.config(state=tk.NORMAL)
-            elif "완료" in message or "오류" in message or "중단" in message:
+            # The final state update is handled in _run_multiple_translations_sequentially
+            elif "오류" in message or "중단" in message:
                 self.start_button.config(state=tk.NORMAL)
                 self.stop_button.config(state=tk.DISABLED)
-                
-                # ====================================================================
-                # ===== 번역 완료 알림 추가 =========================================
-                # ====================================================================
-                if "완료" in message and "오류" not in message and "중단" not in message:
-                    # 번역이 성공적으로 완료된 경우에만 알림 표시
-                    self._show_completion_notification()
-                # ====================================================================
                 
         if self.master.winfo_exists():
             self.master.after(0, _update)
 
-    def _show_completion_notification(self):
+    def _show_completion_notification(self, title: str, message: str):
         """번역 완료 시 알림 팝업을 표시합니다."""
         try:
-            # 출력 파일 경로 가져오기
-            output_file = self.output_file_entry.get()
-            
-            # 알림 메시지 구성
-            notification_message = f"파일 번역이 성공적으로 완료되었습니다.\n\n출력 파일:\n{output_file}"
-            
-            # 번역 완료 알림 표시
-            messagebox.showinfo("번역 완료", notification_message)
-            
+            messagebox.showinfo(title, message)
         except Exception as e:
-            # 알림 표시 중 오류가 발생해도 로그만 남기고 계속 진행
             self._log_message(f"번역 완료 알림 표시 중 오류: {e}", "ERROR")
 
     def _start_translation_thread_with_resume_check(self):
@@ -1315,98 +1329,98 @@ class BatchTranslatorGUI:
             messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
             return
 
-        input_file = self.input_file_entry.get()
-        output_file = self.output_file_entry.get()
-
-        if not input_file or not output_file:
-            messagebox.showwarning("경고", "입력 파일과 출력 파일을 모두 선택해주세요.")
+        input_files = self.input_file_listbox.get(0, tk.END)
+        if not input_files:
+            messagebox.showwarning("경고", "입력 파일을 하나 이상 추가해주세요.")
             return
-
-        input_file_path_obj = Path(input_file)
-        output_file_path_obj = Path(output_file)
-
-        if not input_file_path_obj.exists():
-            messagebox.showerror("오류", f"입력 파일을 찾을 수 없습니다: {input_file}")
-            return
-
-        temp_current_config_from_ui = self._get_config_from_ui()
-        config_for_hash_check = app_service.config.copy()
-        config_for_hash_check.update(temp_current_config_from_ui)
-
-        metadata_file_path = get_metadata_file_path(input_file_path_obj)
-        loaded_metadata = load_metadata(metadata_file_path) 
-        current_config_hash = _hash_config_for_metadata(config_for_hash_check)
-        previous_config_hash = loaded_metadata.get("config_hash")
-
-        start_new_translation_flag = False 
-
-        if previous_config_hash and loaded_metadata.get("status") not in ["completed", "completed_with_errors", "error", None, ""]: 
-            if previous_config_hash == current_config_hash:
-                user_choice = messagebox.askyesnocancel(
-                    "이어하기 확인",
-                    "이전 번역 작업 내역이 있습니다. 이어하시겠습니까?\n\n"
-                    "(예: 이어하기 / 아니오: 새로 번역 / 취소: 작업 취소)"
-                )
-                if user_choice is None: 
-                    return
-                elif not user_choice: 
-                    logger.info("사용자 선택: 새로 번역을 시작합니다.")
-                    start_new_translation_flag = True
-            else: 
-                if messagebox.askyesno("설정 변경 알림", "설정이 이전 작업과 다릅니다. 새로 번역을 시작하시겠습니까?\n\n(아니오 선택 시 현재 설정으로 이어하기 시도)"):
-                    logger.info("설정 변경으로 인해 새로 번역을 시작합니다.")
-                    start_new_translation_flag = True
-        else: 
-            if previous_config_hash : 
-                 logger.info(f"이전 작업 상태({loaded_metadata.get('status')})로 인해 새로 번역을 시작합니다.")
-            start_new_translation_flag = True
-
-        if start_new_translation_flag:
-            logger.info(f"새 번역을 위해 기존 메타데이터 파일 '{metadata_file_path}' 및 출력 파일 '{output_file_path_obj}'을 삭제합니다 (필요시).")
-            delete_file(metadata_file_path)
-
-        self._start_translation_thread(start_new_translation=start_new_translation_flag)
-
-    def _start_translation_thread(self, start_new_translation: bool = False): 
-        app_service = self.app_service
-        if not app_service: return
-
-        input_file = self.input_file_entry.get()
-        output_file = self.output_file_entry.get()
         
-        try:
-            current_ui_config = self._get_config_from_ui()
-            app_service.load_app_config(runtime_overrides=current_ui_config)
+        # In batch mode, we disable the interactive resume check for a smoother UX.
+        # We will default to starting fresh for each file.
+        # A potential future improvement could be a global "resume" checkbox.
+        app_service.config['resume_translation'] = False
+        self.stop_requested = False
 
-
-            if not self.app_service.gemini_client:
-                 if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. (인증 정보 확인 필요)\n계속 진행하시겠습니까?"):
-                    self.start_button.config(state=tk.NORMAL) 
-                    return
-        except ValueError as ve: 
-             messagebox.showerror("입력 오류", f"설정값 오류: {ve}")
-             self.start_button.config(state=tk.NORMAL)
-             return
-        except Exception as e:
-            messagebox.showerror("오류", f"번역 시작 전 설정 오류: {e}")
-            self._log_message(f"번역 시작 전 설정 오류: {e}", "ERROR", exc_info=True)
-            self.start_button.config(state=tk.NORMAL)
-            return
-
-        self.start_button.config(state=tk.DISABLED)
-        self.stop_button.config(state=tk.NORMAL)
-        self.progress_bar['value'] = 0
-        self.progress_label.config(text="번역 준비 중...")
-
+        # Run the sequential translation in a separate thread to keep the GUI responsive.
         thread = threading.Thread(
-            target=app_service.start_translation,
-            args=(input_file, output_file,
-                  self._update_translation_progress,
-                  self._update_translation_status,
-                  self.tqdm_stream),
+            target=self._run_multiple_translations_sequentially,
+            args=(list(input_files),),
             daemon=True
         )
         thread.start()
+
+    def _run_multiple_translations_sequentially(self, input_files: list):
+        """
+        입력 파일 목록을 순회하며 하나씩 번역을 실행하고, 모든 작업 완료 후 알림을 표시합니다.
+        """
+        app_service = self.app_service
+        if not app_service: return
+        
+        total_files = len(input_files)
+        completed_files = []
+        failed_files = []
+
+        # Apply UI settings before starting
+        try:
+            current_ui_config = self._get_config_from_ui()
+            app_service.load_app_config(runtime_overrides=current_ui_config)
+            if not self.app_service.gemini_client:
+                 if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. (인증 정보 확인 필요)\n계속 진행하시겠습니까?"):
+                    self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+                    return
+        except Exception as e:
+            messagebox.showerror("오류", f"번역 시작 전 설정 오류: {e}")
+            self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+            return
+
+        for i, input_file in enumerate(input_files):
+            if self.stop_requested:
+                self._log_message("사용자 요청으로 다중 파일 번역 작업을 중단합니다.")
+                break
+
+            self._log_message(f"=== 파일 {i+1}/{total_files} 번역 시작: {Path(input_file).name} ===")
+            self.master.after(0, lambda file=input_file: self.progress_label.config(text=f"{Path(file).name} 번역 준비 중..."))
+            
+            p = Path(input_file)
+            output_file = p.parent / f"{p.stem}_translated{p.suffix}"
+
+            translation_done_event = threading.Event()
+            translation_status = {"message": ""}
+
+            def translation_finished_callback(message: str):
+                """Callback to be invoked when translation is finished, stopped, or has an error."""
+                if "완료" in message or "오류" in message or "중단" in message:
+                    translation_status["message"] = message
+                    translation_done_event.set()
+
+            app_service.start_translation(
+                input_file_path=input_file,
+                output_file_path=str(output_file),
+                progress_callback=self._update_translation_progress,
+                status_callback=translation_finished_callback,
+                tqdm_file_stream=self.tqdm_stream
+            )
+            
+            translation_done_event.wait() # Wait for the translation of the current file to complete
+            
+            if "오류" in translation_status["message"] or "중단" in translation_status["message"]:
+                failed_files.append(Path(input_file).name)
+            else:
+                completed_files.append(Path(input_file).name)
+
+            self._log_message(f"=== 파일 {i+1}/{total_files} 처리 완료: {Path(input_file).name} ===")
+
+        # After all files are processed, show a final summary notification.
+        final_title = "배치 번역 완료"
+        final_message = f"총 {total_files}개 파일 중 {len(completed_files)}개 성공, {len(failed_files)}개 실패/중단.\n\n"
+        if completed_files:
+            final_message += f"성공:\n- " + "\n- ".join(completed_files)
+        if failed_files:
+            final_message += f"\n\n실패/중단:\n- " + "\n- ".join(failed_files)
+
+        self.master.after(0, lambda: self._show_completion_notification(final_title, final_message))
+        self.master.after(0, lambda: self.progress_label.config(text="모든 파일 작업 완료."))
+        self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+        self.master.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
 
     def _request_stop_translation(self):
         app_service = self.app_service
@@ -1434,9 +1448,18 @@ class BatchTranslatorGUI:
             messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
             return
 
-        input_file = self.input_file_entry.get() # This should be the source novel file
+        selected_indices = self.input_file_listbox.curselection()
+        if not selected_indices:
+            if self.input_file_listbox.size() > 0:
+                messagebox.showwarning("경고", "용어집을 추출할 파일을 목록에서 선택해주세요.")
+            else:
+                messagebox.showwarning("경고", "입력 파일을 먼저 추가해주세요.")
+            return
+        
+        input_file = self.input_file_listbox.get(selected_indices[0])
+
         if not input_file:
-            messagebox.showwarning("경고", "용어집을 추출할 입력 파일을 먼저 선택해주세요.")          
+            messagebox.showwarning("경고", "용어집을 추출할 입력 파일을 먼저 선택해주세요.")
             return
         if not Path(input_file).exists():
             messagebox.showerror("오류", f"입력 파일을 찾을 수 없습니다: {input_file}")

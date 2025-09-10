@@ -93,6 +93,9 @@ class TranslationService:
             logger.info("동적 용어집 주입 비활성화됨. 용어집 컨텍스트 없이 번역합니다.") # 메시지 변경
 
     def _load_glossary_data(self): # 함수명 변경
+        # 데이터를 로드하기 전에 항상 목록을 초기화합니다.
+        self.glossary_entries_for_injection = []
+        
         # 통합된 용어집 경로 사용
         lorebook_json_path_str = self.config.get("glossary_json_path")
         if lorebook_json_path_str and os.path.exists(lorebook_json_path_str):

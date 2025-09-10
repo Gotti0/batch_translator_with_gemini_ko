@@ -50,7 +50,18 @@ def setup_logger(
     formatter = logging.Formatter(DEFAULT_LOG_FORMAT)
 
     if log_to_console:
-        console_handler = logging.StreamHandler(sys.stdout)
+        try:
+            # Try to reconfigure stdout to use UTF-8, which is cleaner
+            sys.stdout.reconfigure(encoding='utf-8')
+            console_handler = logging.StreamHandler(sys.stdout)
+        except (TypeError, AttributeError):
+            # If reconfigure fails, fall back to a wrapper that replaces errors
+            import io
+            safe_stdout = io.TextIOWrapper(
+                sys.stdout.buffer, encoding='utf-8', errors='replace'
+            )
+            console_handler = logging.StreamHandler(safe_stdout)
+
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
         # logger.debug(f"Console handler added to logger '{logger_name}'.")
