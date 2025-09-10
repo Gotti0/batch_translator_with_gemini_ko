@@ -1846,7 +1846,12 @@ class BatchTranslatorGUI:
             messagebox.showerror("JSON 오류", f"용어집 내용이 유효한 JSON 형식이 아닙니다: {e}") # Text changed           
             return
 
-        editor_window = GlossaryEditorWindow(self.master, current_json_str, self._handle_glossary_editor_save, self.input_file_entry.get()) # Class and callback changed       
+        input_file_path = ""
+        selected_indices = self.input_file_listbox.curselection()
+        if selected_indices:
+            input_file_path = self.input_file_listbox.get(selected_indices[0])
+
+        editor_window = GlossaryEditorWindow(self.master, current_json_str, self._handle_glossary_editor_save, input_file_path) # Class and callback changed
         editor_window.grab_set() # Modal-like behavior
 
     def _handle_glossary_editor_save(self, updated_json_str: str): # Renamed
@@ -2233,14 +2238,18 @@ class TextHandler(logging.Handler):
         level_tag = record.levelname
         
         def append_message_to_widget():
-            if not self.text_widget.winfo_exists(): 
-                return
-            
-            current_state = self.text_widget.cget("state") 
-            self.text_widget.config(state=tk.NORMAL) 
-            self.text_widget.insert(tk.END, msg + "\n", level_tag)
-            self.text_widget.config(state=current_state) 
-            self.text_widget.see(tk.END) 
+            try:
+                if not self.text_widget.winfo_exists(): 
+                    return
+                
+                current_state = self.text_widget.cget("state") 
+                self.text_widget.config(state=tk.NORMAL) 
+                self.text_widget.insert(tk.END, msg + "\n", level_tag)
+                self.text_widget.config(state=current_state) 
+                self.text_widget.see(tk.END)
+            except tk.TclError:
+                # This can happen if the window is destroyed.
+                pass 
 
         if self.text_widget.winfo_exists():
              self.text_widget.after(0, append_message_to_widget)
