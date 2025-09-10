@@ -1,6 +1,9 @@
 # batch_translator_gui.py
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
+# from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog # 기존 ttk 관련 import 주석 처리 또는 삭제
+from tkinter import filedialog, messagebox, scrolledtext # 필요한 모듈만 남김
+import ttkbootstrap as ttk # ttkbootstrap 임포트
+from ttkbootstrap.constants import * # ttkbootstrap 상수 임포트
 import threading
 import os
 from pathlib import Path
@@ -238,14 +241,16 @@ class BatchTranslatorGUI:
 
         self.master.protocol("WM_DELETE_WINDOW", self._on_closing)
 
-        style = ttk.Style()
-        style.theme_use('clam') 
-        style.configure("TButton", padding=6, relief="flat", background="#ddd")
-        style.map("TButton", background=[('active', '#ccc')])
-        style.configure("TNotebook.Tab", padding=[10, 5], font=('Helvetica', 10))
+        # ttkbootstrap 스타일 적용 (기존 ttk.Style() 부분 대체)
+        # style = ttk.Style()
+        # style.theme_use('clam')
+        # style.configure("TButton", padding=6, relief="flat", background="#ddd")
+        # style.map("TButton", background=[('active', '#ccc')])
+        # style.configure("TNotebook.Tab", padding=[10, 5], font=('Helvetica', 10))
+        # 위 부분을 아래 코드로 대체할 수 있으나, ttkbootstrap.Window가 자동으로 처리해줍니다.
 
         # 노트북 생성
-        self.notebook = ttk.Notebook(master)
+        self.notebook = ttk.Notebook(master, bootstyle="primary") # bootstyle 적용
         
         # 스크롤 가능한 프레임들로 탭 생성
         self.settings_scroll = ScrollableFrame(self.notebook)
@@ -2243,7 +2248,9 @@ class TextHandler(logging.Handler):
 if __name__ == '__main__':
     logger.info("BatchTranslatorGUI 시작 중...")
 
-    root = tk.Tk()
+    # ttkbootstrap.Window 사용
+    root = ttk.Window(themename="litera") # 'litera' 테마 적용, 다양한 테마 선택 가능 (예: cosmo, flatly, journal, darkly 등)
+    
     try:
         app_gui = BatchTranslatorGUI(root)
     except Exception as e:

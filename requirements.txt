@@ -1,3 +1,4 @@
 tqdm>=4.65.0
 python-dotenv>=0.21.0
 google-genai
+ttkbootstrap>=1.10.1
