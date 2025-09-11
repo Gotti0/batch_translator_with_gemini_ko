@@ -219,10 +219,14 @@ def save_metadata(input_file_path: Union[str, Path], metadata: Dict[str, Any]) -
         logger.error(f"메타데이터 저장 실패 ({metadata_path}): {e}", exc_info=True)
 
 def _hash_config_for_metadata(config: Dict[str, Any]) -> str:
-    config_copy = config.copy()
-    config_copy.pop('api_key', None) 
-    config_copy.pop('api_keys', None) 
-    config_str = json.dumps(config_copy, sort_keys=True, ensure_ascii=False)
+    """
+    번역 작업의 무결성 검토를 위한 설정 해시를 생성합니다.
+    청크 크기만 영향을 미치도록 하여, 다른 설정 변경 시에도 이전 진행 상황을 유지할 수 있습니다.
+    """
+    # 청크 크기만 해시 계산에 포함
+    chunk_size = config.get('chunk_size', 3000)  # 기본값 3000 (config_manager의 기본값과 일치)
+    minimal_config = {'chunk_size': chunk_size}
+    config_str = json.dumps(minimal_config, sort_keys=True, ensure_ascii=False)
     return hashlib.md5(config_str.encode('utf-8')).hexdigest()
 
 def create_new_metadata(input_file_path: Union[str, Path], total_chunks: int, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -322,7 +326,7 @@ if __name__ == '__main__':
     write_text_file(sample_input_file, "이것은 테스트 소설입니다.")
 
     logger.info("\n--- 메타데이터 테스트 ---")
-    initial_config = {"model_name": "gemini-pro", "temperature": 0.7}
+    initial_config = {"model_name": "gemini-pro", "temperature": 0.7, "chunk_size": 3000}
     delete_file(get_metadata_file_path(sample_input_file))
     new_meta = create_new_metadata(sample_input_file, 10, initial_config)
     save_metadata(sample_input_file, new_meta)
@@ -335,10 +339,18 @@ if __name__ == '__main__':
         update_metadata_for_chunk_completion(sample_input_file, 1)
         updated_meta = load_metadata(sample_input_file)
         logger.info(f"청크 완료 후 메타데이터: {updated_meta}")
-        changed_config = {"model_name": "gemini-flash", "temperature": 0.8}
-        current_config_hash = _hash_config_for_metadata(changed_config)
-        if updated_meta and updated_meta.get("config_hash") != current_config_hash:
-            logger.info("설정이 변경되었습니다. 이전 진행 상황을 이어받을지 확인 필요.")
+        
+        # 청크 크기가 변경되지 않은 경우 (다른 설정만 변경) - 해시가 동일해야 함
+        config_same_chunk = {"model_name": "gemini-flash", "temperature": 0.8, "chunk_size": 3000}
+        hash_same_chunk = _hash_config_for_metadata(config_same_chunk)
+        if updated_meta and updated_meta.get("config_hash") == hash_same_chunk:
+            logger.info("청크 크기가 동일하므로 설정 해시가 같습니다. 이전 진행 상황을 이어받을 수 있습니다.")
+        
+        # 청크 크기가 변경된 경우 - 해시가 달라야 함
+        config_diff_chunk = {"model_name": "gemini-flash", "temperature": 0.8, "chunk_size": 5000}
+        hash_diff_chunk = _hash_config_for_metadata(config_diff_chunk)
+        if updated_meta and updated_meta.get("config_hash") != hash_diff_chunk:
+            logger.info("청크 크기가 변경되었습니다. 이전 진행 상황을 이어받을지 확인 필요.")
         elif updated_meta:
             logger.info("설정이 동일합니다.")
         else:
