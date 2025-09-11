@@ -23,7 +23,7 @@ try:
         save_chunk_with_index_to_file, get_metadata_file_path, delete_file,
         load_chunks_from_file,
         create_new_metadata, save_metadata, load_metadata,
-        update_metadata_for_chunk_completion,
+        update_metadata_for_chunk_completion, update_metadata_for_chunk_failure, # 추가
         _hash_config_for_metadata,
         save_merged_chunks_to_file
     )
@@ -42,7 +42,7 @@ except ImportError:
         save_chunk_with_index_to_file, get_metadata_file_path, delete_file,
         load_chunks_from_file,
         create_new_metadata, save_metadata, load_metadata,
-        update_metadata_for_chunk_completion,
+        update_metadata_for_chunk_completion, update_metadata_for_chunk_failure, # 추가
         _hash_config_for_metadata,
         save_merged_chunks_to_file
     )
@@ -487,6 +487,13 @@ class AppService:
                             logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
                     else: # 'success'가 False인 경우, 실패 카운터를 증가시킵니다.
                         self.failed_chunks_count += 1
+                        #  실패한 청크 정보 기록
+                        if last_error:
+                            try:
+                                update_metadata_for_chunk_failure(input_file_path_for_metadata, chunk_index, last_error)
+                                logger.debug(f"  💾 {current_chunk_info_msg} 실패 정보 메타데이터에 기록 완료")
+                            except Exception as meta_fail_e:
+                                logger.error(f"  ❌ {current_chunk_info_msg} 실패 정보 메타데이터 기록 중 오류: {meta_fail_e}")
                     
                     # 3단계: 모든 카운트 업데이트 완료 후 진행률 계산
                     progress_percentage = (self.processed_chunks_count / total_chunks) * 100
@@ -540,7 +547,8 @@ class AppService:
         progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
         tqdm_file_stream: Optional[Any] = None,
-        blocking: bool = False # blocking 매개변수 추가
+        blocking: bool = False, # blocking 매개변수 추가
+        retranslate_failed_only: bool = False # 실패 청크 재번역 모드
     ) -> None:
         # === 용어집 동적 로딩 로직 추가 ===
         try:
@@ -582,7 +590,7 @@ class AppService:
         # 스레드 생성 및 시작 부분 수정
         thread = threading.Thread(
             target=self._translation_task, # 실제 번역 로직을 별도 메서드로 분리
-            args=(input_file_path, output_file_path, progress_callback, status_callback, tqdm_file_stream),
+            args=(input_file_path, output_file_path, progress_callback, status_callback, tqdm_file_stream, retranslate_failed_only),
             daemon=not blocking # blocking 모드가 아닐 때만 데몬 스레드로 설정
         )
         thread.start()
@@ -597,7 +605,8 @@ class AppService:
         output_file_path: Union[str, Path],
         progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
-        tqdm_file_stream: Optional[Any] = None
+        tqdm_file_stream: Optional[Any] = None,
+        retranslate_failed_only: bool = False
     ):
         if not self.translation_service or not self.chunk_service:
             logger.error("번역 서비스 실패: 서비스가 초기화되지 않았습니다.")
@@ -701,7 +710,16 @@ class AppService:
                 save_metadata(metadata_file_path, loaded_metadata)
 
             chunks_to_process_with_indices: List[Tuple[int, str]] = []
-            if resume_translation and "translated_chunks" in loaded_metadata:
+            if retranslate_failed_only:
+                if "failed_chunks" in loaded_metadata and loaded_metadata["failed_chunks"]:
+                    failed_indices = {int(k) for k in loaded_metadata["failed_chunks"].keys()}
+                    for i, chunk_text in enumerate(all_chunks):
+                        if i in failed_indices:
+                            chunks_to_process_with_indices.append((i, chunk_text))
+                    logger.info(f"실패 청크 재번역 모드: {len(chunks_to_process_with_indices)}개 대상.")
+                else:
+                    logger.info("실패한 청크가 없어 재번역을 건너뜁니다.")
+            elif resume_translation and "translated_chunks" in loaded_metadata:
                 with self._progress_lock:
                     previously_translated_indices = {int(k) for k in loaded_metadata.get("translated_chunks", {}).keys()}
                     self.successful_chunks_count = len(previously_translated_indices)
@@ -897,19 +915,21 @@ class AppService:
 
             final_status_msg = "번역 완료."
             with self._progress_lock:
+                # 항상 최신 메타데이터를 다시 로드하여 덮어쓰기 문제를 방지합니다.
+                try:
+                    # 작업 시작 시점의 메타데이터가 아닌, 파일에 기록된 최신 상태를 가져옵니다.
+                    loaded_metadata = load_metadata(metadata_file_path)
+                    if not loaded_metadata:
+                        logger.warning("최종 메타데이터 저장 단계에서 메타데이터 파일을 로드할 수 없습니다. 새 메타데이터를 생성합니다.")
+                        # 이 경우, 정보가 일부 유실될 수 있지만 최소한의 구조는 보존합니다.
+                        loaded_metadata = create_new_metadata(input_file_path_obj, total_chunks, self.config)
+                    else:
+                        logger.info("최종 저장을 위해 최신 메타데이터를 성공적으로 다시 로드했습니다.")
+                except Exception as e:
+                    logger.error(f"최종 메타데이터 저장 전, 최신 정보 로드 실패: {e}. 일부 정보가 유실될 수 있습니다.")
+                    # loaded_metadata는 이전 상태를 유지하지만, 오류를 기록합니다.
+
                 if self.stop_requested:
-                    # 중단 시 최신 메타데이터 재로드하여 완료된 청크 정보 보존
-                    try:
-                        current_metadata = load_metadata(metadata_file_path)
-                        if current_metadata and current_metadata.get("translated_chunks"):
-                            # 최신 메타데이터가 있으면 이를 사용
-                            loaded_metadata = current_metadata
-                            logger.info(f"중단 시 최신 메타데이터 재로드 완료. 보존된 청크: {len(current_metadata.get('translated_chunks', {}))}")
-                        else:
-                            logger.warning("중단 시 최신 메타데이터 로드 실패 또는 빈 데이터, 시작 시점 메타데이터 사용")
-                    except Exception as e:
-                        logger.error(f"중단 시 최신 메타데이터 재로드 실패: {e}. 시작 시점 메타데이터 사용")
-                    
                     final_status_msg = "번역 중단됨."
                     loaded_metadata["status"] = "stopped"
                 elif self.failed_chunks_count > 0:

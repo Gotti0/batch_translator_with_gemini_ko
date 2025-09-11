@@ -729,6 +729,10 @@ class BatchTranslatorGUI:
         self.start_button = ttk.Button(action_frame, text="번역 시작", command=self._start_translation_thread_with_resume_check)
         self.start_button.pack(side="right", padx=5)
         Tooltip(self.start_button, "현재 설정으로 입력 파일의 번역 작업을 시작합니다.")
+
+        self.retry_failed_button = ttk.Button(action_frame, text="실패 청크 재시도", command=self._start_failed_chunks_translation_thread)
+        self.retry_failed_button.pack(side="right", padx=5)
+        Tooltip(self.retry_failed_button, "선택한 파일의 메타데이터에 기록된 실패한 청크들만 다시 번역합니다.")
         
         self.stop_button = ttk.Button(action_frame, text="중지", command=self._request_stop_translation, state=tk.DISABLED)
         self.stop_button.pack(side="right", padx=5)
@@ -1328,38 +1332,50 @@ class BatchTranslatorGUI:
         except Exception as e:
             self._log_message(f"번역 완료 알림 표시 중 오류: {e}", "ERROR")
 
+    def _start_translation_thread(self, retranslate_failed_only: bool = False):
+          app_service = self.app_service
+          if not app_service:
+              messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
+              return
+
+          input_files = self.input_file_listbox.get(0, tk.END)
+          if not input_files:
+              messagebox.showwarning("경고", "입력 파일을 하나 이상 추가해주세요.")
+              return
+
+          self.stop_requested = False
+
+          # Run the sequential translation in a separate thread
+          thread = threading.Thread(
+              target=self._run_multiple_translations_sequentially,
+              args=(list(input_files), retranslate_failed_only),
+              daemon=True
+          )
+          thread.start()
+
     def _start_translation_thread_with_resume_check(self):
-        app_service = self.app_service
-        if not app_service:
-            messagebox.showerror("오류", "애플리케이션 서비스가 초기화되지 않았습니다.")
-            return
+        self._start_translation_thread(retranslate_failed_only=False)
 
-        input_files = self.input_file_listbox.get(0, tk.END)
-        if not input_files:
-            messagebox.showwarning("경고", "입력 파일을 하나 이상 추가해주세요.")
-            return
-        
-        # In batch mode, we disable the interactive resume check for a smoother UX.
-        # We will default to starting fresh for each file.
-        # A potential future improvement could be a global "resume" checkbox.
-        app_service.config['resume_translation'] = False
-        self.stop_requested = False
+    def _start_failed_chunks_translation_thread(self):
+        self._start_translation_thread(retranslate_failed_only=True)
 
-        # Run the sequential translation in a separate thread to keep the GUI responsive.
-        thread = threading.Thread(
-            target=self._run_multiple_translations_sequentially,
-            args=(list(input_files),),
-            daemon=True
-        )
-        thread.start()
-
-    def _run_multiple_translations_sequentially(self, input_files: list):
+    def _run_multiple_translations_sequentially(self, input_files: list, retranslate_failed_only: bool =
+False):
         """
         입력 파일 목록을 순회하며 하나씩 번역을 실행하고, 모든 작업 완료 후 알림을 표시합니다.
         """
+        # 작업 시작 시 버튼 상태 업데이트
+        self.master.after(0, lambda: self.start_button.config(state=tk.DISABLED))
+        self.master.after(0, lambda: self.retry_failed_button.config(state=tk.DISABLED))
+        self.master.after(0, lambda: self.stop_button.config(state=tk.NORMAL))
+
         app_service = self.app_service
-        if not app_service: return
-        
+        if not app_service:
+            self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+            self.master.after(0, lambda: self.retry_failed_button.config(state=tk.NORMAL))
+            self.master.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
+            return
+
         total_files = len(input_files)
         completed_files = []
         failed_files = []
@@ -1369,12 +1385,16 @@ class BatchTranslatorGUI:
             current_ui_config = self._get_config_from_ui()
             app_service.load_app_config(runtime_overrides=current_ui_config)
             if not self.app_service.gemini_client:
-                 if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다. (인증 정보 확인 필요)\n계속 진행하시겠습니까?"):
+                if not messagebox.askyesno("API 설정 경고", "API 클라이언트가 초기화되지 않았습니다.(인증 정보 확인 필요)\n계속 진행하시겠습니까?"):
                     self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+                    self.master.after(0, lambda: self.retry_failed_button.config(state=tk.NORMAL))
+                    self.master.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
                     return
         except Exception as e:
             messagebox.showerror("오류", f"번역 시작 전 설정 오류: {e}")
             self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+            self.master.after(0, lambda: self.retry_failed_button.config(state=tk.NORMAL))
+            self.master.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
             return
 
         for i, input_file in enumerate(input_files):
@@ -1383,8 +1403,9 @@ class BatchTranslatorGUI:
                 break
 
             self._log_message(f"=== 파일 {i+1}/{total_files} 번역 시작: {Path(input_file).name} ===")
-            self.master.after(0, lambda file=input_file: self.progress_label.config(text=f"{Path(file).name} 번역 준비 중..."))
-            
+            self.master.after(0, lambda file=input_file:
+            self.progress_label.config(text=f"{Path(file).name} 번역 준비 중..."))
+
             p = Path(input_file)
             output_file = p.parent / f"{p.stem}_translated{p.suffix}"
 
@@ -1402,11 +1423,12 @@ class BatchTranslatorGUI:
                 output_file_path=str(output_file),
                 progress_callback=self._update_translation_progress,
                 status_callback=translation_finished_callback,
-                tqdm_file_stream=self.tqdm_stream
+                tqdm_file_stream=self.tqdm_stream,
+                retranslate_failed_only=retranslate_failed_only
             )
-            
+
             translation_done_event.wait() # Wait for the translation of the current file to complete
-            
+
             if "오류" in translation_status["message"] or "중단" in translation_status["message"]:
                 failed_files.append(Path(input_file).name)
             else:
@@ -1416,23 +1438,26 @@ class BatchTranslatorGUI:
 
         # After all files are processed, show a final summary notification.
         final_title = "배치 번역 완료"
-        final_message = f"총 {total_files}개 파일 중 {len(completed_files)}개 성공, {len(failed_files)}개 실패/중단.\n\n"
+        final_message = f"총 {total_files}개 파일 중 {len(completed_files)}개 성공, {len(failed_files)}개실패/중단.\\n\\n"
         if completed_files:
-            final_message += f"성공:\n- " + "\n- ".join(completed_files)
+            final_message += f"성공:\\n- " + "\\n- ".join(completed_files)
         if failed_files:
-            final_message += f"\n\n실패/중단:\n- " + "\n- ".join(failed_files)
+            final_message += f"\\n\\n실패/중단:\\n- " + "\\n- ".join(failed_files)
 
         self.master.after(0, lambda: self._show_completion_notification(final_title, final_message))
         self.master.after(0, lambda: self.progress_label.config(text="모든 파일 작업 완료."))
         self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+        self.master.after(0, lambda: self.retry_failed_button.config(state=tk.NORMAL))
         self.master.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
 
     def _request_stop_translation(self):
         app_service = self.app_service
         if not app_service: return
         if app_service.is_translation_running:
+            self.stop_requested = True # GUI 레벨의 중지 플래그 설정
             app_service.request_stop_translation()
             self._log_message("번역 중지 요청됨.")
+            self.stop_button.config(state=tk.DISABLED) # 중지 버튼 비활성화
         else:
             self._log_message("실행 중인 번역 작업이 없습니다.")
 
@@ -1541,11 +1566,21 @@ class BatchTranslatorGUI:
         app_service = self.app_service
         if app_service and app_service.is_translation_running:
             if messagebox.askokcancel("종료 확인", "번역 작업이 진행 중입니다. 정말로 종료하시겠습니까?"):
+                self.stop_requested = True
                 app_service.request_stop_translation()
                 logger.info("사용자 종료 요청으로 번역 중단 시도.")
-                self.master.destroy()
+                # 앱 서비스가 완전히 멈출 때까지 100ms 마다 확인 후 창을 닫습니다.
+                self._check_if_stopped_and_destroy()
         else:
             self.master.destroy()
+
+    def _check_if_stopped_and_destroy(self):
+        # app_service가 없거나 번역이 실행 중이 아니면 즉시 창을 닫습니다.
+        if not self.app_service or not self.app_service.is_translation_running:
+            self.master.destroy()
+        else:
+            # 아직 실행 중이면 100ms 후에 다시 확인합니다.
+            self.master.after(100, self._check_if_stopped_and_destroy)
 
     def _on_api_key_changed(self, event=None):
         # type: ignore

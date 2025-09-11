@@ -117,13 +117,34 @@ def read_json_file(file_path: Union[str, Path]) -> Any: # Return type changed to
         logger.error(f"JSON 파일 읽기 중 오류 발생 ({file_path}): {e}")
         raise
 
-def write_json_file(file_path: Union[str, Path], data: Any, indent: int = 4) -> None: # data type changed to Any
+def write_json_file(file_path: Union[str, Path], data: Any, indent: int = 4) -> None:
+    """
+    JSON 데이터를 파일에 원자적으로(atomically) 씁니다.
+    임시 파일에 먼저 쓰고 rename하여 덮어쓰기 중 발생할 수 있는 문제를 방지합니다.
+    """
     try:
-        ensure_dir_exists(Path(file_path).parent)
-        with open(file_path, 'w', encoding='utf-8') as f: 
+        path_obj = Path(file_path)
+        ensure_dir_exists(path_obj.parent)
+        
+        # 임시 파일에 먼저 쓰기
+        temp_file_path = path_obj.with_suffix(f"{path_obj.suffix}.tmp")
+        with open(temp_file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=indent)
+        
+        # 원자적 연산인 os.replace으로 덮어쓰기
+        os.replace(temp_file_path, path_obj)
+        
     except IOError as e:
-        logger.error(f"JSON 파일 쓰기 중 오류 발생 ({file_path}): {e}")
+        logger.error(f"JSON 파일 쓰기 중 IO 오류 발생 ({file_path}): {e}")
+        raise
+    except Exception as e:
+        # rename 실패 시 임시 파일 삭제 시도
+        if 'temp_file_path' in locals() and Path(temp_file_path).exists():
+            try:
+                delete_file(temp_file_path)
+            except Exception as del_e:
+                logger.error(f"임시 JSON 파일 삭제 실패 ({temp_file_path}): {del_e}")
+        logger.error(f"JSON 파일 쓰기 중 예상치 못한 오류 ({file_path}): {e}", exc_info=True)
         raise
 
 # --- CSV 파일 처리 ---
@@ -202,40 +223,74 @@ def create_new_metadata(input_file_path: Union[str, Path], total_chunks: int, co
     metadata = {
         "input_file": str(input_file_path),
         "total_chunks": total_chunks,
-        "translated_chunks": {}, 
+        "translated_chunks": {},
+        "failed_chunks": {},  # 실패한 청크 기록용
         "config_hash": _hash_config_for_metadata(config),
         "creation_time": current_time,
         "last_updated": current_time,
-        "status": "initialized", 
+        "status": "initialized",
     }
     return metadata
 
 def update_metadata_for_chunk_completion(input_file_path: Union[str, Path], chunk_index: int) -> bool:
-    # 입력이 이미 메타데이터 파일인지 확인
-    p = Path(input_file_path)
-    if p.name.endswith('_metadata.json'):
-        metadata_path = p
-    else:
-        metadata_path = get_metadata_file_path(input_file_path)
-    
     metadata_path = get_metadata_file_path(input_file_path)
     try:
         metadata = read_json_file(metadata_path)
-        if not metadata: 
-            logger.error(f"메타데이터 파일이 존재하지 않아 청크 완료를 업데이트할 수 없습니다: {metadata_path}")
+        if not metadata:
+            logger.error(f"메타데이터 파일이 비어있거나 없어 청크 완료를 업데이트할 수 없습니다: {metadata_path}")
             return False
 
-        metadata["translated_chunks"][str(chunk_index)] = time.time()
-        metadata["last_updated"] = time.time()
-        if len(metadata["translated_chunks"]) == metadata.get("total_chunks", -1): 
-            metadata["status"] = "completed"
+        # 'translated_chunks' 키가 없거나 dict가 아니면 초기화
+        if 'translated_chunks' not in metadata or not isinstance(metadata.get('translated_chunks'), dict):
+            metadata['translated_chunks'] = {}
+        
+        # 'failed_chunks' 키가 없거나 dict가 아니면 초기화
+        if 'failed_chunks' not in metadata or not isinstance(metadata.get('failed_chunks'), dict):
+            metadata['failed_chunks'] = {}
+
+        # 성공했으므로 실패 목록에서 제거
+        if str(chunk_index) in metadata['failed_chunks']:
+            del metadata['failed_chunks'][str(chunk_index)]
+
+        # 청크 완료 정보 기록
+        metadata['translated_chunks'][str(chunk_index)] = time.time()
+        metadata['last_updated'] = time.time()
+
+        # 상태 업데이트
+        if len(metadata['translated_chunks']) == metadata.get("total_chunks", -1):
+            metadata['status'] = "completed"
         else:
-            metadata["status"] = "in_progress"
+            metadata['status'] = "in_progress"
 
         write_json_file(metadata_path, metadata)
         return True
     except Exception as e:
         logger.error(f"메타데이터 청크 완료 업데이트 중 오류 ({metadata_path}): {e}", exc_info=True)
+        return False
+
+def update_metadata_for_chunk_failure(input_file_path: Union[str, Path], chunk_index: int, error_message: str) -> bool:
+    metadata_path = get_metadata_file_path(input_file_path)
+    try:
+        metadata = read_json_file(metadata_path)
+        if not metadata:
+            logger.error(f"메타데이터 파일이 비어있거나 없어 청크 실패를 업데이트할 수 없습니다: {metadata_path}")
+            return False
+
+        if 'failed_chunks' not in metadata or not isinstance(metadata.get('failed_chunks'), dict):
+            metadata['failed_chunks'] = {}
+
+        # 실패 정보 기록 (시간과 오류 메시지)
+        metadata['failed_chunks'][str(chunk_index)] = {
+            "time": time.time(),
+            "error": error_message
+        }
+        metadata['last_updated'] = time.time()
+        metadata['status'] = "in_progress_with_errors"
+
+        write_json_file(metadata_path, metadata)
+        return True
+    except Exception as e:
+        logger.error(f"메타데이터 청크 실패 업데이트 중 오류 ({metadata_path}): {e}", exc_info=True)
         return False
 
 # --- 유틸리티 함수 ---
