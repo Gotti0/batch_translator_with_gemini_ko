@@ -1146,7 +1146,15 @@ class BatchTranslatorGUI:
     def _browse_glossary_json(self): # Renamed
         
         initial_dir = ""
-        input_file_path = self.input_file_entry.get()
+        input_file_path = ""
+        # Check for selected items first
+        selected_indices = self.input_file_listbox.curselection()
+        if selected_indices:
+            input_file_path = self.input_file_listbox.get(selected_indices[0])
+        # If nothing is selected, use the first item in the list
+        elif self.input_file_listbox.size() > 0:
+            input_file_path = self.input_file_listbox.get(0)
+
         if input_file_path and Path(input_file_path).exists():
             initial_dir = str(Path(input_file_path).parent)
         
