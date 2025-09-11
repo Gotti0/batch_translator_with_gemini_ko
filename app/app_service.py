@@ -75,6 +75,8 @@ class AppService:
         self.stop_requested = False
         self._translation_lock = threading.Lock()
         self._progress_lock = threading.Lock()
+        # 파일 쓰기 동기화 (스레드 세이프)
+        self._file_write_lock = threading.Lock()
         self.processed_chunks_count = 0
         self.successful_chunks_count = 0
         self.failed_chunks_count = 0
@@ -338,7 +340,7 @@ class AppService:
 
 
     def _translate_and_save_chunk(self, chunk_index: int, chunk_text: str,
-                            current_run_output_file: Path,
+                            chunked_output_file: Path,
                             total_chunks: int,
                             input_file_path_for_metadata: Path,
                             progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None) -> bool:
@@ -404,7 +406,9 @@ class AppService:
             logger.debug(f"  💾 {current_chunk_info_msg} 결과 저장 시작...")
             save_start_time = time.time()
             
-            save_chunk_with_index_to_file(current_run_output_file, chunk_index, translated_chunk)
+            # 스레드 세이프하게 청크 파일에 직접 기록
+            with self._file_write_lock:
+                save_chunk_with_index_to_file(chunked_output_file, chunk_index, translated_chunk)
             
             save_time = time.time() - save_start_time
             logger.debug(f"  💾 파일 저장 완료 (소요: {save_time:.3f}초)")
@@ -426,7 +430,8 @@ class AppService:
             if "콘텐츠 안전 문제" in str(e_trans):
                 logger.warning(f"    🛡️ 콘텐츠 검열로 인한 실패")
             
-            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[번역 실패: {e_trans}]\n\n--- 원문 내용 ---\n{chunk_text}")
+            with self._file_write_lock:
+                save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[번역 실패: {e_trans}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_trans)
             success = False
 
@@ -445,7 +450,8 @@ class AppService:
             elif "키" in str(e_api).lower() or "인증" in str(e_api):
                 logger.warning(f"    🔑 API 인증 관련 오류")
             
-            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]\n\n--- 원문 내용 ---\n{chunk_text}")
+            with self._file_write_lock:
+                save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_api)
             success = False
 
@@ -458,7 +464,8 @@ class AppService:
             logger.error(f"    오류 유형: {type(e_gen).__name__}")
             logger.error(f"    오류 내용: {e_gen}")
             
-            save_chunk_with_index_to_file(current_run_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]\n\n--- 원문 내용 ---\n{chunk_text}")
+            with self._file_write_lock:
+                save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_gen)
             success = False
                     
@@ -684,10 +691,9 @@ class AppService:
             total_chunks = len(all_chunks) 
             logger.info(f"총 {total_chunks}개의 청크로 분할됨.")
 
-            current_run_output_file_path = final_output_file_path_obj.with_suffix(final_output_file_path_obj.suffix + '.current_run.tmp')
+            # 임시 파일(current_run.tmp) 제거, 청크 백업 파일(.chunked.txt)만 단일 소스로 사용
+            chunked_output_file_path = final_output_file_path_obj.with_suffix('.chunked.txt')
             with self._progress_lock: 
-                delete_file(current_run_output_file_path) 
-                current_run_output_file_path.touch()
 
                 if not resume_translation or not loaded_metadata.get("config_hash"): 
                     logger.info("새로운 메타데이터를 생성하거나 덮어씁니다 (새로 시작 또는 설정 변경).")
@@ -695,6 +701,9 @@ class AppService:
                     logger.info(f"새로 번역을 시작하므로 최종 출력 파일 '{final_output_file_path_obj}'을 삭제하고 새로 생성합니다.")
                     delete_file(final_output_file_path_obj) 
                     final_output_file_path_obj.touch() 
+                    # 청크 백업 파일도 초기화
+                    delete_file(chunked_output_file_path)
+                    chunked_output_file_path.touch()
                 else: 
                     if loaded_metadata.get("total_chunks") != total_chunks:
                         logger.warning(f"입력 파일의 청크 수가 변경되었습니다 ({loaded_metadata.get('total_chunks')} -> {total_chunks}). 메타데이터를 새로 생성합니다.")
@@ -702,12 +711,23 @@ class AppService:
                         resume_translation = False 
                         logger.info(f"청크 수 변경으로 인해 새로 번역을 시작합니다. 최종 출력 파일 '{final_output_file_path_obj}'을 다시 초기화합니다.")
                         delete_file(final_output_file_path_obj); final_output_file_path_obj.touch()
+                        # 청크 백업 파일도 초기화
+                        delete_file(chunked_output_file_path); chunked_output_file_path.touch()
                     else:
                         logger.info(f"이어하기 모드: 메타데이터 상태를 'in_progress'로 업데이트합니다.")
                     loaded_metadata["status"] = "in_progress" 
                 
                 loaded_metadata["last_updated"] = time.time()
                 save_metadata(metadata_file_path, loaded_metadata)
+
+            # 이어하기 시나리오에서, 혹시 마지막에 불완전한 청크가 있다면 정리(정규식 매칭 가능한 완전 청크만 보존)
+            try:
+                if chunked_output_file_path.exists():
+                    existing_chunks = load_chunks_from_file(chunked_output_file_path)
+                    save_merged_chunks_to_file(chunked_output_file_path, existing_chunks)
+                    logger.info("청크 파일을 스캔하여 완전한 청크만 유지하도록 정리했습니다.")
+            except Exception as sanitize_e:
+                logger.warning(f"청크 파일 정리 중 경고: {sanitize_e}")
 
             chunks_to_process_with_indices: List[Tuple[int, str]] = []
             if retranslate_failed_only:
@@ -745,8 +765,9 @@ class AppService:
                         total_chunks, self.processed_chunks_count, self.successful_chunks_count,
                         self.failed_chunks_count, "모든 청크 이미 번역됨"
                     ))
+                if status_callback: status_callback("완료: 모든 청크 이미 번역됨")
                 with self._translation_lock: self.is_translation_running = False
-                delete_file(current_run_output_file_path) 
+                # current_run.tmp는 더 이상 사용하지 않음
                 return
 
             initial_status_msg = "번역 준비 중..."
@@ -784,7 +805,7 @@ class AppService:
                         logger.info("새 작업 제출 중단됨 (사용자 요청).")
                         break
                     future = self.executor.submit(self._translate_and_save_chunk, i, chunk_text,
-                                            current_run_output_file_path,
+                                            chunked_output_file_path,
                                             total_chunks, 
                                             input_file_path_obj, progress_callback)
                     future_to_chunk_index[future] = i
@@ -817,46 +838,13 @@ class AppService:
 
 
             logger.info("모든 대상 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
-            newly_translated_chunks: Dict[int, str] = {}
-            previously_translated_chunks_from_main_output: Dict[int, str] = {}
-
-            try:
-                newly_translated_chunks = load_chunks_from_file(current_run_output_file_path)
-            except Exception as e:
-                logger.error(f"임시 번역 파일 '{current_run_output_file_path}' 로드 중 오류: {e}. 병합이 불안정할 수 있습니다.", exc_info=True)
-
+            # 단일 소스(.chunked.txt)에서 최종 병합 대상 로드
             final_merged_chunks: Dict[int, str] = {}
-            if resume_translation and final_output_file_path_obj.exists(): 
-                # ✅ 개선: 먼저 청크 인덱스가 있는 파일(.chunked.txt)에서 로드 시도
-                chunked_file_path = final_output_file_path_obj.with_suffix('.chunked.txt')
-                
-                if chunked_file_path.exists():
-                    logger.info(f"이전 번역 결과를 청크 파일 '{chunked_file_path}'에서 로드합니다.")
-                    try:
-                        previously_translated_chunks_from_main_output = load_chunks_from_file(chunked_file_path)
-                        final_merged_chunks.update(previously_translated_chunks_from_main_output)
-                        logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨 (청크 파일에서).")
-                    except Exception as e:
-                        logger.error(f"청크 파일 '{chunked_file_path}' 로드 중 오류: {e}. 메인 파일에서 시도합니다.", exc_info=True)
-                        # 청크 파일 로드 실패 시 메인 파일에서 시도
-                        try:
-                            logger.info(f"메인 번역 파일 '{final_output_file_path_obj}'에서 청크 로드를 시도합니다.")
-                            previously_translated_chunks_from_main_output = load_chunks_from_file(final_output_file_path_obj)
-                            final_merged_chunks.update(previously_translated_chunks_from_main_output)
-                            logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨 (메인 파일에서).")
-                        except Exception as e2:
-                            logger.error(f"메인 파일 '{final_output_file_path_obj}' 로드 중 오류: {e2}. 이전 내용은 병합되지 않을 수 있습니다.", exc_info=True)
-                else:                    # 청크 파일이 없으면 메인 파일에서 시도
-                    logger.info(f"청크 파일이 없습니다. 메인 번역 파일 '{final_output_file_path_obj}'에서 청크 로드를 시도합니다.")
-                    try:
-                        previously_translated_chunks_from_main_output = load_chunks_from_file(final_output_file_path_obj)
-                        final_merged_chunks.update(previously_translated_chunks_from_main_output)
-                        logger.info(f"{len(previously_translated_chunks_from_main_output)}개의 이전 청크 로드됨 (메인 파일에서).")
-                    except Exception as e:
-                        logger.error(f"메인 파일 '{final_output_file_path_obj}' 로드 중 오류: {e}. 이전 내용은 병합되지 않을 수 있습니다.", exc_info=True)
-
-            final_merged_chunks.update(newly_translated_chunks)
-            logger.info(f"{len(newly_translated_chunks)}개의 새 청크 추가/덮어쓰기됨. 총 {len(final_merged_chunks)} 청크 병합 준비 완료.")
+            try:
+                final_merged_chunks = load_chunks_from_file(chunked_output_file_path)
+                logger.info(f"최종 병합 대상 청크 수: {len(final_merged_chunks)}")
+            except Exception as e:
+                logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
             
             try:
                 save_merged_chunks_to_file(final_output_file_path_obj, final_merged_chunks)
@@ -910,8 +898,7 @@ class AppService:
                 logger.error(f"최종 번역 결과 파일 '{final_output_file_path_obj}' 저장 중 오류: {e}", exc_info=True)
                 raise BtgFileHandlerException(f"최종 출력 파일 저장 오류: {e}", original_exception=e)
 
-            delete_file(current_run_output_file_path)
-            logger.info(f"임시 파일 '{current_run_output_file_path}' 삭제됨.")
+            # current_run.tmp는 더 이상 사용하지 않음
 
             final_status_msg = "번역 완료."
             with self._progress_lock:
@@ -986,9 +973,7 @@ class AppService:
                 if 'total_chunks' in locals(): error_metadata["total_chunks"] = total_chunks 
                 save_metadata(metadata_file_path, error_metadata)
 
-            if 'current_run_output_file_path' in locals() and current_run_output_file_path.exists():
-                delete_file(current_run_output_file_path)
-                logger.info(f"오류 발생으로 임시 파일 '{current_run_output_file_path}' 삭제 시도됨.")
+            # current_run.tmp는 더 이상 사용하지 않음
             raise BtgServiceException(f"번역 서비스 오류: {e}", original_exception=e) from e
         finally:
             # 중지 요청이 있었던 경우, is_translation_running은 이미 False로 설정되었을 수 있습니다.

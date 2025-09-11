@@ -104,7 +104,7 @@ class GeminiClient:
         "The model is overloaded", "503", "Service Unavailable", 
         "Resource has been exhausted", "RESOURCE_EXHAUSTED"
     ]
-    _TIMEOUT_SECONDS = 600.0 # 10분
+    _TIMEOUT_SECONDS = 300.0 # 5분
 
     _CONTENT_SAFETY_PATTERNS = [
         "PROHIBITED_CONTENT", "SAFETY", "response was blocked",

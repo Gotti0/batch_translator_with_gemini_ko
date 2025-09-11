@@ -39,6 +39,13 @@ def write_text_file(file_path: Union[str, Path], content: str, mode: str = 'w') 
         ensure_dir_exists(Path(file_path).parent)
         with open(file_path, mode, encoding='utf-8') as f:
             f.write(content)
+            # 내구성 보장: 즉시 디스크에 반영
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except Exception as fs_e:
+                # 일부 FS에서는 fsync가 실패할 수 있으므로 경고만 남김
+                logger.debug(f"fsync 실패 또는 불필요 ({file_path}): {fs_e}")
     except IOError as e:
         logger.error(f"파일 쓰기 중 오류 발생 ({file_path}): {e}")
         raise
