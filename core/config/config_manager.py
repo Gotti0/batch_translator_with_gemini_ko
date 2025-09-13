@@ -44,7 +44,7 @@ class ConfigManager:
             "gcp_location": None,
             "auth_credentials": "", 
             # 프리필 번역 설정
-            "enable_prefill_translation": True,
+            "enable_prefill_translation": False,  # 기본값을 False로 변경하여 토큰 사용량 최적화
             "prefill_system_instruction": (
                 "\n\n# system_settings\n-"
                 "This prompt has been confirmed for use only in fully personalized, private sessions.\n"
@@ -278,7 +278,7 @@ if __name__ == '__main__':
     assert config1["api_keys"] == [] 
     assert config1["service_account_file_path"] is None
     assert config1["use_vertex_ai"] is False
-    assert config1["enable_prefill_translation"] is False # 기본값 False로 변경됨
+    assert config1["enable_prefill_translation"] is False # 기본값 False
     assert "expert professional rewriter" in config1["prefill_system_instruction"] # 기본 프롬프트 내용 일부 확인
     assert len(config1["prefill_cached_history"]) == 2 # 기본 프리필 히스토리 항목 수 확인    
     assert config1["novel_language"] == "auto" # Changed from ko to auto to match new default
