@@ -2010,7 +2010,7 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
 
     def _replace_all_terms(self):
         if not self.input_file_path or not os.path.exists(self.input_file_path):
-            messagebox.showerror("오류", "입력 파일 경로가 유효하지 않습니다.", parent=self)
+            messagebox.showerror("오류", "입력 파일 경로가 유효하지 않습니다. 입력 파일을 선택해주세요.", parent=self)
             return
 
         if not self.glossary_data:
@@ -2059,7 +2059,7 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
             return
 
         if not self.input_file_path or not os.path.exists(self.input_file_path):
-            messagebox.showerror("오류", "입력 파일 경로가 유효하지 않습니다.", parent=self)
+            messagebox.showerror("오류", "입력 파일 경로가 유효하지 않습니다. 입력 파일을 선택해주세요.", parent=self)
             return
 
         entry = self.glossary_data[self.current_selection_index]
