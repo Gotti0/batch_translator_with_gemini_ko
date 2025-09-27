@@ -133,13 +133,22 @@ class TqdmToTkinter(io.StringIO):
         self.widget.tag_config("TQDM", foreground="green")
 
     def write(self, buf):
+        stripped_buf = buf.strip()
+        if not stripped_buf:
+            return
+
         def append_to_widget():
             if not self.widget.winfo_exists(): return
+            
+            timestamp = time.strftime('%H:%M:%S')
+            log_message = f"{timestamp} - {stripped_buf}\n"
+            
             current_state = self.widget.cget("state")
             self.widget.config(state=tk.NORMAL)
-            self.widget.insert(tk.END, buf.strip() + '\n', "TQDM")
+            self.widget.insert(tk.END, log_message, "TQDM")
             self.widget.config(state=current_state) 
             self.widget.see(tk.END)
+            
         if self.widget.winfo_exists(): 
             self.widget.after(0, append_to_widget)
 
@@ -1021,6 +1030,10 @@ class BatchTranslatorGUI:
         Tooltip(self.log_text, "애플리케이션의 주요 동작 및 오류 로그가 표시됩니다.")
         
         gui_log_handler = TextHandler(self.log_text)
+        # GUI 핸들러를 위한 별도의 포맷터 생성 및 설정
+        gui_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%H:%M:%S')
+        gui_log_handler.setFormatter(gui_formatter)
+        
         # Use the global logger instance
         logger.addHandler(gui_log_handler)
         logger.setLevel(logging.INFO) # logging.INFO should be recognized
@@ -1656,7 +1669,15 @@ False):
 
     def _show_sampling_estimate(self):
         """샘플링 비율에 따른 예상 처리량 표시"""
-        input_file = self.input_file_entry.get()
+        input_file = ""
+        selected_indices = self.input_file_listbox.curselection()
+        if selected_indices:
+            input_file = self.input_file_listbox.get(selected_indices[0])
+        elif self.input_file_listbox.size() > 0:
+            input_file = self.input_file_listbox.get(0)
+        else:
+            return
+
         if not input_file or not Path(input_file).exists():
             return
         
@@ -1777,9 +1798,18 @@ False):
     def _preview_glossary_settings(self): # Renamed        
         """현재 설정의 예상 효과 미리보기"""
         try:
-            input_file = self.input_file_entry.get()
+            input_file = ""
+            selected_indices = self.input_file_listbox.curselection()
+            if selected_indices:
+                input_file = self.input_file_listbox.get(selected_indices[0])
+            elif self.input_file_listbox.size() > 0:
+                input_file = self.input_file_listbox.get(0)
+            else:
+                messagebox.showwarning("파일 없음", "'설정 및 번역' 탭에서 입력 파일을 먼저 추가하고 선택해주세요.")
+                return
+
             if not input_file or not Path(input_file).exists():
-                messagebox.showwarning("파일 없음", "입력 파일을 선택해주세요.")
+                messagebox.showwarning("파일 없음", f"선택한 파일을 찾을 수 없습니다: {input_file}")
                 return
             
             # type: ignore

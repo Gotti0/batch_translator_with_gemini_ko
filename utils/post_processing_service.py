@@ -43,6 +43,26 @@ class PostProcessingService:
             (r'<(?:"[^"]*"[\'\"]*|\'[^\']*\'[\'\"]*|[^\'\">])+>', ''),
         ]
     
+    def _apply_heuristic_line_breaks(self, content: str) -> str:
+        """휴리스틱 기반으로 긴 문단에 줄바꿈을 추가합니다."""
+        # 텍스트를 줄 단위로 분리
+        lines = content.split('\n')
+        processed_lines = []
+
+        for line in lines:
+            # 각 줄의 문장 부호 개수 확인
+            punctuation_count = len(re.findall(r'[.?!。？！]', line))
+            
+            # 문장 부호가 5개 이상인 경우 줄바꿈 적용
+            if punctuation_count >= 5:
+                # 각 문장 부호와 선택적인 닫는 인용부호 뒤에 줄바꿈 추가
+                processed_line = re.sub(r'([.?!。？！])(["”」]?)\s*', r'\1\2\n', line)
+                processed_lines.append(processed_line)
+            else:
+                processed_lines.append(line)
+        
+        return '\n'.join(processed_lines)
+
     def clean_translated_content(self, content: str) -> str:
         """개별 청크 내용을 정리 (청크 인덱스는 유지)"""
         if not content:
@@ -50,6 +70,9 @@ class PostProcessingService:
             
         cleaned = content.strip()
         
+        # 휴리스틱 기반 줄바꿈 적용
+        cleaned = self._apply_heuristic_line_breaks(cleaned)
+
         # 기본 패턴 제거
         for pattern in self.removal_patterns:
             cleaned = re.sub(pattern, '', cleaned, flags=re.MULTILINE | re.IGNORECASE)
