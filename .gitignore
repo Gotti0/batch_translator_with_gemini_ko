@@ -49,12 +49,5 @@ btg_app.log.5
 btg_app.log.2
 btg_app.log.3
 배치_번역기.spec
-btg_app.log.4
-level-skyline-467708-q3-026ba48dad61.json
-gen-lang-client-0409555625-e4b00e94d96c.json
-level-skyline-467708-q3-8fd0efe953dc.json
-gen-lang-client-0930811052-54d0ff2c016e.json
-gen-lang-client-0924954511-108e219615fb.json
-gen-lang-client-0872664605-7bef0069093b.json
-sage-momentum-472206-m4-263d22f4622a.json
-gemini-3-473400-5b48ea156375.json
+btg_app.log.\d+
+gen-lang-client-0390376538-c7594c7326a2.json

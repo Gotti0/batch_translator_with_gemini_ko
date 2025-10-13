@@ -113,7 +113,7 @@ class PostProcessingService:
             # 청크 인덱스 마커 패턴들 제거
             chunk_patterns_to_remove = [
                 r'##CHUNK_INDEX:\s*\d+##\n',  # ##CHUNK_INDEX: 0##
-                r'\n##END_CHUNK##\n*',        # ##END_CHUNK##
+                r'##END_CHUNK##\n*',        # ##END_CHUNK##
                 r'^##CHUNK_INDEX:\s*\d+##\n', # 파일 시작 부분의 청크 인덱스
                 r'##END_CHUNK##$',             # 파일 끝 부분의 END_CHUNK
             ]
