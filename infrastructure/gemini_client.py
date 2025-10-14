@@ -121,7 +121,7 @@ class GeminiClient:
     ]
 
     _VERTEX_AI_SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
-    _QUOTA_COOLDOWN_SECONDS = 300 # 5분
+    _QUOTA_COOLDOWN_SECONDS = 100 # 100초
 
 
     def _get_api_key_identifier(self, api_key: str) -> str:
@@ -728,8 +728,12 @@ class GeminiClient:
                         
                         # RESOURCE_EXHAUSTED (할당량 초과) 또는 QUOTA_EXCEEDED인 경우 즉시 키 회전
                         if self._is_quota_exhausted_error(e):
-                            current_key_id = self._get_api_key_identifier(self.current_api_key) if self.current_api_key else "Unknown"
-                            logger.warning(f"할당량 소진 감지 ({current_key_id}). 즉시 다음 키로 회전을 시도합니다.")
+                            if self.current_api_key:
+                                self.key_quota_failure_times[self.current_api_key] = time.time()
+                                current_key_id = self._get_api_key_identifier(self.current_api_key)
+                                logger.warning(f"할당량 소진 감지 ({current_key_id}). 쿨다운을 설정하고 다음 키로 회전을 시도합니다.")
+                            else:
+                                logger.warning("할당량 소진 감지 (현재 키 정보 없음). 다음 키로 회전을 시도합니다.")
                             break  # 현재 키에 대한 재시도 루프 탈출하여 키 회전 실행
                         
                         # 일반적인 rate limit의 경우 재시도 수행
