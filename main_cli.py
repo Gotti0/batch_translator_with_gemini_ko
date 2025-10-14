@@ -199,7 +199,7 @@ def parse_arguments():
     config_override_group = parser.add_argument_group('Configuration Overrides')
     config_override_group.add_argument("--novel-language-override", type=str, help="설정 파일의 'novel_language' 값을 덮어씁니다. (--novel-language와 동일)")
     config_override_group.add_argument("--novel-language-fallback-override", type=str, help="설정 파일의 'novel_language_fallback' 값을 덮어씁니다.")
-    config_override_group.add_argument("--rpm", type=int, help="분당 API 요청 수를 설정합니다. (예: 60). 0은 제한 없음을 의미합니다.")
+    config_override_group.add_argument("--rpm", type=float, help="분당 API 요청 수를 설정합니다. (예: 60). 0은 제한 없음을 의미합니다.")
     config_override_group.add_argument("--user-override-glossary-prompt", type=str, help="용어집 추출 시 사용할 사용자 정의 프롬프트를 설정합니다.")
     return parser.parse_args()
 

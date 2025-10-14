@@ -121,6 +121,7 @@ class GeminiClient:
     ]
 
     _VERTEX_AI_SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
+    _QUOTA_COOLDOWN_SECONDS = 300 # 5분
 
 
     def _get_api_key_identifier(self, api_key: str) -> str:
@@ -163,7 +164,7 @@ class GeminiClient:
                  auth_credentials: Optional[Union[str, List[str], Dict[str, Any]]] = None,
                  project: Optional[str] = None,
                  location: Optional[str] = None,
-                 requests_per_minute: Optional[int] = None):
+                 requests_per_minute: Optional[float] = None):
         
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
         
@@ -175,6 +176,7 @@ class GeminiClient:
         self.current_api_key: Optional[str] = None
         self.client_pool: Dict[str, genai.Client] = {}
         self._key_rotation_lock = threading.Lock()
+        self.key_quota_failure_times: Dict[str, float] = {}
         
         # Vertex AI related attributes
         self.vertex_credentials: Optional[Any] = None
@@ -185,7 +187,7 @@ class GeminiClient:
         self.http_options = genai_types.HttpOptions(client_args={'timeout': self._TIMEOUT_SECONDS})
         
         # RPM control
-        self.requests_per_minute = requests_per_minute or 140
+        self.requests_per_minute = requests_per_minute or 140.0
         self.delay_between_requests = 60.0 / self.requests_per_minute  # 요청 간 지연 시간 계산
         self.last_request_timestamp = 0.0
         self._rpm_lock = threading.Lock()
@@ -498,6 +500,7 @@ class GeminiClient:
                 if self.auth_mode == "API_KEY": break 
                 else: raise GeminiApiException("클라이언트가 유효하지 않으며 복구할 수 없습니다 (Vertex).")
 
+            last_error_was_quota = False
             while current_retry_for_this_key <= max_retries:
                 try:
                     self._apply_rpm_delay() # RPM 지연 적용
@@ -622,7 +625,7 @@ class GeminiClient:
                             elif hasattr(chunk_response, 'candidates') and chunk_response.candidates:
                                 for candidate in chunk_response.candidates:
                                     # Streaming candidates might not always have finish_reason == STOP for intermediate parts
-                                    # We primarily care about the content parts.
+                                    # We primarily care about the content parts..
                                     if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
                                         aggregated_parts.append("".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text))
                             if self._is_content_safety_error(response=chunk_response): # 스트림의 각 청크 응답에 대해 안전성 검사
@@ -780,6 +783,13 @@ class GeminiClient:
             for i in range(len(self.api_keys_list)): # Iterate once through all available successful keys
                 self.current_api_key_index = (original_index + 1 + i) % len(self.api_keys_list)
                 next_key = self.api_keys_list[self.current_api_key_index]
+
+                # 키가 할당량 소진으로 쿨다운 중인지 확인
+                last_failure = self.key_quota_failure_times.get(next_key)
+                if last_failure and (time.time() - last_failure) < self._QUOTA_COOLDOWN_SECONDS:
+                    key_id = self._get_api_key_identifier(next_key)
+                    logger.info(f"API {key_id}는 최근 할당량 소진으로 인해 건너뜁니다 (쿨다운 중).")
+                    continue  # 쿨다운 중인 키는 건너뛰고 다음 키를 시도
                 
                 # Check if a client for this key exists in our pool
                 if next_key in self.client_pool:

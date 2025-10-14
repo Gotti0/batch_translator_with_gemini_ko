@@ -1205,10 +1205,10 @@ class BatchTranslatorGUI:
             self.max_workers_entry.insert(0, str(max_workers_val))
 
         try:
-            rpm_val = int(self.rpm_entry.get() or "60")
-            if rpm_val < 0: rpm_val = 0 # 0은 제한 없음, 음수는 0으로
+            rpm_val = float(self.rpm_entry.get() or "60.0")
+            if rpm_val < 0: rpm_val = 0.0 # 0은 제한 없음, 음수는 0으로
         except ValueError:
-            rpm_val = 60
+            rpm_val = 60.0
             messagebox.showwarning("입력 오류", f"분당 요청 수는 숫자여야 합니다. 기본값 ({rpm_val})으로 설정됩니다.")
             self.rpm_entry.delete(0, tk.END)
             self.rpm_entry.insert(0, str(rpm_val))

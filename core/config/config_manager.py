@@ -80,7 +80,7 @@ class ConfigManager:
             "prefill_cached_history": [
             ],
             # "system_instruction": "You are a helpful translation assistant.", # 일반 시스템 지침 제거
-            "requests_per_minute": 10, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
+            "requests_per_minute": 10.0, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
             "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
             "novel_language_fallback": "zh", # 자동 감지 실패 시 사용할 폴백 언어
             "model_name": "gemini-2.0-flash",
@@ -276,7 +276,7 @@ if __name__ == '__main__':
     assert config1["novel_language"] == "auto" # Changed from ko to auto to match new default
     assert config1["novel_language_fallback"] == "ja"
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
-    assert config1["requests_per_minute"] == 60 # RPM 기본값 확인
+    assert config1["requests_per_minute"] == 60.0 # RPM 기본값 확인
     assert config1["thinking_budget"] is None # thinking_budget 기본값 확인
     assert config1["enable_dynamic_glossary_injection"] is False
     assert config1["max_glossary_entries_per_chunk_injection"] == 3
@@ -295,7 +295,7 @@ if __name__ == '__main__':
     config_to_save["novel_language"] = "en"
     config_to_save["novel_language_fallback"] = "en_gb"
     config_to_save["max_workers"] = 4 # max_workers 값 설정
-    config_to_save["requests_per_minute"] = 30 
+    config_to_save["requests_per_minute"] = 30.0 
     config_to_save["thinking_budget"] = 1024 # thinking_budget 값 설정
     config_to_save["enable_dynamic_glossary_injection"] = True
     config_to_save["glossary_json_path"] = "path/to/active_glossary.json"
@@ -322,7 +322,7 @@ if __name__ == '__main__':
     assert config2.get("glossary_sampling_ratio") == 10.0 # 저장 시점의 값 유지 (get_default_config 변경과 무관)
     assert config2.get("glossary_target_language_code") == "ko" # 기본값 확인
     assert config2.get("glossary_output_json_filename_suffix") == "_simple_glossary.json" # 기본값 확인
-    assert config2["requests_per_minute"] == 30
+    assert config2["requests_per_minute"] == 30.0
     assert config2["max_workers"] == 4 # 저장된 max_workers 값 확인
     assert config2["thinking_budget"] == 1024 # 저장된 thinking_budget 값 확인
     assert config2["enable_dynamic_glossary_injection"] is True
@@ -335,7 +335,7 @@ if __name__ == '__main__':
         "api_key": "single_api_key_test",
         "temperature": 0.5,
         "max_workers": "invalid", # 잘못된 max_workers 값 테스트
-        "requests_per_minute": 0, # RPM 제한 없음 테스트
+        "requests_per_minute": 0.0, # RPM 제한 없음 테스트
         "thinking_budget": "not_an_int", # 잘못된 thinking_budget 값 테스트
         # "glossary_sampling_ratio": 50.0, # 이 설정은 get_default_config에서 제거되었으므로, 테스트에서 제외하거나 다른 키로 대체
         "max_glossary_chars_per_chunk_injection": 600 # 동적 주입 설정 중 하나만 포함
@@ -352,7 +352,7 @@ if __name__ == '__main__':
     # assert config3.get("glossary_sampling_ratio") == 50.0 # 제거된 설정
     assert config3.get("glossary_sampling_ratio") == 10.0 # 기본 용어집 설정 확인 (경량화된 기본값)
     assert config3["max_workers"] == (os.cpu_count() or 1) # 잘못된 값일 경우 기본값으로 복원되는지 확인
-    assert config3["requests_per_minute"] == 0 
+    assert config3["requests_per_minute"] == 0.0 
     assert config3["thinking_budget"] is None # 잘못된 값일 경우 기본값(None)으로 복원되는지 확인
     assert config3["enable_dynamic_glossary_injection"] is False # 기본값 확인
     assert config3["max_glossary_chars_per_chunk_injection"] == 600 # 저장된 값 확인
