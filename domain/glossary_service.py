@@ -431,16 +431,17 @@ class SimpleGlossaryService:
         final_glossary = self._resolve_glossary_conflicts(all_extracted_entries_from_segments) # 함수명 및 변수명 변경
         
         # _update_occurrence_counts 호출 제거. LLM 추정치 또는 시드 파일의 등장 횟수만 사용.
+        
+        # 중요도(등장 횟수)에 따라 정렬하여 상위 항목을 보존하도록 수정
+        final_glossary.sort(key=lambda x: (-x.occurrence_count, x.keyword.lower()))
+        logger.info(f"최종 용어집을 등장 횟수 순으로 정렬했습니다. (상위 3개: {[e.keyword for e in final_glossary[:3]]})")
+
         # 로어북 최대 항목 수 제한 (설정값 사용)
         max_total_glossary_entries = self.config.get("glossary_max_total_entries", 500) # 기본값 줄임
         if len(final_glossary) > max_total_glossary_entries:
-            logger.info(f"추출된 용어집 항목({len(final_glossary)}개)이 최대 제한({max_total_glossary_entries}개)을 초과하여 상위 항목만 저장합니다.")
-            # 중요도 등으로 정렬되어 있으므로 상위 항목 선택
+            logger.info(f"정렬된 용어집 항목({len(final_glossary)}개)이 최대 제한({max_total_glossary_entries}개)을 초과하여 상위 항목만 저장합니다.")
+            # 중요도 순으로 정렬되어 있으므로, 상위 N개 항목을 선택
             final_glossary = final_glossary[:max_total_glossary_entries]
-
-        # 최종 저장 전, 등장 횟수(내림차순), 키워드(오름차순) 순으로 정렬
-        final_glossary.sort(key=lambda x: (-x.occurrence_count, x.keyword.lower()))
-        logger.info(f"최종 용어집을 등장 횟수 순으로 정렬했습니다. (상위 3개: {[e.keyword for e in final_glossary[:3]]})")
 
         # 최종 로어북 저장
         glossary_output_path = self._get_lorebook_output_path(input_file_path_for_naming) # 함수명 변경 (내부적으로 파일명 접미사 변경)
