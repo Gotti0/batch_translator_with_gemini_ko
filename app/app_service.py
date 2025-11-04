@@ -794,7 +794,8 @@ class AppService:
                             unit="청크", 
                             file=tqdm_file_stream, 
                             initial=0, 
-                            leave=False)
+                            leave=False,
+                            smoothing=0.1)
 
 
             self.executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -859,7 +860,7 @@ class AppService:
                         logger.info(f"이어하기용 청크 백업 파일 저장 완료: {chunked_backup_path}")
                         
                         # 2. 청크 단위 후처리 (헤더 제거, HTML 정리 등)
-                        processed_chunks = self.post_processing_service.post_process_merged_chunks(final_merged_chunks)
+                        processed_chunks = self.post_processing_service.post_process_merged_chunks(final_merged_chunks, self.config)
                         
                         # 3. 후처리된 내용을 임시로 저장 (청크 인덱스는 여전히 포함)
                         save_merged_chunks_to_file(final_output_file_path_obj, processed_chunks)

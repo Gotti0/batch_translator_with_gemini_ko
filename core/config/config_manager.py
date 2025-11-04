@@ -118,7 +118,7 @@ class ConfigManager:
                 "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
                 "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), "
                 "and estimate their occurrence count in this segment.\n"
-                "한국식 한자음 독음 원칙: 모든 인명, 지명, 고유명사는 중국어 원음 표기(음차)가 아닌 한국식 한자음으로 번역합니다. 번역의 일관성을 위해 이 규칙을 최우선으로 적용해야 합니다."
+                "한국식 한자음 독음 원칙: 모든 중국인 인명, 지명, 고유명사는 중국어 원음 표기(음차)가 아닌 한국식 한자음으로 번역합니다. 번역의 일관성을 위해 이 규칙을 최우선으로 적용해야 합니다."
                 "예시:\n인명: 习近平 → 시진핑 (X), 습근평 (O)\n"
                 "지명: 北京 → 베이징 (X), 북경 (O) / 上海 → 상하이 (X), 상해 (O)\n"
                 "역사: 清 → 칭 (X), 청 (O)\n"
@@ -132,7 +132,7 @@ class ConfigManager:
             "remove_translation_headers": True,
             "remove_markdown_blocks": True,
             "remove_chunk_indexes": True,
-            "clean_html_structure": True,
+            "clean_html_tags": True,
             "validate_html_after_processing": True,
 
             # 동적 로어북 주입 설정

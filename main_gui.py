@@ -1502,10 +1502,13 @@ False):
         selected_indices = self.input_file_listbox.curselection()
         if not selected_indices:
             if self.input_file_listbox.size() > 0:
-                messagebox.showwarning("경고", "용어집을 추출할 파일을 목록에서 선택해주세요.")
+                # 파일이 선택되지 않았지만 목록에 파일이 있으면 첫 번째 항목을 자동으로 선택
+                self.input_file_listbox.selection_set(0)
+                selected_indices = self.input_file_listbox.curselection()
+                self._log_message("선택된 파일이 없어 첫 번째 파일을 자동으로 선택합니다.", "INFO")
             else:
                 messagebox.showwarning("경고", "입력 파일을 먼저 추가해주세요.")
-            return
+                return
         
         input_file = self.input_file_listbox.get(selected_indices[0])
 

@@ -40,11 +40,11 @@ class PostProcessingService:
 
         # HTML/XML 태그 정리 패턴
         self.html_cleanup_patterns = [
-            (r'<(?:"[^"]*"[\'\"]*|\'[^\']*\'[\'\"]*|[^\'\">])+>', ''),
+            (r'</?[a-zA-Z][^>]*>', ''),
         ]
     
 
-    def clean_translated_content(self, content: str) -> str:
+    def clean_translated_content(self, content: str, config: Dict[str, any]) -> str:
         """개별 청크 내용을 정리 (청크 인덱스는 유지)"""
         if not content:
             return content
@@ -56,8 +56,9 @@ class PostProcessingService:
             cleaned = re.sub(pattern, '', cleaned, flags=re.MULTILINE | re.IGNORECASE)
         
         # HTML 태그 정리
-        for pattern, replacement in self.html_cleanup_patterns:
-            cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+        if config.get("clean_html_tags", True):
+            for pattern, replacement in self.html_cleanup_patterns:
+                cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
         
         # 연속된 빈 줄 정리 (3개 이상의 연속 개행을 2개로)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
@@ -67,7 +68,7 @@ class PostProcessingService:
         
         return cleaned
     
-    def post_process_merged_chunks(self, merged_chunks: Dict[int, str]) -> Dict[int, str]:
+    def post_process_merged_chunks(self, merged_chunks: Dict[int, str], config: Dict[str, any]) -> Dict[int, str]:
         """병합된 청크들에 대해 후처리 수행 (청크 인덱스는 아직 유지)"""
         logger.info(f"청크 내용 후처리 시작: {len(merged_chunks)}개 청크 처리")
         
@@ -76,7 +77,7 @@ class PostProcessingService:
         for chunk_index, chunk_content in merged_chunks.items():
             try:
                 # 개별 청크 정리 (청크 마커는 유지)
-                cleaned_content = self.clean_translated_content(chunk_content)
+                cleaned_content = self.clean_translated_content(chunk_content, config)
                 processed_chunks[chunk_index] = cleaned_content
                 
                 # 로깅 (디버깅용)

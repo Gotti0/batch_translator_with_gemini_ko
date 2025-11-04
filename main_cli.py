@@ -98,7 +98,7 @@ def cli_translation_progress_callback(dto: TranslationJobProgressDTO):
         if task_id not in tqdm_instances or tqdm_instances[task_id].total != dto.total_chunks:
             if task_id in tqdm_instances: tqdm_instances[task_id].close()
             if dto.total_chunks > 0 :
-                tqdm_instances[task_id] = Tqdm(total=dto.total_chunks, desc="청크 번역", unit="청크", leave=False, file=sys.stdout )
+                tqdm_instances[task_id] = Tqdm(total=dto.total_chunks, desc="청크 번역", unit="청크", leave=False, file=sys.stdout, smoothing=0.1 )
             else:
                 if task_id in tqdm_instances: del tqdm_instances[task_id]
                 return
@@ -135,7 +135,7 @@ def cli_glossary_extraction_progress_callback(dto: GlossaryExtractionProgressDTO
         if task_id not in tqdm_instances or tqdm_instances[task_id].total != dto.total_segments: # DTO 필드명 변경 (total_sample_chunks -> total_segments)
             if task_id in tqdm_instances: tqdm_instances[task_id].close()
             if dto.total_segments > 0: # DTO 필드명 변경
-                tqdm_instances[task_id] = Tqdm(total=dto.total_segments, desc="용어집 추출 (표본)", unit="세그먼트", leave=False, file=sys.stdout) # 설명 변경
+                tqdm_instances[task_id] = Tqdm(total=dto.total_segments, desc="용어집 추출 (표본)", unit="세그먼트", leave=False, file=sys.stdout, smoothing=0.1) # 설명 변경
             else:
                 if task_id in tqdm_instances: del tqdm_instances[task_id] # type: ignore
                 return
