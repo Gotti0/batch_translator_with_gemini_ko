@@ -207,11 +207,7 @@ class ScrollableFrame:
         def _bind_to_mousewheel(event):
             self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
         
-        def _unbind_from_mousewheel(event):
-            self.canvas.unbind_all("<MouseWheel>")
-        
         self.main_frame.bind('<Enter>', _bind_to_mousewheel)
-        self.main_frame.bind('<Leave>', _unbind_from_mousewheel)
     
     def pack(self, **kwargs):
         """메인 프레임 pack"""
@@ -249,6 +245,7 @@ class BatchTranslatorGUI:
             return
 
         self.master.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self.glossary_stop_requested = False
 
         # ttkbootstrap 스타일 적용 (기존 ttk.Style() 부분 대체)
         # style = ttk.Style()
@@ -283,6 +280,10 @@ class BatchTranslatorGUI:
             self._load_initial_config_to_ui() 
         else:
             self._log_message("AppService 초기화 실패로 UI에 설정을 로드할 수 없습니다.", "ERROR")
+
+    def _request_stop_glossary_extraction(self):
+        self.glossary_stop_requested = True
+        self._log_message("용어집 추출 중지 요청됨.")
 
         
 
@@ -807,9 +808,16 @@ class BatchTranslatorGUI:
         self.browse_glossary_json_button.grid(row=0, column=2, padx=5, pady=5)
         
 
-        extract_button = ttk.Button(path_frame, text="선택한 입력 파일에서 용어집 추출", command=self._extract_glossary_thread) # Text and command changed
-        extract_button.grid(row=2, column=0, columnspan=3, padx=5, pady=10)
-        Tooltip(extract_button, "'설정 및 번역' 탭에서 선택된 입력 파일을 분석하여 용어집을 추출하고, 그 결과를 아래 텍스트 영역에 표시합니다.") # Text changed
+        glossary_action_button_frame = ttk.Frame(path_frame)
+        glossary_action_button_frame.grid(row=2, column=0, columnspan=3, pady=10)
+
+        self.extract_glossary_button = ttk.Button(glossary_action_button_frame, text="선택한 입력 파일에서 용어집 추출", command=self._extract_glossary_thread)
+        self.extract_glossary_button.pack(side="left", padx=5)
+        Tooltip(self.extract_glossary_button, "'설정 및 번역' 탭에서 선택된 입력 파일을 분석하여 용어집을 추출하고, 그 결과를 아래 텍스트 영역에 표시합니다.")
+
+        self.stop_glossary_button = ttk.Button(glossary_action_button_frame, text="추출 중지", command=self._request_stop_glossary_extraction, state=tk.DISABLED)
+        self.stop_glossary_button.pack(side="left", padx=5)
+        Tooltip(self.stop_glossary_button, "진행 중인 용어집 추출 작업을 중지하고 현재까지의 결과로 저장합니다.")
         
         self.glossary_progress_label = ttk.Label(path_frame, text="용어집 추출 대기 중...") # Renamed
         self.glossary_progress_label.grid(row=3, column=0, columnspan=3, padx=5, pady=2)
@@ -1540,10 +1548,12 @@ False):
         self.glossary_progress_label.config(text="용어집 추출 시작 중...") # Changed
         self._log_message(f"용어집 추출 시작: {input_file}") # Text changed
         
-
+        # Manage button states and flag
+        self.glossary_stop_requested = False
+        self.extract_glossary_button.config(state=tk.DISABLED)
+        self.stop_glossary_button.config(state=tk.NORMAL)
         
         # GUI에서 직접 소설 언어를 입력받는 UI가 제거되었으므로, 항상 None을 전달하여 AppService가 설정을 따르도록 합니다.
-        novel_lang_for_extraction = None
         def _extraction_task_wrapper():
             try:
                 if app_service:
@@ -1551,9 +1561,15 @@ False):
                         input_file,
                         progress_callback=self._update_glossary_extraction_progress, # Callback changed                      
                         seed_glossary_path=app_service.config.get("glossary_json_path"), # Use current glossary as seed
-                        user_override_glossary_extraction_prompt=app_service.config.get("user_override_glossary_extraction_prompt") # Pass override prompt
+                        user_override_glossary_extraction_prompt=app_service.config.get("user_override_glossary_extraction_prompt"), # Pass override prompt
+                        stop_check=lambda: self.glossary_stop_requested
                     )
-                    self.master.after(0, lambda: messagebox.showinfo("성공", f"용어집 추출 완료!\n결과 파일: {result_json_path}")) # Text changed
+                    
+                    if self.glossary_stop_requested:
+                        self.master.after(0, lambda: messagebox.showinfo("중지됨", f"용어집 추출이 중지되었습니다.\n현재까지의 결과가 저장되었습니다: {result_json_path}"))
+                    else:
+                        self.master.after(0, lambda: messagebox.showinfo("성공", f"용어집 추출 완료!\n결과 파일: {result_json_path}"))
+
                     self.master.after(0, lambda: self.glossary_progress_label.config(text=f"추출 완료: {result_json_path.name}")) # Changed
                     self.master.after(0, lambda: self._update_glossary_json_path_entry(str(result_json_path))) # Changed
                     # Load result to display
@@ -1572,7 +1588,9 @@ False):
                 self.master.after(0, lambda: messagebox.showerror("알 수 없는 오류", f"용어집 추출 중 예상치 못한 오류: {e_unknown}")) # Text changed
                 self.master.after(0, lambda: self.glossary_progress_label.config(text="알 수 없는 오류 발생")) # Changed
             finally:
-                self._log_message("용어집 추출 스레드 종료.") # Text changed
+                self.master.after(0, lambda: self.extract_glossary_button.config(state=tk.NORMAL))
+                self.master.after(0, lambda: self.stop_glossary_button.config(state=tk.DISABLED))
+                self._log_message("용어집 추출 스레드 종료.")
 
         thread = threading.Thread(target=_extraction_task_wrapper, daemon=True)
         thread.start()

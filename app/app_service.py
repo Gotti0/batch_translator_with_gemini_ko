@@ -283,10 +283,8 @@ class AppService:
         progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO Changed
         novel_language_code: Optional[str] = None, # 명시적 언어 코드 전달
         seed_glossary_path: Optional[Union[str, Path]] = None, # CLI에서 전달된 시드 용어집 경로
-        user_override_glossary_extraction_prompt: Optional[str] = None # 사용자 재정의 프롬프트 추가
-        # tqdm_file_stream is not typically used by lorebook extraction directly in AppService,
-        # but can be passed down if SimpleGlossaryService supports it (currently it doesn't directly)
-        # For CLI, tqdm is handled in the CLI module itself.
+        user_override_glossary_extraction_prompt: Optional[str] = None, # 사용자 재정의 프롬프트 추가
+        stop_check: Optional[Callable[[], bool]] = None
     ) -> Path:
         if not self.glossary_service: # Changed from pronoun_service
             logger.error("용어집 추출 서비스 실패: 서비스가 초기화되지 않았습니다.") # Message updated
@@ -317,7 +315,8 @@ class AppService:
                 input_file_path_for_naming=input_file_path,
                 progress_callback=progress_callback,
                 seed_glossary_path=seed_glossary_path, # 시드 용어집 경로 전달
-                user_override_glossary_extraction_prompt=prompt_to_use # 결정된 프롬프트 전달
+                user_override_glossary_extraction_prompt=prompt_to_use, # 결정된 프롬프트 전달
+                stop_check=stop_check
             )
             logger.info(f"용어집 추출 완료. 결과 파일: {result_path}") # Message updated
         

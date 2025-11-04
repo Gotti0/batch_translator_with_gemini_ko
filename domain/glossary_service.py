@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from pydantic import BaseModel, Field as PydanticField # Field 이름 충돌 방지
 from typing import Dict, Any, Optional, List, Union, Tuple, Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 try:
     from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException
@@ -286,7 +286,8 @@ class SimpleGlossaryService:
                                   # novel_language_code: Optional[str] = None, # LLM이 감지하므로 불필요
                                   progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO 변경
                                   seed_glossary_path: Optional[Union[str, Path]] = None, # 시드 용어집 경로 추가
-                                  user_override_glossary_extraction_prompt: Optional[str] = None # 사용자 재정의 프롬프트
+                                  user_override_glossary_extraction_prompt: Optional[str] = None, # 사용자 재정의 프롬프트
+                                  stop_check: Optional[Callable[[], bool]] = None
                                  ) -> Path:
         """
         주어진 텍스트 내용에서 로어북을 추출하고 JSON 파일에 저장합니다.
@@ -301,6 +302,8 @@ class SimpleGlossaryService:
                 참고할 기존 용어집 JSON 파일 경로.
             user_override_glossary_extraction_prompt (Optional[str], optional):
                 용어집 추출 시 사용할 사용자 정의 프롬프트. 제공되면 기본 프롬프트를 대체합니다.
+            stop_check (Optional[Callable[[], bool]], optional): 
+                중지 요청을 확인하는 콜백 함수.
 
         Returns:
             Path: 생성된 로어북 JSON 파일의 경로.
@@ -399,12 +402,21 @@ class SimpleGlossaryService:
                            for segment in sample_segments}
                 
                 for future in as_completed(future_to_segment):
+                    if stop_check and stop_check():
+                        logger.warning("사용자 요청으로 용어집 추출을 중단합니다. 현재까지의 결과로 저장합니다.")
+                        for f in future_to_segment:
+                            if not f.done():
+                                f.cancel()
+                        break
+
                     segment_processed_text = future_to_segment[future]
                     try:
-                        extracted_entries_for_segment = future.result()
+                        extracted_entries_for_segment = future.result(timeout=300)
                         if extracted_entries_for_segment:
                             with self._lock: # 여러 스레드가 동시에 리스트에 추가할 수 있으므로 동기화
                                 all_extracted_entries_from_segments.extend(extracted_entries_for_segment)
+                    except TimeoutError:
+                        logger.error(f"용어집 추출 API 요청 시간 초과 (>300초). 해당 세그먼트를 건너뜁니다: {segment_processed_text[:50]}...")
                     except Exception as exc:
                         logger.error(f"표본 세그먼트 처리 중 예외 발생 (세그먼트: {segment_processed_text[:50]}...): {exc}")
                     finally:
