@@ -379,8 +379,9 @@ class AppService:
             logger.debug(f"  ⚙️ 번역 설정: 모델={model_name}, 안전재시도={use_content_safety_retry}")
             if use_content_safety_retry:
                 logger.debug(f"  🔄 검열 재시도 설정: 최대시도={max_split_attempts}, 최소크기={min_chunk_size}")
-                logger.info(f"  🔄 {current_chunk_info_msg} 번역 API 호출 시작...")
-                translation_start_time = time.time()
+            
+            logger.info(f"  🔄 {current_chunk_info_msg} 번역 API 호출 시작...")
+            translation_start_time = time.time()
                 
             if use_content_safety_retry:
                 logger.debug(f"  🛡️ 콘텐츠 안전 재시도 모드로 번역 시작")
