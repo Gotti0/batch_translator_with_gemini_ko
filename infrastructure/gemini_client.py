@@ -514,11 +514,11 @@ class GeminiClient:
                     if 'http_options' not in final_generation_config_params:
                         final_generation_config_params['http_options'] = self.http_options
 
-                    # 항상 BLOCK_NONE으로 안전 설정 강제 적용
+                    # 항상 OFF으로 안전 설정 강제 적용
                     # 사용자가 safety_settings_list_of_dicts를 제공하더라도 무시됩니다.
                     
                     if safety_settings_list_of_dicts:
-                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 BLOCK_NONE으로 강제 적용되어 무시됩니다.")
+                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
 
                     # system_instruction을 GenerateContentConfig에 포함
                     if system_instruction_text and system_instruction_text.strip():
@@ -538,23 +538,23 @@ class GeminiClient:
                     forced_safety_settings = [
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            threshold=genai_types.HarmBlockThreshold.OFF,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            threshold=genai_types.HarmBlockThreshold.OFF,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            threshold=genai_types.HarmBlockThreshold.OFF,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            threshold=genai_types.HarmBlockThreshold.OFF,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            threshold=genai_types.HarmBlockThreshold.OFF,
                         ),                    ]
                     final_generation_config_params['safety_settings'] = forced_safety_settings
                     
