@@ -113,19 +113,21 @@ class ConfigManager:
             "glossary_extraction_temperature": 0.3, # 경량화된 용어집 추출 온도
             "glossary_sampling_ratio": 10.0, # 경량화된 용어집 샘플링 비율
             "glossary_max_total_entries": 500, # 경량화된 용어집 최대 항목 수
-            "simple_glossary_extraction_prompt_template": ("Analyze the following text. Identify key terms, focusing specifically on "
-                "**people (characters), proper nouns (e.g., unique items, titles, artifacts), "
-                "place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**. "
-                "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), "
-                "and estimate their occurrence count in this segment.\n"
-                "한국식 한자음 독음 원칙: 모든 중국인 인명, 지명, 고유명사는 중국어 원음 표기(음차)가 아닌 한국식 한자음으로 번역합니다. 번역의 일관성을 위해 이 규칙을 최우선으로 적용해야 합니다."
-                "예시:\n인명: 习近平 → 시진핑 (X), 습근평 (O)\n"
-                "지명: 北京 → 베이징 (X), 북경 (O) / 上海 → 상하이 (X), 상해 (O)\n"
-                "역사: 清 → 칭 (X), 청 (O)\n"
-                "예외 처리: 만약 한국식 한자음 독음이 존재하지 않거나, 현대에 만들어진 고유명사라 한자음으로 읽는 것이 매우 어색한 경우에만 예외적으로 중국어 원음을 표기합니다.\n"
-                "The response should be a list of these term objects, conforming to the provided schema.\n"
-                "Text: ```\n{novelText}\n```\n"
-                "Ensure your response is a list of objects, where each object has 'keyword', 'translated_keyword', 'target_language', and 'occurrence_count' fields."),
+            "simple_glossary_extraction_prompt_template": (
+                "Analyze the following text. Identify key terms, focusing specifically on **people (characters), proper nouns (e.g., unique items, titles, artifacts), place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**.\n"
+                "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), and estimate their occurrence count in this segment.\n"
+                "\n**[Translation Rules for {target_lang_name} (Korean)]**\n\n**Rule 1 (Default): Sino-Korean Reading**\nBy default, translate traditional Chinese proper nouns (people, places, historical terms) using their **Sino-Korean (Korean Hanja)** reading.\n"
+                "* Example: `北京` → `북경` (O), `上海` → `상해` (O)\n* Example: `侯龙涛` → `후룡도` (O)\n"
+                "\n**Rule 2 (CRITICAL EXCEPTION): Foreign Transliterations & Calques**\nThis rule **overrides Rule 1**. If a Chinese term is a **transliteration (sound)** or **calque (meaning-translation)** of a **non-Chinese** proper noun (e.g., English, Japanese, brand names), you **MUST NOT** use the Sino-Korean reading.\n"
+                "\n**Rationale:** Using the Sino-Korean reading (e.g., `宝马` → `보마`) is a major translation error. The correct translation is the term as it is known in Korean (e.g., `BMW`).\n"
+                "\n**Apply this exception strictly:**\n\n* **Brands/Companies:**\n    * `宝马` (Bǎomǎ) → `보마` (X), **`BMW` (O)**\n    * `三菱` (Sānlíng) → `삼릉` (X), **`미쓰비시` (O)** (Japanese)\n"
+                "    * `汇丰银行` (Huìfēng) → `회풍은행` (X), **`HSBC` (O)**\n    * `联想` (Liánxiǎng) → `련상` (X), **`레노버` (O)**\n"
+                "\n* **Place Names (non-Chinese):**\n    * `巴西` (Bāxī) → `파서` (X), **`브라질` (O)** (Portuguese)\n    * `加州` (Jiāzhōu) → `가주` (X), **`캘리포니아` (O)** (English)\n"
+                "    * `香港` (Xiānggǎng) → `향항` (X), **`홍콩` (O)** (Cantonese/English)\n\n* **Japanese Names:**\n    * `福井` (Fukui) → `복정` (X), **`후쿠이` (O)**\n"
+                "    * `樱花` (Sakura) → `앵화` (X), **`사쿠라` (O)**\n\n* **Calques (Meaning-Translations):**\n    * `常青藤` (Chángqīngténg) → `상청등` (X), **`아이비` (O)** (Ivy League)\n"
+                "\nThe response should be a list of these term objects, conforming to the provided schema.\n\nText: ```\n{novelText}\n```\n"
+                "\nEnsure your response is a list of objects, where each object has 'keyword', 'translated_keyword', 'target_language', and 'occurrence_count' fields."
+            ),
             "user_override_glossary_extraction_prompt": "", # 사용자 재정의 용어집 추출 프롬프트 기본값 (비워두면 simple_glossary_extraction_prompt_template 사용)
 
             # 후처리 관련 설정 (기존 위치에서 이동 또는 기본값으로 통합)

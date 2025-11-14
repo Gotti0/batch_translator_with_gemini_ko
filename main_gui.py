@@ -480,7 +480,7 @@ class BatchTranslatorGUI:
         settings_frame = self.settings_scroll.scrollable_frame   
 
         # API 및 인증 설정
-        api_frame = ttk.LabelFrame(settings_frame, text="API 및 인증 설정", padding="10")
+        api_frame = ttk.Labelframe(settings_frame, text="API 및 인증 설정", padding="10")
         api_frame.pack(fill="x", padx=5, pady=5)
         
         self.api_keys_label = ttk.Label(api_frame, text="API 키 목록 (Gemini Developer, 한 줄에 하나씩):")
@@ -537,7 +537,7 @@ class BatchTranslatorGUI:
         Tooltip(self.refresh_models_button, "사용 가능한 모델 목록을 API에서 새로 가져옵니다.")
 
         # 생성 파라미터
-        gen_param_frame = ttk.LabelFrame(settings_frame, text="생성 파라미터", padding="10")
+        gen_param_frame = ttk.Labelframe(settings_frame, text="생성 파라미터", padding="10")
         gen_param_frame.pack(fill="x", padx=5, pady=5)
         
         # Temperature 설정
@@ -573,11 +573,11 @@ class BatchTranslatorGUI:
 
         
         # 파일 및 처리 설정
-        file_chunk_frame = ttk.LabelFrame(settings_frame, text="파일 및 처리 설정", padding="10")
+        file_chunk_frame = ttk.Labelframe(settings_frame, text="파일 및 처리 설정", padding="10")
         file_chunk_frame.pack(fill="x", padx=5, pady=5)
         
         # 입력 파일 섹션 수정
-        input_file_frame = ttk.LabelFrame(file_chunk_frame, text="입력 파일 목록", padding="5")
+        input_file_frame = ttk.Labelframe(file_chunk_frame, text="입력 파일 목록", padding="5")
         input_file_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
 
         self.input_file_listbox = tk.Listbox(input_file_frame, selectmode=tk.EXTENDED, width=70, height=5)
@@ -639,7 +639,7 @@ class BatchTranslatorGUI:
         Tooltip(self.rpm_entry, "분당 요청 수를 입력하세요 (예: 60).")
 
         # Language Settings Frame
-        language_settings_frame = ttk.LabelFrame(settings_frame, text="언어 설정", padding="10")
+        language_settings_frame = ttk.Labelframe(settings_frame, text="언어 설정", padding="10")
         language_settings_frame.pack(fill="x", padx=5, pady=5)
 
         novel_lang_label = ttk.Label(language_settings_frame, text="소설/번역 출발 언어:")
@@ -661,7 +661,7 @@ class BatchTranslatorGUI:
         ttk.Label(language_settings_frame, text="(예: ko, ja, en)").grid(row=1, column=2, padx=5, pady=5, sticky="w")
 
         # 시스템 지침 및 번역 프롬프트 프레임
-        prompt_frame = ttk.LabelFrame(settings_frame, text="프롬프트 설정", padding="10")
+        prompt_frame = ttk.Labelframe(settings_frame, text="프롬프트 설정", padding="10")
         prompt_frame.pack(fill="both", expand=True, padx=5, pady=5)
         # 일반 시스템 지침 UI 제거
 
@@ -673,7 +673,7 @@ class BatchTranslatorGUI:
         self.prompt_text.pack(fill="both", expand=True, padx=5, pady=5)
         
         # 프리필 번역 설정 프레임
-        prefill_frame = ttk.LabelFrame(settings_frame, text="프리필(Prefill) 번역 설정", padding="10")
+        prefill_frame = ttk.Labelframe(settings_frame, text="프리필(Prefill) 번역 설정", padding="10")
         prefill_frame.pack(fill="both", expand=True, padx=5, pady=5)
         Tooltip(prefill_frame, "모델에 초기 컨텍스트(시스템 지침 및 대화 기록)를 제공하여 번역 품질을 향상시킬 수 있습니다.")
 
@@ -693,7 +693,7 @@ class BatchTranslatorGUI:
         Tooltip(prefill_cached_history_label, "미리 정의된 대화 기록을 JSON 형식으로 입력합니다.\n예: [{\"role\": \"user\", \"parts\": [\"안녕\"]}, {\"role\": \"model\", \"parts\": [\"안녕하세요.\"]}]")
         self.prefill_cached_history_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=10, width=70) # 기본 높이 조정
         self.prefill_cached_history_text.pack(fill="both", expand=True, padx=5, pady=5)        # 콘텐츠 안전 재시도 설정
-        content_safety_frame = ttk.LabelFrame(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
+        content_safety_frame = ttk.Labelframe(settings_frame, text="콘텐츠 안전 재시도 설정", padding="10")
         content_safety_frame.pack(fill="x", padx=5, pady=5)
 
         self.use_content_safety_retry_var = tk.BooleanVar()
@@ -795,7 +795,7 @@ class BatchTranslatorGUI:
 
         
         # 로어북 JSON 파일 설정
-        path_frame = ttk.LabelFrame(glossary_frame, text="용어집 JSON 파일", padding="10") # Text changed
+        path_frame = ttk.Labelframe(glossary_frame, text="용어집 JSON 파일", padding="10") # Text changed
         
         path_frame.pack(fill="x", padx=5, pady=5)
         
@@ -825,7 +825,7 @@ class BatchTranslatorGUI:
 
 
         # 용어집 추출 설정 프레임 (경량화)
-        extraction_settings_frame = ttk.LabelFrame(glossary_frame, text="용어집 추출 설정", padding="10") # Text changed
+        extraction_settings_frame = ttk.Labelframe(glossary_frame, text="용어집 추출 설정", padding="10") # Text changed
         
         extraction_settings_frame.pack(fill="x", padx=5, pady=5)
         
@@ -968,7 +968,7 @@ class BatchTranslatorGUI:
         
 
         # Lorebook Display Area
-        glossary_display_frame = ttk.LabelFrame(glossary_frame, text="추출된 용어집 (JSON)", padding="10") # Text changed
+        glossary_display_frame = ttk.Labelframe(glossary_frame, text="추출된 용어집 (JSON)", padding="10") # Text changed
         glossary_display_frame.pack(fill="both", expand=True, padx=5, pady=5)
         Tooltip(glossary_display_frame, "추출되거나 불러온 용어집의 내용이 JSON 형식으로 표시됩니다.") # Text changed
 
@@ -995,7 +995,7 @@ class BatchTranslatorGUI:
         self.edit_glossary_button.pack(side="left", padx=5)
         Tooltip(self.edit_glossary_button, "표시된 용어집 내용을 별도의 편집기 창에서 수정합니다.") # Text changed
         # 동적 용어집 주입 설정
-        dynamic_glossary_frame = ttk.LabelFrame(glossary_frame, text="동적 용어집 주입 설정", padding="10")
+        dynamic_glossary_frame = ttk.Labelframe(glossary_frame, text="동적 용어집 주입 설정", padding="10")
         dynamic_glossary_frame.pack(fill="x", padx=5, pady=5)
 
         self.enable_dynamic_glossary_injection_var = tk.BooleanVar()
