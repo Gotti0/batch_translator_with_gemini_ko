@@ -1,114 +1,158 @@
-# logger_config.py
-# Path: neo_batch_translator/infrastructure/logging/logger_config.py
+"""Central logging configuration utilities."""
+
 import logging
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
+from threading import RLock
+from typing import Optional
 from logging.handlers import RotatingFileHandler
 
 DEFAULT_LOG_FILENAME = "btg_app.log"
 DEFAULT_LOG_LEVEL = logging.DEBUG  # 기본 로깅 레벨
 DEFAULT_LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-DEFAULT_MAX_BYTES = 10*1024*1024  # 10 MB
+DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 DEFAULT_BACKUP_COUNT = 5
+DEFAULT_LOG_ROOT = Path("logs")
 
-def setup_logger(
-    logger_name: str = 'btg', 
-    log_level: int = DEFAULT_LOG_LEVEL, 
-    log_file: Path = None,
-    log_to_console: bool = True,
-    log_to_file: bool = True,
-    max_bytes: int = DEFAULT_MAX_BYTES,
-    backup_count: int = DEFAULT_BACKUP_COUNT
-) -> logging.Logger:
-    """
-    지정된 이름과 설정으로 로거를 설정하고 반환합니다.
+try:  # pragma: no cover - optional dependency
+    from concurrent_log_handler import ConcurrentRotatingFileHandler  # type: ignore
+except ImportError:  # pragma: no cover - fallback path covered elsewhere
+    ConcurrentRotatingFileHandler = None  # type: ignore
 
-    Args:
-        logger_name (str, optional): 로거의 이름. 기본값은 'btg'.
-        log_level (int, optional): 로깅 레벨 (예: logging.INFO, logging.DEBUG). 기본값은 logging.INFO.
-        log_file (Path, optional): 로그를 저장할 파일 경로. 
-                                   None이면 기본값 'btg_app.log'를 사용합니다.
-                                   log_to_file이 False이면 무시됩니다.
-        log_to_console (bool, optional): 콘솔에 로그를 출력할지 여부. 기본값은 True.
-        log_to_file (bool, optional): 파일에 로그를 저장할지 여부. 기본값은 True.
-        max_bytes (int, optional): 로그 파일의 최대 크기 (바이트 단위). 
-                                   RotatingFileHandler에 사용됩니다. 기본값은 10MB.
-        backup_count (int, optional): 유지할 백업 로그 파일의 수. 
-                                      RotatingFileHandler에 사용됩니다. 기본값은 5.
 
-    Returns:
-        logging.Logger: 설정된 로거 객체.
-    """
-    logger = logging.getLogger(logger_name)
-    
-    # 로거에 이미 핸들러가 설정되어 있는 경우 중복 추가 방지
-    if logger.hasHandlers():
-        # logger.debug(f"Logger '{logger_name}' already has handlers. Skipping setup.")
-        return logger
+class LoggingManager:
+    """Encapsulates log handler creation to keep SRP boundaries clear."""
 
-    logger.setLevel(log_level)
-    formatter = logging.Formatter(DEFAULT_LOG_FORMAT)
+    def __init__(self, log_root: Path = DEFAULT_LOG_ROOT) -> None:
+        self._log_root = log_root
+        self._session_dir = self._build_session_dir()
+        self._lock = RLock()
 
-    if log_to_console:
+    def _build_session_dir(self) -> Path:
+        """Create a unique directory per run to avoid cross-process collisions."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pid = os.getpid()
+        session_dir = (self._log_root / f"run_{timestamp}_{pid}").resolve()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir
+
+    @property
+    def session_dir(self) -> Path:
+        """Return the folder that stores the current run's default log files."""
+        return self._session_dir
+
+    def _resolve_log_file(self, log_file: Optional[Path]) -> Path:
+        if log_file is not None:
+            log_file = Path(log_file)
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            return log_file
+        default_path = self._session_dir / DEFAULT_LOG_FILENAME
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        return default_path
+
+    def _build_file_handler(
+        self,
+        log_file: Path,
+        max_bytes: int,
+        backup_count: int,
+    ) -> logging.Handler:
+        if ConcurrentRotatingFileHandler is not None:
+            return ConcurrentRotatingFileHandler(
+                log_file,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+                delay=True,
+            )
+
+        # Fallback: make filename process-unique to reduce rename contention.
+        pid = os.getpid()
+        log_file = log_file.with_name(f"{log_file.stem}_{pid}{log_file.suffix or '.log'}")
+        return RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+            delay=True,
+        )
+
+    def setup_logger(
+        self,
+        logger_name: str = "btg",
+        log_level: int = DEFAULT_LOG_LEVEL,
+        log_file: Optional[Path] = None,
+        log_to_console: bool = True,
+        log_to_file: bool = True,
+        max_bytes: int = DEFAULT_MAX_BYTES,
+        backup_count: int = DEFAULT_BACKUP_COUNT,
+    ) -> logging.Logger:
+        logger = logging.getLogger(logger_name)
+        with self._lock:
+            if logger.hasHandlers():
+                return logger
+
+            logger.setLevel(log_level)
+            formatter = logging.Formatter(DEFAULT_LOG_FORMAT)
+
+            if log_to_console:
+                logger.addHandler(self._build_console_handler(formatter))
+
+            if log_to_file:
+                target_file = self._resolve_log_file(log_file)
+                file_handler = self._build_file_handler(target_file, max_bytes, backup_count)
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+
+            if not log_to_console and not log_to_file:
+                logger.addHandler(logging.NullHandler())
+
+            return logger
+
+    def _build_console_handler(self, formatter: logging.Formatter) -> logging.Handler:
         try:
-            # Try to reconfigure stdout to use UTF-8, which is cleaner
-            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stdout.reconfigure(encoding="utf-8")
             console_handler = logging.StreamHandler(sys.stdout)
         except (TypeError, AttributeError):
-            # If reconfigure fails, fall back to a wrapper that replaces errors
             import io
-            safe_stdout = io.TextIOWrapper(
-                sys.stdout.buffer, encoding='utf-8', errors='replace'
-            )
+
+            safe_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
             console_handler = logging.StreamHandler(safe_stdout)
 
         console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-        # logger.debug(f"Console handler added to logger '{logger_name}'.")
-
-    if log_to_file:
-        if log_file is None:
-            log_file = Path(DEFAULT_LOG_FILENAME)
-          # 로그 파일 디렉토리 생성 (존재하지 않는 경우)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-          # 파일 핸들러 (Windows 멀티프로세스 환경을 위한 ConcurrentRotatingFileHandler 시도)
-        try:
-            # Windows에서 멀티프로세스 안전한 로그 핸들러 시도
-            from concurrent_log_handler import ConcurrentRotatingFileHandler
-            file_handler = ConcurrentRotatingFileHandler(
-                log_file, 
-                maxBytes=max_bytes, 
-                backupCount=backup_count,
-                encoding='utf-8',
-                delay=True
-            )
-        except ImportError:
-            # concurrent-log-handler가 설치되지 않은 경우 기본 핸들러 사용
-            # Windows 멀티프로세스 환경에서는 파일명에 프로세스 ID 추가로 충돌 방지
-            import os
-            process_id = os.getpid()
-            log_file_with_pid = log_file.parent / f"{log_file.stem}_{process_id}{log_file.suffix}"
-            
-            file_handler = RotatingFileHandler(
-                log_file_with_pid, 
-                maxBytes=max_bytes, 
-                backupCount=backup_count,
-                encoding='utf-8',
-                delay=True
-            )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        # logger.debug(f"File handler added to logger '{logger_name}' for file '{log_file}'.")
-    
-    if not log_to_console and not log_to_file:
-        logger.addHandler(logging.NullHandler()) # 아무데도 출력 안 할 경우
-        # logger.debug(f"Null handler added to logger '{logger_name}' as no output was specified.")
+        return console_handler
 
 
-    # 전파(propagation) 설정: 루트 로거로 메시지가 전파되지 않도록 하여 중복 로깅 방지 (필요에 따라)
-    # logger.propagate = False 
-    # logger.info(f"Logger '{logger_name}' setup complete with level {logging.getLevelName(log_level)}.")
-    return logger
+_LOGGING_MANAGER = LoggingManager()
+
+
+def setup_logger(
+    logger_name: str = "btg",
+    log_level: int = DEFAULT_LOG_LEVEL,
+    log_file: Optional[Path] = None,
+    log_to_console: bool = True,
+    log_to_file: bool = True,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    backup_count: int = DEFAULT_BACKUP_COUNT,
+) -> logging.Logger:
+    """Public wrapper that delegates to the singleton logging manager."""
+
+    return _LOGGING_MANAGER.setup_logger(
+        logger_name=logger_name,
+        log_level=log_level,
+        log_file=log_file,
+        log_to_console=log_to_console,
+        log_to_file=log_to_file,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
+
+
+def get_log_session_dir() -> Path:
+    """Expose the active session directory so callers can locate log files."""
+
+    return _LOGGING_MANAGER.session_dir
 
 if __name__ == '__main__':
     # 로거 설정 테스트
@@ -142,6 +186,6 @@ if __name__ == '__main__':
 
 
     print(f"\n로그 파일은 다음 위치에서 확인할 수 있습니다:")
-    print(f" - 기본 로그: {Path(DEFAULT_LOG_FILENAME).resolve()}")
+    print(f" - 세션 로그 디렉터리: {get_log_session_dir()}")
     if custom_log_file.exists():
         print(f" - 커스텀 로그: {custom_log_file.resolve()}")
