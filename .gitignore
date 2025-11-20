@@ -55,3 +55,6 @@ gemini-api-3-476202-3ca90c673e7f.json
 /prompt_libaray
 *.log
 .\d+
+/logs
+LBI-0.35.0-pre21.js
+GITHUB_COPILOT_FLOW.md
