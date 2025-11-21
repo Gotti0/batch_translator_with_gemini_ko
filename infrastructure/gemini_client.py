@@ -184,7 +184,10 @@ class GeminiClient:
         self.vertex_location: Optional[str] = None
         
         # HTTP Client Options for Timeout
-        self.http_options = genai_types.HttpOptions(client_args={'timeout': self._TIMEOUT_SECONDS})
+        # [수정됨] google-genai SDK는 timeout을 밀리초 단위의 정수(int)로 받습니다.
+        # 기존 client_args={'timeout': ...} 방식은 작동하지 않음이 확인되었습니다.
+        timeout_ms = int(self._TIMEOUT_SECONDS * 1000)
+        self.http_options = genai_types.HttpOptions(timeout=timeout_ms)
         
         # RPM control
         self.requests_per_minute = requests_per_minute or 140.0

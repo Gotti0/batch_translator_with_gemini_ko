@@ -112,7 +112,7 @@ class ConfigManager:
             "glossary_target_language_name": "Korean", # 용어집 추출 시 번역 목표 언어 이름 (예시)
             "glossary_extraction_temperature": 0.3, # 경량화된 용어집 추출 온도
             "glossary_sampling_ratio": 10.0, # 경량화된 용어집 샘플링 비율
-            "glossary_max_total_entries": 500, # 경량화된 용어집 최대 항목 수
+            "glossary_max_total_entries": 9999, # 경량화된 용어집 최대 항목 수
             "simple_glossary_extraction_prompt_template": (
                 "Analyze the following text. Identify key terms, focusing specifically on **people (characters), proper nouns (e.g., unique items, titles, artifacts), place names (locations, cities, countries, specific buildings), and organization names (e.g., companies, groups, factions, schools)**.\n"
                 "For each identified term, provide its translation into {target_lang_name} (BCP-47: {target_lang_code}), and estimate their occurrence count in this segment.\n"
