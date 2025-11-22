@@ -541,23 +541,23 @@ class GeminiClient:
                     forced_safety_settings = [
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=genai_types.HarmBlockThreshold.OFF,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=genai_types.HarmBlockThreshold.OFF,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=genai_types.HarmBlockThreshold.OFF,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=genai_types.HarmBlockThreshold.OFF,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         genai_types.SafetySetting(
                             category=genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                            threshold=genai_types.HarmBlockThreshold.OFF,
+                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
                         ),                    ]
                     final_generation_config_params['safety_settings'] = forced_safety_settings
                     
