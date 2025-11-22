@@ -104,7 +104,7 @@ class GeminiClient:
         "The model is overloaded", "503", "Service Unavailable", 
         "Resource has been exhausted", "RESOURCE_EXHAUSTED"
     ]
-    _TIMEOUT_SECONDS = 300.0 # 5분
+    _TIMEOUT_SECONDS = 500.0
 
     _CONTENT_SAFETY_PATTERNS = [
         "PROHIBITED_CONTENT", "SAFETY", "response was blocked",
@@ -693,6 +693,10 @@ class GeminiClient:
                                 logger.warning(f"GeminiClient에서 JSON 응답 파싱 실패 (mime type이 application/json임에도 불구하고): {e_parse}. 원본 문자열 반환. 원본: {text_content_from_api[:200]}...")
                                 return text_content_from_api # 파싱 실패 시 원본 문자열 반환
                         else:
+                            # [수정] 일반 텍스트 모드에서도 빈 문자열인지 확인
+                            if not text_content_from_api.strip():
+                                logger.warning(f"모델 응답이 비어 있습니다 (공백 포함). (시도: {current_retry_for_this_key + 1})")
+                                raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
                             return text_content_from_api # JSON이 아니면 그냥 텍스트 반환
                     
                     raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
@@ -750,6 +754,16 @@ class GeminiClient:
                     elif self._is_content_safety_error(error_obj=e):
                         logger.error(f"콘텐츠 안전 관련 오류 감지(예외 기반): {error_message}")
                         raise GeminiContentSafetyException(f"콘텐츠 안전 문제로 요청이 차단되었습니다(예외 기반): {error_message}") from e
+                    elif "timeout" in error_message.lower() or "timed out" in error_message.lower():
+                        logger.warning(f"네트워크 타임아웃 또는 응답 지연 발생: {error_message}")
+                        if current_retry_for_this_key < max_retries:
+                            time.sleep(current_backoff + random.uniform(0,1))
+                            current_retry_for_this_key += 1
+                            current_backoff = min(current_backoff * 2, max_backoff)
+                            continue
+                        else:
+                            logger.error(f"최대 재시도 횟수 초과 (타임아웃): {error_message}")
+                            break
                     else:
                         if current_retry_for_this_key < max_retries:
                             time.sleep(current_backoff + random.uniform(0,1))
