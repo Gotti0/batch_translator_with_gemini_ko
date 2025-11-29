@@ -243,7 +243,7 @@ def create_new_metadata(input_file_path: Union[str, Path], total_chunks: int, co
     }
     return metadata
 
-def update_metadata_for_chunk_completion(input_file_path: Union[str, Path], chunk_index: int) -> bool:
+def update_metadata_for_chunk_completion(input_file_path: Union[str, Path], chunk_index: int, source_length: int = 0, translated_length: int = 0) -> bool:
     metadata_path = get_metadata_file_path(input_file_path)
     try:
         metadata = read_json_file(metadata_path)
@@ -264,7 +264,16 @@ def update_metadata_for_chunk_completion(input_file_path: Union[str, Path], chun
             del metadata['failed_chunks'][str(chunk_index)]
 
         # 청크 완료 정보 기록
-        metadata['translated_chunks'][str(chunk_index)] = time.time()
+        # 기존에는 시간(float)만 저장했으나, 이제는 통계 정보를 포함한 dict를 저장합니다.
+        # 하위 호환성을 위해 읽는 쪽에서는 타입 체크가 필요할 수 있습니다.
+        ratio = round(translated_length / source_length, 4) if source_length > 0 else 0.0
+        
+        metadata['translated_chunks'][str(chunk_index)] = {
+            "time": time.time(),
+            "source_length": source_length,
+            "translated_length": translated_length,
+            "ratio": ratio
+        }
         metadata['last_updated'] = time.time()
 
         # 상태 업데이트
@@ -335,8 +344,8 @@ if __name__ == '__main__':
     logger.info(f"로드된 메타데이터: {loaded_meta}")
     
     if loaded_meta:
-        update_metadata_for_chunk_completion(sample_input_file, 0)
-        update_metadata_for_chunk_completion(sample_input_file, 1)
+        update_metadata_for_chunk_completion(sample_input_file, 0, source_length=100, translated_length=120)
+        update_metadata_for_chunk_completion(sample_input_file, 1, source_length=200, translated_length=180)
         updated_meta = load_metadata(sample_input_file)
         logger.info(f"청크 완료 후 메타데이터: {updated_meta}")
         

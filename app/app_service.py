@@ -415,8 +415,9 @@ class AppService:
             
             success = True
             
+            ratio = len(translated_chunk) / len(chunk_text) if len(chunk_text) > 0 else 0.0
             total_processing_time = time.time() - start_time
-            logger.info(f"  🎯 {current_chunk_info_msg} 전체 처리 완료 (총 소요: {total_processing_time:.2f}초)")
+            logger.info(f"  🎯 {current_chunk_info_msg} 전체 처리 완료 (총 소요: {total_processing_time:.2f}초, 길이비율: {ratio:.2f})")
 
         except BtgTranslationException as e_trans:
             if self.stop_requested:
@@ -485,7 +486,12 @@ class AppService:
                         self.successful_chunks_count += 1
                         # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
                         try:
-                            metadata_updated = update_metadata_for_chunk_completion(input_file_path_for_metadata, chunk_index)
+                            metadata_updated = update_metadata_for_chunk_completion(
+                                input_file_path_for_metadata, 
+                                chunk_index,
+                                source_length=len(chunk_text),
+                                translated_length=len(translated_chunk)
+                            )
                             if metadata_updated:
                                 logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
                             else:
