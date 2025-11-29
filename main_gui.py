@@ -130,6 +130,7 @@ class GuiLogHandler(logging.Handler):
     """
     로깅 메시지를 Tkinter ScrolledText 위젯으로 리다이렉션하는 핸들러.
     스레드 안전성을 위해 widget.after()를 사용합니다.
+    사용자 요청에 따라 '⚠️'(품질 이슈) 또는 ERROR 레벨 이상의 로그만 출력하도록 필터링합니다.
     """
     def __init__(self, text_widget: scrolledtext.ScrolledText):
         super().__init__()
@@ -146,6 +147,11 @@ class GuiLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             level_tag = record.levelname
+            
+            # 필터링: 품질 이슈(⚠️) 또는 에러 이상만 허용
+            # TQDM은 별도의 TqdmToTkinter 클래스를 통해 출력되므로 여기서는 관여하지 않음
+            if "⚠️" not in msg and record.levelno < logging.ERROR:
+                return
             
             def append_message_to_widget():
                 try:
