@@ -1032,26 +1032,22 @@ class BatchTranslatorGUI:
         Tooltip(self.save_displayed_glossary_button, "아래 텍스트 영역에 표시된 용어집 JSON 내용을 새 파일로 저장합니다.") # Text changed
 
         self.edit_glossary_button = ttk.Button(glossary_display_buttons_frame, text="용어집 편집", command=self._open_glossary_editor) # Widget name, text, command changed
-    def _create_log_widgets(self):
-        self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD, state=tk.DISABLED, height=20)
-        self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
-        Tooltip(self.log_text, "애플리케이션의 주요 동작 및 오류 로그가 표시됩니다.")
-        
-        # 커스텀 핸들러 생성 및 등록
-        self.gui_log_handler = GuiLogHandler(self.log_text)
-        
-        # GUI 핸들러를 위한 별도의 포맷터 생성 및 설정
-        gui_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%H:%M:%S')
-        self.gui_log_handler.setFormatter(gui_formatter)
-        
-        # 루트 로거에 핸들러 추가 (모든 모듈의 로그 캡처)
-        root_logger = logging.getLogger()
-        root_logger.addHandler(self.gui_log_handler)
-        
-        # 기존 로거 설정 유지 (필요한 경우)
-        logger.setLevel(logging.INFO) 
+        self.edit_glossary_button.pack(side="left", padx=5)
+        Tooltip(self.edit_glossary_button, "표시된 용어집 내용을 별도의 편집기 창에서 수정합니다.") # Text changed
+        # 동적 용어집 주입 설정
+        dynamic_glossary_frame = ttk.Labelframe(glossary_frame, text="동적 용어집 주입 설정", padding="10")
+        dynamic_glossary_frame.pack(fill="x", padx=5, pady=5)
 
-        self.tqdm_stream = TqdmToTkinter(self.log_text)
+        self.enable_dynamic_glossary_injection_var = tk.BooleanVar(value=False)
+        enable_dynamic_glossary_injection_check = ttk.Checkbutton(
+            dynamic_glossary_frame,
+            text="동적 용어집 주입 활성화",
+            variable=self.enable_dynamic_glossary_injection_var,
+            command=self._on_glossary_setting_changed
+        )
+        enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        Tooltip(enable_dynamic_glossary_injection_check, "번역 시 현재 청크와 관련된 용어집 항목을 자동으로 프롬프트에 주입합니다.")
+
         max_entries_injection_label = ttk.Label(dynamic_glossary_frame, text="청크당 최대 주입 항목 수:")
         max_entries_injection_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
         Tooltip(max_entries_injection_label, "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.")
@@ -1082,14 +1078,19 @@ class BatchTranslatorGUI:
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
         Tooltip(self.log_text, "애플리케이션의 주요 동작 및 오류 로그가 표시됩니다.")
         
-        gui_log_handler = TextHandler(self.log_text)
+        # 커스텀 핸들러 생성 및 등록
+        self.gui_log_handler = GuiLogHandler(self.log_text)
+        
         # GUI 핸들러를 위한 별도의 포맷터 생성 및 설정
         gui_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%H:%M:%S')
-        gui_log_handler.setFormatter(gui_formatter)
+        self.gui_log_handler.setFormatter(gui_formatter)
         
-        # Use the global logger instance
-        logger.addHandler(gui_log_handler)
-        logger.setLevel(logging.INFO) # logging.INFO should be recognized
+        # 루트 로거에 핸들러 추가 (모든 모듈의 로그 캡처)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self.gui_log_handler)
+        
+        # 기존 로거 설정 유지 (필요한 경우)
+        logger.setLevel(logging.INFO) 
 
         self.tqdm_stream = TqdmToTkinter(self.log_text)
 
