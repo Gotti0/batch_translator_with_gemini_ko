@@ -148,9 +148,11 @@ class GuiLogHandler(logging.Handler):
             msg = self.format(record)
             level_tag = record.levelname
             
-            # 필터링: 품질 이슈(⚠️) 또는 에러 이상만 허용
+            # 필터링: 품질 이슈(⚠️), 청크 전체 처리 완료(🎯 청크 ... 전체 처리 완료) 또는 에러 이상만 허용
+            # 단순 "🎯" 포함 시 "목표 크기" 로그까지 포함되므로 구체적인 패턴 매칭 필요
             # TQDM은 별도의 TqdmToTkinter 클래스를 통해 출력되므로 여기서는 관여하지 않음
-            if "⚠️" not in msg and record.levelno < logging.ERROR:
+            is_chunk_complete_log = "🎯" in msg and "전체 처리 완료" in msg
+            if "⚠️" not in msg and not is_chunk_complete_log and record.levelno < logging.ERROR:
                 return
             
             def append_message_to_widget():
