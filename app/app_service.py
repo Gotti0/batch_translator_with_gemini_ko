@@ -35,6 +35,7 @@ try:
     from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
     from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from ..utils.post_processing_service import PostProcessingService
+    from ..utils.quality_check_service import QualityCheckService
 except ImportError:
     # Fallback imports
     from infrastructure.file_handler import (
@@ -54,6 +55,7 @@ except ImportError:
     from core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
     from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from utils.post_processing_service import PostProcessingService
+    from utils.quality_check_service import QualityCheckService
 
 logger = setup_logger(__name__)
 
@@ -81,6 +83,7 @@ class AppService:
         self.successful_chunks_count = 0
         self.failed_chunks_count = 0
         self.post_processing_service = PostProcessingService()
+        self.quality_check_service = QualityCheckService()
 
         self.load_app_config()
 
@@ -830,11 +833,33 @@ class AppService:
                                 f.cancel()
                         logger.info("진행 중인 작업들이 취소되었습니다.")
                         break
-
                     chunk_idx_completed = future_to_chunk_index[future]
                     try:
                         future.result()
+                        
+                        # 실시간 품질 검사 (최소 5개 이상 처리되었을 때부터)
+                        if self.processed_chunks_count >= 5:
+                            try:
+                                # 메타데이터 로드 (최신 상태 반영)
+                                current_metadata = load_metadata(metadata_file_path)
+                                suspicious_chunks = self.quality_check_service.analyze_translation_quality(current_metadata)
+                                
+                                # 이번에 완료된 청크가 의심 목록에 있는지 확인
+                                for chunk in suspicious_chunks:
+                                    if chunk['chunk_index'] == chunk_idx_completed:
+                                        issue_type = chunk['issue_type']
+                                        z_score = chunk['z_score']
+                                        ratio = chunk['ratio']
+                                        
+                                        if issue_type == "omission":
+                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed + 1}): 비율 {ratio:.2f}, Z-Score {z_score}")
+                                        elif issue_type == "hallucination":
+                                            logger.warning(f"⚠️ AI 환각(과도한 생성) 의심 (청크 {chunk_idx_completed + 1}): 비율 {ratio:.2f}, Z-Score {z_score}")
+                            except Exception as qc_e:
+                                logger.warning(f"품질 검사 중 오류 발생 (무시됨): {qc_e}")
+
                     except Exception as e_future:
+                        logger.error(f"병렬 작업 (청크 {chunk_idx_completed + 1}) 실행 중 오류 (as_completed): {e_future}", exc_info=True)
                         logger.error(f"병렬 작업 (청크 {chunk_idx_completed + 1}) 실행 중 오류 (as_completed): {e_future}", exc_info=True)
                     finally:
                         if pbar: pbar.update(1)

@@ -126,6 +126,46 @@ class Tooltip:
             tw.destroy()
 
 
+class GuiLogHandler(logging.Handler):
+    """
+    로깅 메시지를 Tkinter ScrolledText 위젯으로 리다이렉션하는 핸들러.
+    스레드 안전성을 위해 widget.after()를 사용합니다.
+    """
+    def __init__(self, text_widget: scrolledtext.ScrolledText):
+        super().__init__()
+        self.text_widget = text_widget
+        # 로그 레벨별 태그 설정
+        self.text_widget.tag_config("INFO", foreground="black")
+        self.text_widget.tag_config("DEBUG", foreground="gray")
+        self.text_widget.tag_config("WARNING", foreground="#FF8C00") # 진한 주황색
+        self.text_widget.tag_config("ERROR", foreground="red", font=('Helvetica', 9, 'bold'))
+        self.text_widget.tag_config("CRITICAL", foreground="red", background="yellow", font=('Helvetica', 9, 'bold'))
+        self.text_widget.tag_config("TQDM", foreground="blue") 
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            level_tag = record.levelname
+            
+            def append_message_to_widget():
+                try:
+                    if not self.text_widget.winfo_exists(): 
+                        return
+                    
+                    current_state = self.text_widget.cget("state") 
+                    self.text_widget.configure(state='normal') 
+                    self.text_widget.insert(tk.END, msg + "\n", level_tag)
+                    self.text_widget.configure(state=current_state) 
+                    self.text_widget.see(tk.END)
+                except tk.TclError:
+                    pass 
+
+            if self.text_widget.winfo_exists():
+                self.text_widget.after(0, append_message_to_widget)
+        except Exception:
+            self.handleError(record)
+
+
 class TqdmToTkinter(io.StringIO):
     def __init__(self, widget: scrolledtext.ScrolledText):
         super().__init__()
@@ -992,21 +1032,26 @@ class BatchTranslatorGUI:
         Tooltip(self.save_displayed_glossary_button, "아래 텍스트 영역에 표시된 용어집 JSON 내용을 새 파일로 저장합니다.") # Text changed
 
         self.edit_glossary_button = ttk.Button(glossary_display_buttons_frame, text="용어집 편집", command=self._open_glossary_editor) # Widget name, text, command changed
-        self.edit_glossary_button.pack(side="left", padx=5)
-        Tooltip(self.edit_glossary_button, "표시된 용어집 내용을 별도의 편집기 창에서 수정합니다.") # Text changed
-        # 동적 용어집 주입 설정
-        dynamic_glossary_frame = ttk.Labelframe(glossary_frame, text="동적 용어집 주입 설정", padding="10")
-        dynamic_glossary_frame.pack(fill="x", padx=5, pady=5)
+    def _create_log_widgets(self):
+        self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD, state=tk.DISABLED, height=20)
+        self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(self.log_text, "애플리케이션의 주요 동작 및 오류 로그가 표시됩니다.")
+        
+        # 커스텀 핸들러 생성 및 등록
+        self.gui_log_handler = GuiLogHandler(self.log_text)
+        
+        # GUI 핸들러를 위한 별도의 포맷터 생성 및 설정
+        gui_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%H:%M:%S')
+        self.gui_log_handler.setFormatter(gui_formatter)
+        
+        # 루트 로거에 핸들러 추가 (모든 모듈의 로그 캡처)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self.gui_log_handler)
+        
+        # 기존 로거 설정 유지 (필요한 경우)
+        logger.setLevel(logging.INFO) 
 
-        self.enable_dynamic_glossary_injection_var = tk.BooleanVar()
-        self.enable_dynamic_glossary_injection_check = ttk.Checkbutton(
-            dynamic_glossary_frame,
-            text="동적 용어집 주입 활성화",
-            variable=self.enable_dynamic_glossary_injection_var
-        )
-        Tooltip(self.enable_dynamic_glossary_injection_check, "번역 시 용어집 탭에서 설정된 용어집 JSON 파일의 내용을\n프롬프트에 동적으로 주입하여 번역 일관성을 높입니다.")
-        self.enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky="w")
-
+        self.tqdm_stream = TqdmToTkinter(self.log_text)
         max_entries_injection_label = ttk.Label(dynamic_glossary_frame, text="청크당 최대 주입 항목 수:")
         max_entries_injection_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
         Tooltip(max_entries_injection_label, "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.")
@@ -2316,37 +2361,7 @@ class GlossaryEditorWindow(tk.Toplevel): # Class name changed
         self.destroy()
 
 
-class TextHandler(logging.Handler):
-    def __init__(self, text_widget: scrolledtext.ScrolledText): # type: ignore
-        super().__init__() # Corrected indentation
-        self.text_widget = text_widget
-        self.text_widget.tag_config("INFO", foreground="black")
-        self.text_widget.tag_config("DEBUG", foreground="gray")
-        self.text_widget.tag_config("WARNING", foreground="orange")
-        self.text_widget.tag_config("ERROR", foreground="red", font=('Helvetica', 9, 'bold'))
-        self.text_widget.tag_config("CRITICAL", foreground="red", background="yellow", font=('Helvetica', 9, 'bold'))
-        self.text_widget.tag_config("TQDM", foreground="blue") 
 
-    def emit(self, record: logging.LogRecord): # Corrected indentation relative to class
-        msg = self.format(record)
-        level_tag = record.levelname
-        
-        def append_message_to_widget():
-            try:
-                if not self.text_widget.winfo_exists(): 
-                    return
-                
-                current_state = self.text_widget.cget("state") 
-                self.text_widget.config(state=tk.NORMAL) 
-                self.text_widget.insert(tk.END, msg + "\n", level_tag)
-                self.text_widget.config(state=current_state) 
-                self.text_widget.see(tk.END)
-            except tk.TclError:
-                # This can happen if the window is destroyed.
-                pass 
-
-        if self.text_widget.winfo_exists():
-             self.text_widget.after(0, append_message_to_widget)
 
 if __name__ == '__main__':
     logger.info("BatchTranslatorGUI 시작 중...")
