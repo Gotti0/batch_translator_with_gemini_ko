@@ -852,15 +852,14 @@ class AppService:
                                         ratio = chunk['ratio']
                                         
                                         if issue_type == "omission":
-                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed + 1}): 비율 {ratio:.2f}, Z-Score {z_score}")
+                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
                                         elif issue_type == "hallucination":
-                                            logger.warning(f"⚠️ AI 환각(과도한 생성) 의심 (청크 {chunk_idx_completed + 1}): 비율 {ratio:.2f}, Z-Score {z_score}")
+                                            logger.warning(f"⚠️ AI 환각(과도한 생성) 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
                             except Exception as qc_e:
                                 logger.warning(f"품질 검사 중 오류 발생 (무시됨): {qc_e}")
 
                     except Exception as e_future:
-                        logger.error(f"병렬 작업 (청크 {chunk_idx_completed + 1}) 실행 중 오류 (as_completed): {e_future}", exc_info=True)
-                        logger.error(f"병렬 작업 (청크 {chunk_idx_completed + 1}) 실행 중 오류 (as_completed): {e_future}", exc_info=True)
+                        logger.error(f"병렬 작업 (청크 {chunk_idx_completed}) 실행 중 오류 (as_completed): {e_future}", exc_info=True)
                     finally:
                         if pbar: pbar.update(1)
             finally:
