@@ -577,17 +577,6 @@ class GeminiClient:
                         safety_count = len(forced_safety_settings) if forced_safety_settings else 0
                         logger.debug(f"API요청: 모델={effective_model_name}, 스트림={stream}, 컨텐츠={contents_count}개, 텍스트={total_text_len}자, 안전설정={safety_count}개")
                     
-                    # 청크 시작 부분 미리보기 (INFO 레벨 - 누락 청크 재작업 용이)
-                    for content in final_sdk_contents:
-                        for part in content.parts:
-                            if hasattr(part, 'text') and part.text:
-                                text_preview = part.text[:100].replace('\n', ' ')
-                                logger.info(f"API요청 텍스트 미리보기: \"{text_preview}{'...' if len(part.text) > 100 else ''}\"")
-                                break
-                        else:
-                            continue
-                        break
-                    
                     text_content_from_api: Optional[str] = None
                     if stream:
                         response = self.client.models.generate_content_stream(

@@ -231,6 +231,10 @@ class TranslationService:
             logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
         
+        # 소설 본문 미리보기 로깅 (INFO 레벨 - 누락 청크 재작업 용이)
+        text_preview = text_chunk[:100].replace('\n', ' ')
+        logger.info(f"번역 요청 텍스트: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")
+        
         api_prompt_for_gemini_client: Union[str, List[genai_types.Content]] # 변경: List[Content] 사용
         api_system_instruction: Optional[str] # 변경: Optional[str]
 
