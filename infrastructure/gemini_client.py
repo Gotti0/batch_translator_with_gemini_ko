@@ -492,8 +492,8 @@ class GeminiClient:
             current_backoff = initial_backoff
             
             if self.auth_mode == "API_KEY":
-                current_key_for_log = self.current_api_key # self.current_api_key should be set
-                logger.info(f"API {current_key_for_log}로 작업 시도.")
+                key_id = self._get_api_key_identifier(self.current_api_key)
+                logger.info(f"API {key_id}로 작업 시도.")
                 # _normalize_model_name에서 API 키가 모델명에 포함되도록 수정했으므로, 여기서 추가 작업 불필요
             elif self.auth_mode == "VERTEX_AI":
                  logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")

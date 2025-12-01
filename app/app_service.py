@@ -333,7 +333,7 @@ class AppService:
                             total_chunks: int,
                             input_file_path_for_metadata: Path,
                             progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None) -> bool:
-        current_chunk_info_msg = f"청크 {chunk_index + 1}/{total_chunks}"
+        current_chunk_info_msg = f"청크 {chunk_index}/{total_chunks}"
         
         # 청크 분석 (로깅 최적화: 통계는 DEBUG 레벨에서만 상세 출력)
         chunk_chars = len(chunk_text)
