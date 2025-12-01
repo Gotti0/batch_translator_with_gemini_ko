@@ -561,57 +561,32 @@ class GeminiClient:
                         ),                    ]
                     final_generation_config_params['safety_settings'] = forced_safety_settings
                     
-                    # response_schema 디버깅 로깅 추가
-                    if 'response_schema' in final_generation_config_params:
-                        logger.debug(f"response_schema 내용: {final_generation_config_params['response_schema']}")
-                        logger.debug(f"response_schema 타입: {type(final_generation_config_params['response_schema'])}")                    
+                    # response_schema 디버깅 로깅 (조건부)
+                    if logger.isEnabledFor(logging.DEBUG) and 'response_schema' in final_generation_config_params:
+                        logger.debug(f"response_schema: {type(final_generation_config_params['response_schema']).__name__}")
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
 
-                    # [[디버깅]] 전체 API 요청 본문 로깅
-                    logger.debug("=== 전체 API 요청 정보 ===")
-                    logger.debug(f"모델명: {effective_model_name}")
-                    logger.debug(f"스트림 모드: {stream}")
+                    # [[디버깅]] API 요청 정보 로깅 (조건부 - DEBUG 레벨에서만)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        # 요약된 단일 로그로 API 요청 정보 출력
+                        contents_count = len(final_sdk_contents)
+                        total_text_len = sum(
+                            len(part.text) for content in final_sdk_contents 
+                            for part in content.parts if hasattr(part, 'text') and part.text
+                        )
+                        safety_count = len(forced_safety_settings) if forced_safety_settings else 0
+                        logger.debug(f"API요청: 모델={effective_model_name}, 스트림={stream}, 컨텐츠={contents_count}개, 텍스트={total_text_len}자, 안전설정={safety_count}개")
                     
-                    # 프롬프트 내용 로깅
-                    logger.debug("요청 프롬프트 (contents):")
-                    for i, content in enumerate(final_sdk_contents):
-                        logger.debug(f"  Content[{i}] - role: {content.role}")
-                        for j, part in enumerate(content.parts):
+                    # 청크 시작 부분 미리보기 (INFO 레벨 - 누락 청크 재작업 용이)
+                    for content in final_sdk_contents:
+                        for part in content.parts:
                             if hasattr(part, 'text') and part.text:
-                                # 너무 긴 텍스트는 잘라서 로깅
-                                text_preview = part.text[:1000] + "..." if len(part.text) > 1000 else part.text
-                                logger.debug(f"    Part[{j}] - text: {text_preview}")
-                            else:
-                                logger.debug(f"    Part[{j}] - type: {type(part)} (non-text)")
-                    
-                    # 생성 설정 로깅
-                    if sdk_generation_config:
-                        logger.debug("생성 설정 (GenerateContentConfig):")
-                        config_dict = {}
-                        for attr in dir(sdk_generation_config):
-                            if not attr.startswith('_') and hasattr(sdk_generation_config, attr):
-                                try:
-                                    value = getattr(sdk_generation_config, attr)
-                                    if not callable(value):
-                                        config_dict[attr] = value
-                                except Exception:
-                                    config_dict[attr] = "<접근 불가>"
-                        
-                        for key, value in config_dict.items():
-                            if key == 'system_instruction' and value:
-                                # 시스템 지시사항은 길 수 있으므로 일부만 로깅
-                                value_str = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
-                                logger.debug(f"  {key}: {value_str}")
-                            elif key == 'safety_settings' and value:
-                                logger.debug(f"  {key}: {len(value)} 개의 안전 설정")
-                                for i, setting in enumerate(value):
-                                    logger.debug(f"    [{i}] category: {setting.category}, threshold: {setting.threshold}")
-                            else:
-                                logger.debug(f"  {key}: {value}")
-                    else:
-                        logger.debug("생성 설정: None")
-                    
-                    logger.debug("=== API 요청 정보 끝 ===")
+                                text_preview = part.text[:100].replace('\n', ' ')
+                                logger.info(f"API요청 텍스트 미리보기: \"{text_preview}{'...' if len(part.text) > 100 else ''}\"")
+                                break
+                        else:
+                            continue
+                        break
                     
                     text_content_from_api: Optional[str] = None
                     if stream:
@@ -642,20 +617,12 @@ class GeminiClient:
                             # system_instruction 파라미터 제거
                         )
 
-                        
-                        # [[가이드]] 응답 객체 전체 분석 로깅 추가
-                        logger.debug("비스트리밍 API 응답 객체 속성:")
-                        for attr_name in dir(response):
-                            if not attr_name.startswith('_'):
-                                try:
-                                    attr_value = getattr(response, attr_name)
-                                    # 값의 길이가 너무 길면 일부만 로깅
-                                    value_str = str(attr_value)
-                                    if len(value_str) > 2000:
-                                        value_str = value_str[:2000] + "..."
-                                    logger.debug(f"  response.{attr_name}: {value_str}")
-                                except Exception:
-                                    logger.debug(f"  response.{attr_name}: <접근 불가>")
+                        # 응답 객체 요약 로깅 (조건부 - 루프 대신 단일 요약)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            has_text = hasattr(response, 'text') and response.text
+                            has_candidates = hasattr(response, 'candidates') and response.candidates
+                            text_len = len(response.text) if has_text else 0
+                            logger.debug(f"API응답: text={text_len}자, candidates={'있음' if has_candidates else '없음'}")
                         
                         # 구조화된 출력 (스키마 사용 시) 처리
                         if sdk_generation_config and sdk_generation_config.response_schema and \

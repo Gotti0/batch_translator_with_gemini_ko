@@ -341,93 +341,84 @@ class BatchTranslatorGUI:
             return
         try:
             config = self.app_service.config 
-            logger.info(f"초기 UI 로드 시작. AppService.config 사용: {json.dumps(config, indent=2, ensure_ascii=False)}")
+            logger.info("UI 설정 로드 시작")
+            
+            # 설정 상세는 DEBUG 레벨에서만 출력
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"설정 내용: {json.dumps(config, indent=2, ensure_ascii=False)}")
 
-            if hasattr(self, 'api_keys_text'): # Check if widget exists
+            if hasattr(self, 'api_keys_text'):
                 self.api_keys_text.config(state=tk.NORMAL)
                 self.api_keys_text.delete('1.0', tk.END)
                 api_keys_list = config.get("api_keys", [])
-                logger.debug(f"Config에서 가져온 api_keys: {api_keys_list}")
                 if api_keys_list:
                     self.api_keys_text.insert('1.0', "\n".join(api_keys_list))
             
             
             self.service_account_file_entry.delete(0, tk.END)
             sa_file_path = config.get("service_account_file_path")
-            logger.debug(f"Config에서 가져온 service_account_file_path: {sa_file_path}")
             self.service_account_file_entry.insert(0, sa_file_path if sa_file_path is not None else "")
 
             use_vertex_ai_val = config.get("use_vertex_ai", False)
-            logger.debug(f"Config에서 가져온 use_vertex_ai: {use_vertex_ai_val}")
             self.use_vertex_ai_var.set(use_vertex_ai_val) 
             
             self.gcp_project_entry.delete(0, tk.END)
             gcp_project_val = config.get("gcp_project")
-            logger.debug(f"Config에서 가져온 gcp_project: {gcp_project_val}")
             self.gcp_project_entry.insert(0, gcp_project_val if gcp_project_val is not None else "")
 
             self.gcp_location_entry.delete(0, tk.END)
             gcp_location_val = config.get("gcp_location")
-            logger.debug(f"Config에서 가져온 gcp_location: {gcp_location_val}")
             self.gcp_location_entry.insert(0, gcp_location_val if gcp_location_val is not None else "")
 
             self._toggle_vertex_fields() 
             
             model_name_from_config = config.get("model_name", "gemini-2.0-flash")
-            logger.debug(f"Config에서 가져온 model_name: {model_name_from_config}")
             self.model_name_combobox.set(model_name_from_config) 
             self._update_model_list_ui() 
 
             temperature_val = config.get("temperature", 0.7)
-            logger.debug(f"Config에서 가져온 temperature: {temperature_val}, 타입: {type(temperature_val)}")
             try:
                 self.temperature_scale.set(float(temperature_val))
                 self.temperature_label.config(text=f"{self.temperature_scale.get():.2f}") 
             except (ValueError, TypeError) as e:
-                logger.warning(f"온도 값 설정 오류 ({temperature_val}): {e}. 기본값 사용.")
+                logger.warning(f"온도 값 설정 오류: {e}")
                 default_temp = self.app_service.config_manager.get_default_config().get("temperature", 0.7)
                 self.temperature_scale.set(default_temp)
                 self.temperature_label.config(text=f"{default_temp:.2f}")
 
 
             top_p_val = config.get("top_p", 0.9)
-            logger.debug(f"Config에서 가져온 top_p: {top_p_val}, 타입: {type(top_p_val)}")
             try:
                 self.top_p_scale.set(float(top_p_val))
                 self.top_p_label.config(text=f"{self.top_p_scale.get():.2f}") 
             except (ValueError, TypeError) as e:
-                logger.warning(f"Top P 값 설정 오류 ({top_p_val}): {e}. 기본값 사용.")
+                logger.warning(f"Top P 값 설정 오류: {e}")
                 default_top_p = self.app_service.config_manager.get_default_config().get("top_p", 0.9)
                 self.top_p_scale.set(default_top_p)
                 self.top_p_label.config(text=f"{default_top_p:.2f}")
 
-            thinking_budget_val = config.get("thinking_budget") # None일 수 있음
-            logger.debug(f"Config에서 가져온 thinking_budget: {thinking_budget_val}")
+            thinking_budget_val = config.get("thinking_budget")
             self.thinking_budget_entry.delete(0, tk.END)
             if thinking_budget_val is not None:
                 self.thinking_budget_entry.insert(0, str(thinking_budget_val))
             else:
-                self.thinking_budget_entry.insert(0, "") # 비어있으면 빈 문자열로 표시
+                self.thinking_budget_entry.insert(0, "")
             
             # Glossary Extraction User Override Prompt
             user_override_glossary_prompt_val = config.get("user_override_glossary_extraction_prompt", "")
-            logger.debug(f"Config에서 가져온 user_override_glossary_extraction_prompt: {user_override_glossary_prompt_val[:50]}...")
             self.user_override_glossary_prompt_text.delete('1.0', tk.END)
             self.user_override_glossary_prompt_text.insert('1.0', user_override_glossary_prompt_val)
 
 
             chunk_size_val = config.get("chunk_size", 6000)
-            logger.debug(f"Config에서 가져온 chunk_size: {chunk_size_val}")
             self.chunk_size_entry.delete(0, tk.END)
             self.chunk_size_entry.insert(0, str(chunk_size_val))
             
             max_workers_val = config.get("max_workers", os.cpu_count() or 1)
-            logger.debug(f"Config에서 가져온 max_workers: {max_workers_val}")
             self.max_workers_entry.delete(0, tk.END)
             self.max_workers_entry.insert(0, str(max_workers_val))
 
             rpm_val = config.get("requests_per_minute", 60)
-            logger.debug(f"Config에서 가져온 requests_per_minute: {rpm_val}")
             self.rpm_entry.delete(0, tk.END)
             self.rpm_entry.insert(0, str(rpm_val))
 
@@ -435,12 +426,10 @@ class BatchTranslatorGUI:
             novel_lang_val = config.get("novel_language", "auto")
             self.novel_language_entry.delete(0, tk.END)
             self.novel_language_entry.insert(0, novel_lang_val)
-            logger.debug(f"Config에서 가져온 novel_language: {novel_lang_val}")
 
             novel_lang_fallback_val = config.get("novel_language_fallback", "ja")
             self.novel_language_fallback_entry.delete(0, tk.END)
             self.novel_language_fallback_entry.insert(0, novel_lang_fallback_val)
-            logger.debug(f"Config에서 가져온 novel_language_fallback: {novel_lang_fallback_val}")
 
 
             # Prefill settings
@@ -454,12 +443,11 @@ class BatchTranslatorGUI:
             try:
                 prefill_cached_history_json_str = json.dumps(prefill_cached_history_obj, indent=2, ensure_ascii=False)
             except TypeError:
-                prefill_cached_history_json_str = "[]" # 기본값
+                prefill_cached_history_json_str = "[]"
             self.prefill_cached_history_text.delete('1.0', tk.END)
             self.prefill_cached_history_text.insert('1.0', prefill_cached_history_json_str)
 
             prompts_val = config.get("prompts", "") 
-            logger.debug(f"Config에서 가져온 prompts: '{str(prompts_val)[:100]}...', 타입: {type(prompts_val)}")
             self.prompt_text.delete('1.0', tk.END)
             if isinstance(prompts_val, str):
                 self.prompt_text.insert('1.0', prompts_val)
@@ -469,15 +457,14 @@ class BatchTranslatorGUI:
                 default_prompt_config = self.app_service.config_manager.get_default_config().get("prompts", "")
                 default_prompt_str = default_prompt_config[0] if isinstance(default_prompt_config, tuple) and default_prompt_config else str(default_prompt_config)
                 self.prompt_text.insert('1.0', default_prompt_str)
-                logger.warning(f"Prompts 타입이 예상과 다릅니다 ({type(prompts_val)}). 기본 프롬프트 사용.")
+                logger.warning(f"Prompts 타입 오류: {type(prompts_val)}")
             
             # Lorebook specific settings
-            glossary_json_path_val = config.get("glossary_json_path") # Key changed
-            logger.debug(f"Config에서 가져온 glossary_json_path: {glossary_json_path_val}")
-            self.glossary_json_path_entry.delete(0, tk.END) # Widget name changed
+            glossary_json_path_val = config.get("glossary_json_path")
+            self.glossary_json_path_entry.delete(0, tk.END)
             self.glossary_json_path_entry.insert(0, glossary_json_path_val if glossary_json_path_val is not None else "")
 
-            sample_ratio = config.get("glossary_sampling_ratio", 10.0) # Key changed, default to simpler
+            sample_ratio = config.get("glossary_sampling_ratio", 10.0)
             self.sample_ratio_scale.set(sample_ratio)
             self.sample_ratio_label.config(text=f"{sample_ratio:.1f}%")
             
@@ -489,14 +476,14 @@ class BatchTranslatorGUI:
             # self.glossary_chunk_size_entry was removed, so no UI load needed.
 
             # Dynamic Lorebook Injection Settings
-            self.enable_dynamic_glossary_injection_var.set(config.get("enable_dynamic_glossary_injection", False)) # Key changed, var name changed
-            self.max_glossary_entries_injection_entry.delete(0, tk.END) # Widget name changed
-            self.max_glossary_entries_injection_entry.insert(0, str(config.get("max_glossary_entries_per_chunk_injection", 3))) # Key changed
-            self.max_glossary_chars_injection_entry.delete(0, tk.END) # Widget name changed
-            self.max_glossary_chars_injection_entry.insert(0, str(config.get("max_glossary_chars_per_chunk_injection", 500))) # Key changed
+            self.enable_dynamic_glossary_injection_var.set(config.get("enable_dynamic_glossary_injection", False))
+            self.max_glossary_entries_injection_entry.delete(0, tk.END)
+            self.max_glossary_entries_injection_entry.insert(0, str(config.get("max_glossary_entries_per_chunk_injection", 3)))
+            self.max_glossary_chars_injection_entry.delete(0, tk.END)
+            self.max_glossary_chars_injection_entry.insert(0, str(config.get("max_glossary_chars_per_chunk_injection", 500)))
             # lorebook_json_path_for_injection_entry 관련 UI 로드 코드는 제거 (아래 _create_settings_widgets 에서 해당 UI 요소 제거됨)
 
-            extraction_temp = config.get("glossary_extraction_temperature", 0.3) # Key changed, default to simpler
+            extraction_temp = config.get("glossary_extraction_temperature", 0.3)
             
 
             

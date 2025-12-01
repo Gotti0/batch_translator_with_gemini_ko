@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional, List, Callable, Union, Tuple
 import os
 import json
 import csv
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait # ThreadPoolExecutor를 사용하여 병렬 처리
 import time
@@ -89,8 +90,6 @@ class AppService:
 
     def load_app_config(self, runtime_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         logger.info("애플리케이션 설정 로드 중...")
-        if runtime_overrides:
-            logger.debug(f"로드 시 적용할 런타임 오버라이드 값: {list(runtime_overrides.keys())}")
 
         try:
             # 1. 파일 및 기본값으로부터 기본 설정 로드
@@ -100,7 +99,7 @@ class AppService:
             # 2. 제공된 runtime_overrides가 있다면, self.config에 덮어쓰기
             if runtime_overrides:
                 self.config.update(runtime_overrides)
-                logger.info(f"런타임 오버라이드 값들이 적용되었습니다. 최종 설정에 반영됨: {list(runtime_overrides.keys())}")
+                logger.info(f"런타임 오버라이드 적용: {list(runtime_overrides.keys())}")
             logger.info("애플리케이션 설정 로드 완료.")
 
             auth_credentials_for_gemini_client: Optional[Union[str, List[str], Dict[str, Any]]] = None
@@ -109,10 +108,9 @@ class AppService:
             gcp_location = self.config.get("gcp_location")
             sa_file_path_str = self.config.get("service_account_file_path")
 
-            logger.debug(f"[AppService.load_app_config] Vertex AI 사용 여부 (use_vertex): {use_vertex}")
-            logger.debug(f"[AppService.load_app_config] 설정 파일 내 GCP 프로젝트 (gcp_project_from_config): '{gcp_project_from_config}'")
-            logger.debug(f"[AppService.load_app_config] 설정 파일 내 GCP 위치 (gcp_location): '{gcp_location}'")
-            logger.debug(f"[AppService.load_app_config] 서비스 계정 파일 경로 (sa_file_path_str): '{sa_file_path_str}'")
+            # 설정 요약 로깅 (조건부)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"설정 요약: vertex={use_vertex}, project={gcp_project_from_config}, location={gcp_location}")
 
             if use_vertex:
                 logger.info("Vertex AI 사용 모드로 설정되었습니다.")
@@ -121,65 +119,64 @@ class AppService:
                     sa_file_path = Path(sa_file_path_str)
                     if sa_file_path.is_file():
                         try:
-                            auth_credentials_for_gemini_client = read_text_file(sa_file_path) # file_handler is now in infrastructure.file_system
-                            logger.info(f"Vertex AI 서비스 계정 파일 ('{sa_file_path}')에서 인증 정보를 로드했습니다.")
+                            auth_credentials_for_gemini_client = read_text_file(sa_file_path)
+                            logger.info(f"Vertex AI SA 파일에서 인증 정보 로드됨: {sa_file_path.name}")
                         except Exception as e:
-                            logger.error(f"Vertex AI 서비스 계정 파일 읽기 실패 ({sa_file_path}): {e}")
+                            logger.error(f"Vertex AI SA 파일 읽기 실패: {e}")
                             auth_credentials_for_gemini_client = None
                     else:
-                        logger.warning(f"Vertex AI 서비스 계정 파일 경로가 유효하지 않거나 파일이 아닙니다: {sa_file_path_str}")
-                        # sa_file_path_str이 제공되었지만 유효하지 않은 경우, auth_credentials를 확인합니다.
+                        logger.warning(f"Vertex AI SA 파일 경로 무효: {sa_file_path_str}")
                         auth_conf_val = self.config.get("auth_credentials")
-                        if isinstance(auth_conf_val, (str, dict)) and auth_conf_val: # SA JSON 문자열 또는 SA dict
+                        if isinstance(auth_conf_val, (str, dict)) and auth_conf_val:
                             auth_credentials_for_gemini_client = auth_conf_val
-                            logger.info("서비스 계정 파일 경로가 유효하지 않아 'auth_credentials' 값을 직접 사용합니다.")
+                            logger.info("auth_credentials 값을 대체 사용")
                         else:
-                            auth_credentials_for_gemini_client = None # ADC를 기대하거나, 오류로 간주
-                            logger.info("서비스 계정 파일 경로가 유효하지 않고 'auth_credentials'도 없어 ADC를 기대합니다.")
+                            auth_credentials_for_gemini_client = None
+                            logger.info("ADC 사용 예정")
                 elif self.config.get("auth_credentials"):
                     auth_conf_val = self.config.get("auth_credentials")
-                    if isinstance(auth_conf_val, (str, dict)) and auth_conf_val: # SA JSON 문자열 또는 SA dict
+                    if isinstance(auth_conf_val, (str, dict)) and auth_conf_val:
                         auth_credentials_for_gemini_client = auth_conf_val
-                        logger.info("Vertex AI: 서비스 계정 파일 경로가 없어, 'auth_credentials' 값을 직접 사용합니다.")
+                        logger.info("Vertex AI: auth_credentials 값 사용")
                     else:
-                        auth_credentials_for_gemini_client = None # ADC를 기대
-                        logger.info("Vertex AI: 'auth_credentials'가 유효하지 않아 ADC를 기대합니다.")
-                else: # sa_file_path_str도 없고, auth_credentials도 없는 경우 ADC 기대
+                        auth_credentials_for_gemini_client = None
+                        logger.info("Vertex AI: ADC 사용 예정")
+                else:
                     auth_credentials_for_gemini_client = None
-                    logger.info("Vertex AI: 서비스 계정 정보가 제공되지 않아 ADC(Application Default Credentials)를 사용합니다.")
+                    logger.info("Vertex AI: ADC 사용")
             else:
-                logger.info("Gemini Developer API 사용 모드입니다.")
-                auth_credentials_for_gemini_client = None # 기본값 None으로 시작
+                logger.info("Gemini Developer API 모드")
+                auth_credentials_for_gemini_client = None
 
                 api_keys_list_val = self.config.get("api_keys", [])
                 if isinstance(api_keys_list_val, list):
                     valid_api_keys = [key for key in api_keys_list_val if isinstance(key, str) and key.strip()]
                     if valid_api_keys:
                         auth_credentials_for_gemini_client = valid_api_keys
-                        logger.info(f"{len(valid_api_keys)}개의 API 키 목록 ('api_keys')을 사용합니다.")
+                        logger.info(f"API 키 {len(valid_api_keys)}개 사용")
                 
                 if auth_credentials_for_gemini_client is None:
                     api_key_val = self.config.get("api_key")
                     if isinstance(api_key_val, str) and api_key_val.strip():
-                        auth_credentials_for_gemini_client = api_key_val # GeminiClient는 str을 단일 API 키로 처리
-                        logger.info("단일 API 키 ('api_key')를 사용합니다.")
+                        auth_credentials_for_gemini_client = api_key_val
+                        logger.info("단일 API 키 사용")
 
                 if auth_credentials_for_gemini_client is None:
                     auth_credentials_conf_val = self.config.get("auth_credentials")
                     if isinstance(auth_credentials_conf_val, str) and auth_credentials_conf_val.strip():
-                        auth_credentials_for_gemini_client = auth_credentials_conf_val # 단일 API 키 또는 SA JSON 문자열
-                        logger.info("auth_credentials 값을 단일 인증 문자열(API 키 또는 SA JSON)로 사용합니다.")
-                    elif isinstance(auth_credentials_conf_val, list): # auth_credentials가 키 목록일 경우
+                        auth_credentials_for_gemini_client = auth_credentials_conf_val
+                        logger.info("auth_credentials 문자열 사용")
+                    elif isinstance(auth_credentials_conf_val, list):
                         valid_keys_from_auth_cred = [k for k in auth_credentials_conf_val if isinstance(k, str) and k.strip()]
                         if valid_keys_from_auth_cred:
                             auth_credentials_for_gemini_client = valid_keys_from_auth_cred
-                            logger.info(f"auth_credentials에서 {len(valid_keys_from_auth_cred)}개의 API 키 목록을 사용합니다.")
-                    elif isinstance(auth_credentials_conf_val, dict): # SA 정보 (dict)
+                            logger.info(f"auth_credentials에서 API 키 {len(valid_keys_from_auth_cred)}개 사용")
+                    elif isinstance(auth_credentials_conf_val, dict):
                         auth_credentials_for_gemini_client = auth_credentials_conf_val
-                        logger.info("auth_credentials 값을 서비스 계정 정보(dict)로 사용합니다.")
+                        logger.info("auth_credentials SA dict 사용")
 
                 if auth_credentials_for_gemini_client is None:
-                    logger.warning("Gemini Developer API 모드이지만 사용할 API 키가 설정에 없습니다.")
+                    logger.warning("API 키가 설정되지 않음")
 
             should_initialize_client = False
             if auth_credentials_for_gemini_client:
@@ -190,25 +187,15 @@ class AppService:
                 elif isinstance(auth_credentials_for_gemini_client, dict):
                     should_initialize_client = True
             elif use_vertex and not auth_credentials_for_gemini_client and \
-                 (gcp_project_from_config or os.environ.get("GOOGLE_CLOUD_PROJECT")): # ADC 사용 기대
+                 (gcp_project_from_config or os.environ.get("GOOGLE_CLOUD_PROJECT")):
                 should_initialize_client = True
-                logger.info("Vertex AI 사용 및 프로젝트 ID 존재 (설정 또는 환경변수)로 클라이언트 초기화 조건 충족 (인증정보는 ADC 기대).")
-
-
-            logger.debug(f"[AppService.load_app_config] GeminiClient 초기화 전: should_initialize_client={should_initialize_client}")
-            logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client 타입: {type(auth_credentials_for_gemini_client)}")
-            if isinstance(auth_credentials_for_gemini_client, str) and len(auth_credentials_for_gemini_client) > 200:
-                 logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client (일부): {auth_credentials_for_gemini_client[:100]}...{auth_credentials_for_gemini_client[-100:]}")
-            elif isinstance(auth_credentials_for_gemini_client, dict):
-                 logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client (키 목록): {list(auth_credentials_for_gemini_client.keys())}")
-            else:
-                 logger.debug(f"[AppService.load_app_config] auth_credentials_for_gemini_client: {auth_credentials_for_gemini_client}")
+                logger.info("Vertex AI ADC 모드로 클라이언트 초기화 예정")
 
             if should_initialize_client:
                 try:
                     project_to_pass_to_client = gcp_project_from_config if gcp_project_from_config and gcp_project_from_config.strip() else None
                     rpm_value = self.config.get("requests_per_minute")
-                    logger.info(f"GeminiClient 초기화 시도: project='{project_to_pass_to_client}', location='{gcp_location}', RPM='{rpm_value}'")
+                    logger.info(f"GeminiClient 초기화: project={project_to_pass_to_client}, RPM={rpm_value}")
                     self.gemini_client = GeminiClient(
                         auth_credentials=auth_credentials_for_gemini_client,
                         project=project_to_pass_to_client,
@@ -216,10 +203,10 @@ class AppService:
                         requests_per_minute=rpm_value
                     )
                 except GeminiInvalidRequestException as e_inv:
-                    logger.error(f"GeminiClient 초기화 실패 (잘못된 요청/인증): {e_inv}")
+                    logger.error(f"GeminiClient 초기화 실패: {e_inv}")
                     self.gemini_client = None
                 except Exception as e_client:
-                    logger.error(f"GeminiClient 초기화 중 예상치 못한 오류 발생: {e_client}", exc_info=True)
+                    logger.error(f"GeminiClient 초기화 오류: {e_client}", exc_info=True)
                     self.gemini_client = None
             else:
                 logger.warning("API 키 또는 Vertex AI 설정이 충분하지 않아 Gemini 클라이언트 초기화를 시도하지 않습니다.")
@@ -348,17 +335,20 @@ class AppService:
                             progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None) -> bool:
         current_chunk_info_msg = f"청크 {chunk_index + 1}/{total_chunks}"
         
-        # 청크 분석 및 상세 정보 로깅
-        chunk_lines = chunk_text.count('\n') + 1
-        chunk_words = len(chunk_text.split())
+        # 청크 분석 (로깅 최적화: 통계는 DEBUG 레벨에서만 상세 출력)
         chunk_chars = len(chunk_text)
-        chunk_preview = chunk_text[:100].replace('\n', ' ') + '...' if len(chunk_text) > 100 else chunk_text
-        
-        logger.info(f"{current_chunk_info_msg} 처리 시작")
-        logger.info(f"  📝 청크 내용 미리보기: {chunk_preview}")
-        logger.debug(f"  📊 청크 통계: 글자 수={chunk_chars}, 단어 수={chunk_words}, 줄 수={chunk_lines}")
-        
         start_time = time.time()
+        
+        # 통합 로그: 시작 정보와 기본 통계를 한 줄로
+        logger.info(f"{current_chunk_info_msg} 처리 시작 (길이: {chunk_chars}자)")
+        
+        # 상세 정보는 DEBUG 레벨에서만 출력
+        if logger.isEnabledFor(logging.DEBUG):
+            chunk_lines = chunk_text.count('\n') + 1
+            chunk_words = len(chunk_text.split())
+            chunk_preview = chunk_text[:100].replace('\n', ' ') + '...' if len(chunk_text) > 100 else chunk_text
+            logger.debug(f"  📝 미리보기: {chunk_preview}")
+            logger.debug(f"  📊 통계: 글자={chunk_chars}, 단어={chunk_words}, 줄={chunk_lines}")
         last_error = None
         success = False
 
@@ -372,49 +362,40 @@ class AppService:
             if not self.translation_service:
                 raise BtgServiceException("TranslationService가 초기화되지 않았습니다.")
 
-            # 번역 설정 정보 로깅
+            # 번역 설정 로드
             use_content_safety_retry = self.config.get("use_content_safety_retry", True)
             max_split_attempts = self.config.get("max_content_safety_split_attempts", 3)
             min_chunk_size = self.config.get("min_content_safety_chunk_size", 100)
             model_name = self.config.get("model_name", "gemini-2.0-flash")
-            system_instruction = self.config.get("system_instruction", "") # AppService 레벨에서는 직접 사용하지 않음. TranslationService가 config에서 읽음.
             
-            logger.debug(f"  ⚙️ 번역 설정: 모델={model_name}, 안전재시도={use_content_safety_retry}")
-            if use_content_safety_retry:
-                logger.debug(f"  🔄 검열 재시도 설정: 최대시도={max_split_attempts}, 최소크기={min_chunk_size}")
+            # 번역 설정 상세는 DEBUG에서만 출력
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"  ⚙️ 설정: 모델={model_name}, 안전재시도={use_content_safety_retry}, 최대시도={max_split_attempts}")
             
-            logger.info(f"  🔄 {current_chunk_info_msg} 번역 API 호출 시작...")
             translation_start_time = time.time()
                 
             if use_content_safety_retry:
-                logger.debug(f"  🛡️ 콘텐츠 안전 재시도 모드로 번역 시작")
                 translated_chunk = self.translation_service.translate_text_with_content_safety_retry(
                     chunk_text, max_split_attempts, min_chunk_size
                 )
             else:
-                logger.debug(f"  📝 일반 번역 모드로 번역 시작")
                 translated_chunk = self.translation_service.translate_text(chunk_text)
             
             translation_time = time.time() - translation_start_time
             translated_length = len(translated_chunk) if translated_chunk else 0
             
-            logger.info(f"  ✅ {current_chunk_info_msg} 번역 완료 (소요: {translation_time:.2f}초)")
-            logger.debug(f"    번역 결과 길이: {translated_length} 글자")
-            logger.debug(f"    번역 속도: {chunk_chars/translation_time:.1f} 글자/초" if translation_time > 0 else "    번역 속도: 즉시 완료")# 새로운 검열 재시도 로직 사용
             if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg}의 번역 결과를 받았지만, 시스템이 중지되어 결과를 저장하지 않고 폐기합니다.")
+                logger.warning(f"  ⚠️ {current_chunk_info_msg} 번역 완료되었으나 중지됨 - 결과 폐기")
                 return False
 
-            # 파일 저장 과정 로깅
-            logger.debug(f"  💾 {current_chunk_info_msg} 결과 저장 시작...")
-            save_start_time = time.time()
-            
             # 스레드 세이프하게 청크 파일에 직접 기록
             with self._file_write_lock:
                 save_chunk_with_index_to_file(chunked_output_file, chunk_index, translated_chunk)
             
-            save_time = time.time() - save_start_time
-            logger.debug(f"  💾 파일 저장 완료 (소요: {save_time:.3f}초)")
+            # 번역 성능 상세는 DEBUG에서만
+            if logger.isEnabledFor(logging.DEBUG):
+                speed = chunk_chars / translation_time if translation_time > 0 else 0
+                logger.debug(f"  ✅ 번역완료: {translated_length}자, {translation_time:.2f}초, {speed:.0f}자/초")
             
             success = True
             
@@ -424,15 +405,11 @@ class AppService:
 
         except BtgTranslationException as e_trans:
             if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg}에서 번역 예외가 발생했으나, 시스템이 중지되어 오류 기록을 생략합니다.")
+                logger.warning(f"  ⚠️ {current_chunk_info_msg} 중지됨 - 번역 예외 무시")
                 return False
             processing_time = time.time() - start_time
-            logger.error(f"  ❌ {current_chunk_info_msg} 번역 실패 (소요: {processing_time:.2f}초)")
-            logger.error(f"    오류 유형: 번역 서비스 오류")
-            logger.error(f"    오류 내용: {e_trans}")
-            
-            if "콘텐츠 안전 문제" in str(e_trans):
-                logger.warning(f"    🛡️ 콘텐츠 검열로 인한 실패")
+            error_type = "콘텐츠 검열" if "콘텐츠 안전 문제" in str(e_trans) else "번역 서비스"
+            logger.error(f"  ❌ {current_chunk_info_msg} 실패: {error_type} - {e_trans} ({processing_time:.2f}초)")
             
             with self._file_write_lock:
                 save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[번역 실패: {e_trans}]\n\n--- 원문 내용 ---\n{chunk_text}")
@@ -441,18 +418,16 @@ class AppService:
 
         except BtgApiClientException as e_api:
             if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg}에서 API 예외가 발생했으나, 시스템이 중지되어 오류 기록을 생략합니다.")
+                logger.warning(f"  ⚠️ {current_chunk_info_msg} 중지됨 - API 예외 무시")
                 return False
             processing_time = time.time() - start_time
-            logger.error(f"  ❌ {current_chunk_info_msg} API 오류로 번역 실패 (소요: {processing_time:.2f}초)")
-            logger.error(f"    오류 유형: API 클라이언트 오류")
-            logger.error(f"    오류 내용: {e_api}")
-            
-            # API 오류 유형별 분류
+            # API 오류 유형 판별
+            error_detail = ""
             if "사용량 제한" in str(e_api) or "429" in str(e_api):
-                logger.warning(f"    ⚠️ API 사용량 제한 오류")
+                error_detail = " [사용량 제한]"
             elif "키" in str(e_api).lower() or "인증" in str(e_api):
-                logger.warning(f"    🔑 API 인증 관련 오류")
+                error_detail = " [인증 오류]"
+            logger.error(f"  ❌ {current_chunk_info_msg} API 오류{error_detail}: {e_api} ({processing_time:.2f}초)")
             
             with self._file_write_lock:
                 save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]\n\n--- 원문 내용 ---\n{chunk_text}")
@@ -461,12 +436,10 @@ class AppService:
 
         except Exception as e_gen:
             if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg}에서 일반 예외가 발생했으나, 시스템이 중지되어 오류 기록을 생략합니다.")
+                logger.warning(f"  ⚠️ {current_chunk_info_msg} 중지됨 - 예외 무시")
                 return False
             processing_time = time.time() - start_time
-            logger.error(f"  ❌ {current_chunk_info_msg} 예상치 못한 오류 (소요: {processing_time:.2f}초)", exc_info=True)
-            logger.error(f"    오류 유형: {type(e_gen).__name__}")
-            logger.error(f"    오류 내용: {e_gen}")
+            logger.error(f"  ❌ {current_chunk_info_msg} 예상치 못한 오류: {type(e_gen).__name__} - {e_gen} ({processing_time:.2f}초)", exc_info=True)
             
             with self._file_write_lock:
                 save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]\n\n--- 원문 내용 ---\n{chunk_text}")
@@ -511,21 +484,14 @@ class AppService:
                             except Exception as meta_fail_e:
                                 logger.error(f"  ❌ {current_chunk_info_msg} 실패 정보 메타데이터 기록 중 오류: {meta_fail_e}")
                     
-                    # 3단계: 모든 카운트 업데이트 완료 후 진행률 계산
+                    # 3단계: 진행률 계산 및 통합 로깅 (2개 로그 → 1개)
                     progress_percentage = (self.processed_chunks_count / total_chunks) * 100
-                    logger.info(f"  📈 전체 진행률: {progress_percentage:.1f}% ({self.processed_chunks_count}/{total_chunks})")
+                    success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100 if self.processed_chunks_count > 0 else 0
                     
-                    # 성공률 계산
-                    if self.processed_chunks_count > 0:
-                        success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100
-                        logger.info(f"  📊 성공률: {success_rate:.1f}% (성공: {self.successful_chunks_count}, 실패: {self.failed_chunks_count})")
-
-                    # 예상 완료 시간 계산 (선택사항)
-                    if total_time > 0 and self.processed_chunks_count > 0:
-                        avg_time_per_chunk = total_time / 1  # 현재 청크 기준
-                        remaining_chunks = total_chunks - self.processed_chunks_count
-                        estimated_remaining_time = remaining_chunks * avg_time_per_chunk
-                        logger.debug(f"  ⏱️ 예상 남은 시간: {estimated_remaining_time:.1f}초 (평균 {avg_time_per_chunk:.2f}초/청크)")
+                    # 매 10% 또는 마지막 청크에서만 상세 로그 출력 (로그 빈도 최적화)
+                    should_log_progress = (self.processed_chunks_count % max(1, total_chunks // 10) == 0) or (self.processed_chunks_count == total_chunks)
+                    if should_log_progress:
+                        logger.info(f"  📈 진행률: {progress_percentage:.0f}% ({self.processed_chunks_count}/{total_chunks}) | 성공률: {success_rate:.0f}% (✅{self.successful_chunks_count} ❌{self.failed_chunks_count})")
 
 
                     if progress_callback:
