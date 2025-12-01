@@ -652,7 +652,7 @@ class GeminiClient:
                             # [수정] 일반 텍스트 모드에서도 빈 문자열인지 확인
                             if not text_content_from_api.strip():
                                 logger.warning(f"모델 응답이 비어 있습니다 (공백 포함). (시도: {current_retry_for_this_key + 1})")
-                                raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
+                                raise GeminiContentSafetyException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
                             return text_content_from_api # JSON이 아니면 그냥 텍스트 반환
                     
                     raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
