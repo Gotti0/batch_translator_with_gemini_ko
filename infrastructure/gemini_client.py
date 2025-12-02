@@ -708,7 +708,7 @@ class GeminiClient:
                         else:
                             break
                     elif self._is_content_safety_error(error_obj=e):
-                        logger.error(f"콘텐츠 안전 관련 오류 감지(예외 기반): {error_message}")
+                        logger.warning(f"콘텐츠 안전 관련 오류 감지(예외 기반): {error_message}")
                         raise GeminiContentSafetyException(f"콘텐츠 안전 문제로 요청이 차단되었습니다(예외 기반): {error_message}") from e
                     elif "timeout" in error_message.lower() or "timed out" in error_message.lower():
                         logger.warning(f"네트워크 타임아웃 또는 응답 지연 발생: {error_message}")

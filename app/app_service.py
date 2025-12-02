@@ -817,10 +817,14 @@ class AppService:
                                         z_score = chunk['z_score']
                                         ratio = chunk['ratio']
                                         
+                                        # 원문 미리보기 생성 (사용자가 문제 파악 용이)
+                                        source_text = all_chunks[chunk_idx_completed] if chunk_idx_completed < len(all_chunks) else ""
+                                        text_preview = source_text[:80].replace('\n', ' ') + ('...' if len(source_text) > 80 else '')
+                                        
                                         if issue_type == "omission":
-                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
+                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score} | 원문: {text_preview}")
                                         elif issue_type == "hallucination":
-                                            logger.warning(f"⚠️ AI 환각(과도한 생성) 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
+                                            logger.warning(f"⚠️ AI 환각 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score} | 원문: {text_preview}")
                             except Exception as qc_e:
                                 logger.warning(f"품질 검사 중 오류 발생 (무시됨): {qc_e}")
 
