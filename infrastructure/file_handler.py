@@ -65,23 +65,54 @@ def save_chunk_with_index_to_file(output_path: Union[str, Path], index: int, chu
 
 def load_chunks_from_file(file_path: Union[str, Path]) -> Dict[int, str]:
     chunks: Dict[int, str] = {}
+    logger.debug(f"[load_chunks_from_file] 시작 - 파일 경로: {file_path}")
+    
     if not Path(file_path).exists():
+        logger.warning(f"[load_chunks_from_file] 파일이 존재하지 않음: {file_path}")
         return chunks
+    
     try:
         content = read_text_file(file_path)
+        logger.debug(f"[load_chunks_from_file] 파일 읽기 완료 - 내용 길이: {len(content) if content else 0}자")
+        
+        if not content:
+            logger.warning(f"[load_chunks_from_file] 파일 내용이 비어있음: {file_path}")
+            return chunks
+        
+        # 파일 내용 미리보기 (처음 500자)
+        preview = content[:500].replace('\n', '\\n')
+        logger.debug(f"[load_chunks_from_file] 파일 내용 미리보기: {preview}...")
+        
         pattern = r"##CHUNK_INDEX: (\d+)##\n(.*?)\n##END_CHUNK##"
         matches = re.findall(pattern, content, re.DOTALL)
+        logger.debug(f"[load_chunks_from_file] 정규식 매칭 결과: {len(matches)}개 발견")
+        
+        if not matches:
+            # 매칭 실패 원인 분석
+            if "##CHUNK_INDEX:" in content:
+                logger.warning(f"[load_chunks_from_file] CHUNK_INDEX 마커는 있으나 패턴 매칭 실패")
+                # 줄바꿈 문자 확인
+                if "\r\n" in content:
+                    logger.warning(f"[load_chunks_from_file] CRLF(\\r\\n) 줄바꿈 감지됨 - 패턴 불일치 가능성")
+                if "##END_CHUNK##" not in content:
+                    logger.warning(f"[load_chunks_from_file] END_CHUNK 마커가 없음")
+            else:
+                logger.warning(f"[load_chunks_from_file] CHUNK_INDEX 마커가 파일에 없음")
+        
         for match_tuple in matches: 
             try:
                 index_str, chunk_text = match_tuple 
                 index = int(index_str)
                 chunks[index] = chunk_text
+                logger.debug(f"[load_chunks_from_file] 청크 #{index} 로드됨 ({len(chunk_text)}자)")
             except ValueError:
                 logger.warning(f"청크 인덱스 파싱 중 오류 ({file_path}): 인덱스 '{match_tuple[0]}'가 숫자가 아닙니다.")
                 continue
             except IndexError: 
                 logger.warning(f"정규식 매칭 결과 처리 중 오류 ({file_path}): 매치된 그룹이 부족합니다 - {match_tuple}")
                 continue
+        
+        logger.debug(f"[load_chunks_from_file] 완료 - 총 {len(chunks)}개 청크 로드됨")
         return chunks
     except IOError as e:
         logger.error(f"청크 파일 로드 중 오류 ({file_path}): {e}")

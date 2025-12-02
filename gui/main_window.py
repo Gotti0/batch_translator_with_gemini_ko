@@ -22,6 +22,7 @@ from infrastructure.logger_config import setup_logger
 from gui.tabs.settings_tab import SettingsTab
 from gui.tabs.glossary_tab import GlossaryTab
 from gui.tabs.log_tab import LogTab
+from gui.tabs.review_tab import ReviewTab
 
 # 로거 설정
 GUI_LOGGER_NAME = __name__
@@ -122,8 +123,8 @@ class BatchTranslatorGUI:
             parent=self.notebook,
             app_service=self.app_service,
             logger=logger,
-            log_callback=self._log_message,
             on_translation_complete=self._on_translation_complete,
+            get_glossary_path=self._get_glossary_path,
             get_tqdm_stream=self._get_tqdm_stream
         )
         
@@ -136,16 +137,26 @@ class BatchTranslatorGUI:
             get_chunk_size=self._get_chunk_size,
             on_glossary_path_changed=self._on_glossary_path_changed
         )
+        
+        # 검토 및 수정 탭
+        self.review_tab = ReviewTab(
+            parent=self.notebook,
+            app_service=self.app_service,
+            logger=logger,
+            get_input_files=self._get_input_files,
+        )
     
     def _add_tabs_to_notebook(self) -> None:
         """탭을 노트북에 추가"""
         # 탭 위젯 생성 및 추가
         settings_frame = self.settings_tab.create_widgets()
         glossary_frame = self.glossary_tab.create_widgets()
+        review_frame = self.review_tab.create_widgets()
         log_frame = self.log_tab.create_widgets()
         
         self.notebook.add(settings_frame, text='설정 및 번역')
         self.notebook.add(glossary_frame, text='용어집 관리')
+        self.notebook.add(review_frame, text='검토 및 수정')
         self.notebook.add(log_frame, text='실행 로그')
     
     def _load_initial_config_to_ui(self) -> None:
@@ -237,6 +248,15 @@ class BatchTranslatorGUI:
         logger.debug(f"용어집 경로 변경됨: {path}")
         # 필요시 settings_tab에 경로 전달
         # self.settings_tab.set_glossary_path(path)
+    
+    def _get_glossary_path(self) -> str:
+        """
+        용어집 탭에서 현재 용어집 경로 가져오기
+        
+        Returns:
+            용어집 파일 경로
+        """
+        return self.glossary_tab.get_glossary_path()
     
     def _on_translation_complete(self, success: bool, message: str = "") -> None:
         """

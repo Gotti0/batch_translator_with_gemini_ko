@@ -815,16 +815,12 @@ class AppService:
                                     if chunk['chunk_index'] == chunk_idx_completed:
                                         issue_type = chunk['issue_type']
                                         z_score = chunk['z_score']
-                                        ratio = chunk['ratio']
-                                        
-                                        # 원문 미리보기 생성 (사용자가 문제 파악 용이)
-                                        source_text = all_chunks[chunk_idx_completed] if chunk_idx_completed < len(all_chunks) else ""
-                                        text_preview = source_text[:80].replace('\n', ' ') + ('...' if len(source_text) > 80 else '')
+                                        ratio = chunk['ratio']                                    
                                         
                                         if issue_type == "omission":
-                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score} | 원문: {text_preview}")
+                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
                                         elif issue_type == "hallucination":
-                                            logger.warning(f"⚠️ AI 환각 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score} | 원문: {text_preview}")
+                                            logger.warning(f"⚠️ AI 환각 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
                             except Exception as qc_e:
                                 logger.warning(f"품질 검사 중 오류 발생 (무시됨): {qc_e}")
 
@@ -1008,6 +1004,156 @@ class AppService:
             self.stop_translation()
         else:
             logger.info("실행 중인 번역 작업이 없어 중지 요청을 무시합니다.")
+
+    def translate_single_chunk(
+        self,
+        input_file_path: Union[str, Path],
+        chunk_index: int,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Tuple[bool, str]:
+        """
+        단일 청크를 재번역합니다.
+        
+        Args:
+            input_file_path: 원본 입력 파일 경로
+            chunk_index: 재번역할 청크 인덱스
+            progress_callback: 진행 상태 콜백 (상태 메시지)
+            
+        Returns:
+            Tuple[bool, str]: (성공 여부, 번역된 텍스트 또는 오류 메시지)
+        """
+        if not self.translation_service:
+            error_msg = "TranslationService가 초기화되지 않았습니다."
+            logger.error(error_msg)
+            return False, error_msg
+        
+        input_file_path_obj = Path(input_file_path)
+        
+        try:
+            # 1. 원문을 원본 파일에서 동적으로 청킹하여 로드
+            if not input_file_path_obj.exists():
+                error_msg = f"원본 입력 파일이 존재하지 않습니다: {input_file_path_obj}"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            file_content = read_text_file(input_file_path_obj)
+            if not file_content:
+                error_msg = "원본 파일이 비어있습니다."
+                logger.error(error_msg)
+                return False, error_msg
+            
+            chunk_size = self.config.get('chunk_size', 6000)
+            all_chunks = self.chunk_service.create_chunks_from_file_content(file_content, chunk_size)
+            
+            if chunk_index >= len(all_chunks):
+                error_msg = f"청크 #{chunk_index}가 범위를 벗어났습니다 (총 {len(all_chunks)}개)."
+                logger.error(error_msg)
+                return False, error_msg
+            
+            chunk_text = all_chunks[chunk_index]
+            
+            if progress_callback:
+                progress_callback(f"청크 #{chunk_index} 번역 중...")
+            
+            logger.info(f"단일 청크 재번역 시작: 청크 #{chunk_index} (길이: {len(chunk_text)}자)")
+            
+            # 2. 번역 설정 로드
+            use_content_safety_retry = self.config.get("use_content_safety_retry", True)
+            max_split_attempts = self.config.get("max_content_safety_split_attempts", 3)
+            min_chunk_size = self.config.get("min_content_safety_chunk_size", 100)
+            
+            # 3. 용어집 동적 로딩 (입력 파일에 맞는 용어집 자동 발견)
+            try:
+                glossary_suffix = self.config.get("glossary_output_json_filename_suffix", "_simple_glossary.json")
+                assumed_glossary_path = input_file_path_obj.parent / f"{input_file_path_obj.stem}{glossary_suffix}"
+                
+                if assumed_glossary_path.exists():
+                    self.config['glossary_json_path'] = str(assumed_glossary_path)
+                    self.translation_service.config = self.config
+                    self.translation_service._load_glossary_data()
+                    logger.debug(f"재번역을 위해 용어집 로드: {assumed_glossary_path.name}")
+            except Exception as e_glossary:
+                logger.warning(f"용어집 로딩 중 오류 (무시하고 계속): {e_glossary}")
+            
+            # 4. 번역 수행
+            start_time = time.time()
+            
+            if use_content_safety_retry:
+                translated_text = self.translation_service.translate_text_with_content_safety_retry(
+                    chunk_text, max_split_attempts, min_chunk_size
+                )
+            else:
+                translated_text = self.translation_service.translate_text(chunk_text)
+            
+            translation_time = time.time() - start_time
+            
+            if not translated_text:
+                error_msg = "번역 결과가 비어있습니다."
+                logger.error(f"청크 #{chunk_index} 재번역 실패: {error_msg}")
+                return False, error_msg
+            
+            # 5. 번역된 청크 파일 업데이트 (.chunked.txt가 번역 결과 파일)
+            translated_chunked_path = input_file_path_obj.with_suffix('.chunked.txt')
+            
+            # 기존 번역된 청크 로드
+            translated_chunks = {}
+            if translated_chunked_path.exists():
+                translated_chunks = load_chunks_from_file(translated_chunked_path)
+            
+            # 해당 청크 업데이트
+            translated_chunks[chunk_index] = translated_text
+            
+            # 파일에 저장
+            save_merged_chunks_to_file(translated_chunked_path, translated_chunks)
+            
+            # 6. 메타데이터 업데이트
+            update_metadata_for_chunk_completion(
+                input_file_path_obj,
+                chunk_index,
+                source_length=len(chunk_text),
+                translated_length=len(translated_text)
+            )
+            
+            logger.info(f"청크 #{chunk_index} 재번역 완료 ({translation_time:.2f}초, {len(translated_text)}자)")
+            
+            if progress_callback:
+                progress_callback(f"청크 #{chunk_index} 재번역 완료!")
+            
+            return True, translated_text
+            
+        except BtgTranslationException as e_trans:
+            error_msg = f"번역 오류: {e_trans}"
+            logger.error(f"청크 #{chunk_index} 재번역 실패: {error_msg}")
+            
+            # 실패 정보 기록
+            try:
+                update_metadata_for_chunk_failure(input_file_path_obj, chunk_index, str(e_trans))
+            except Exception:
+                pass
+                
+            return False, error_msg
+            
+        except BtgApiClientException as e_api:
+            error_msg = f"API 오류: {e_api}"
+            logger.error(f"청크 #{chunk_index} 재번역 실패: {error_msg}")
+            
+            try:
+                update_metadata_for_chunk_failure(input_file_path_obj, chunk_index, str(e_api))
+            except Exception:
+                pass
+                
+            return False, error_msg
+            
+        except Exception as e_gen:
+            error_msg = f"예상치 못한 오류: {e_gen}"
+            logger.error(f"청크 #{chunk_index} 재번역 실패: {error_msg}", exc_info=True)
+            
+            try:
+                update_metadata_for_chunk_failure(input_file_path_obj, chunk_index, str(e_gen))
+            except Exception:
+                pass
+                
+            return False, error_msg
 
 
 if __name__ == '__main__':

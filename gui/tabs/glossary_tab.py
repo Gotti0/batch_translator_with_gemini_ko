@@ -983,7 +983,7 @@ class GlossaryTab(BaseTab):
         
         # 입력 파일 경로 가져오기 (콜백 사용)
         input_file_path = ""
-        input_files = self.get_input_files_callback() if self.get_input_files_callback else []
+        input_files = self._get_input_files() if self._get_input_files else []
         if input_files:
             input_file_path = input_files[0]
         
