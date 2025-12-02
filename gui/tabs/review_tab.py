@@ -97,7 +97,7 @@ class ReviewTab(BaseTab):
         # === 상단: 파일 선택 영역 ===
         self._create_file_selection_section()
         
-        # === 중앙: 메인 콘텐츠 (PanedWindow) ===
+        # === 중앙: 메인 콘텐츠 (Panedwindow) ===
         self._create_main_content()
         
         # === 하단: 상태바 ===
@@ -113,7 +113,7 @@ class ReviewTab(BaseTab):
     
     def _create_file_selection_section(self) -> None:
         """파일 선택 영역 생성"""
-        file_frame = ttk.LabelFrame(self.frame, text="입력 파일 선택", padding=10)
+        file_frame = ttk.Labelframe(self.frame, text="입력 파일 선택", padding=10)
         file_frame.pack(fill='x', padx=10, pady=5)
         
         # 파일 경로 입력
@@ -168,9 +168,9 @@ class ReviewTab(BaseTab):
         Tooltip(refresh_btn, "현재 로드된 데이터를 다시 불러옵니다.")
     
     def _create_main_content(self) -> None:
-        """메인 콘텐츠 영역 생성 (PanedWindow)"""
+        """메인 콘텐츠 영역 생성 (Panedwindow)"""
         # 수평 분할: 왼쪽(청크 목록) | 오른쪽(미리보기)
-        main_paned = ttk.PanedWindow(self.frame, orient='horizontal')
+        main_paned = ttk.Panedwindow(self.frame, orient='horizontal')
         main_paned.pack(fill='both', expand=True, padx=10, pady=5)
         
         # === 왼쪽: 청크 목록 (Treeview) ===
@@ -184,9 +184,9 @@ class ReviewTab(BaseTab):
         main_paned.add(right_frame, weight=1)
         
     
-    def _create_chunk_list_section(self, parent: ttk.PanedWindow) -> ttk.Frame:
+    def _create_chunk_list_section(self, parent: ttk.Panedwindow) -> ttk.Frame:
         """청크 목록 섹션 생성"""
-        frame = ttk.LabelFrame(parent, text="청크 목록", padding=5)
+        frame = ttk.Labelframe(parent, text="청크 목록", padding=5)
         
         # 통계 레이블
         self.stats_label = ttk.Label(frame, text="청크: 0개 | 성공: 0 | 실패: 0 | 의심: 0")
@@ -287,16 +287,16 @@ class ReviewTab(BaseTab):
         
         return frame
     
-    def _create_preview_section(self, parent: ttk.PanedWindow) -> ttk.Frame:
+    def _create_preview_section(self, parent: ttk.Panedwindow) -> ttk.Frame:
         """미리보기 섹션 생성"""
-        frame = ttk.LabelFrame(parent, text="청크 미리보기", padding=5)
+        frame = ttk.Labelframe(parent, text="청크 미리보기", padding=5)
         
         # 수직 분할: 위(원문) | 아래(번역문)
-        paned = ttk.PanedWindow(frame, orient='vertical')
+        paned = ttk.Panedwindow(frame, orient='vertical')
         paned.pack(fill='both', expand=True)
         
         # 원문 영역
-        source_frame = ttk.LabelFrame(paned, text="원문", padding=5)
+        source_frame = ttk.Labelframe(paned, text="원문", padding=5)
         self.source_text = scrolledtext.ScrolledText(
             source_frame, 
             wrap='word', 
@@ -309,7 +309,7 @@ class ReviewTab(BaseTab):
         paned.add(source_frame, weight=1)
         
         # 번역문 영역
-        translated_frame = ttk.LabelFrame(paned, text="번역문", padding=5)
+        translated_frame = ttk.Labelframe(paned, text="번역문", padding=5)
         self.translated_text = scrolledtext.ScrolledText(
             translated_frame, 
             wrap='word', 
