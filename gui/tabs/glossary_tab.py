@@ -501,7 +501,7 @@ class GlossaryTab(BaseTab):
             return
         
         # 입력 파일 가져오기 (콜백 사용)
-        input_files = self.get_input_files_callback() if self.get_input_files_callback else []
+        input_files = self._get_input_files() if self._get_input_files else []
         if not input_files:
             messagebox.showwarning("경고", "입력 파일을 먼저 추가해주세요.")
             return
@@ -618,7 +618,7 @@ class GlossaryTab(BaseTab):
     def _show_sampling_estimate(self) -> None:
         """샘플링 비율에 따른 예상 처리량 표시"""
         # 입력 파일 가져오기 (콜백 사용)
-        input_files = self.get_input_files_callback() if self.get_input_files_callback else []
+        input_files = self._get_input_files() if self._get_input_files else []
         if not input_files:
             return
         
@@ -630,7 +630,7 @@ class GlossaryTab(BaseTab):
         try:
             # 파일 크기 기반 추정
             file_size = Path(input_file).stat().st_size
-            chunk_size = self.get_chunk_size_callback() if self.get_chunk_size_callback else 6000
+            chunk_size = self._get_chunk_size() if self._get_chunk_size else 6000
             estimated_chunks = file_size // chunk_size if chunk_size > 0 else 0
             
             sample_ratio = self.sample_ratio_scale.get() / 100.0
@@ -740,7 +740,7 @@ class GlossaryTab(BaseTab):
         """현재 설정의 예상 효과 미리보기"""
         try:
             # 입력 파일 가져오기 (콜백 사용)
-            input_files = self.get_input_files_callback() if self.get_input_files_callback else []
+            input_files = self._get_input_files() if self._get_input_files else []
             if not input_files:
                 messagebox.showwarning("파일 없음", "'설정 및 번역' 탭에서 입력 파일을 먼저 추가하고 선택해주세요.")
                 return
@@ -757,7 +757,7 @@ class GlossaryTab(BaseTab):
             
             # 파일 크기 기반 추정
             file_size = Path(input_file).stat().st_size
-            chunk_size = self.get_chunk_size_callback() if self.get_chunk_size_callback else 6000
+            chunk_size = self._get_chunk_size() if self._get_chunk_size else 6000
             estimated_chunks = max(1, file_size // chunk_size) if chunk_size > 0 else 1
             estimated_sample_chunks = max(1, int(estimated_chunks * sample_ratio / 100.0))
             
