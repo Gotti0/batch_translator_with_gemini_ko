@@ -90,6 +90,20 @@ class ReviewTab(BaseTab):
         # 컨텍스트 메뉴
         self.context_menu: Optional[tk.Menu] = None
         
+        # 정렬 상태 (컬럼명: 오름차순 여부)
+        self._sort_column: Optional[str] = None
+        self._sort_reverse: bool = False
+        
+        # 컬럼 기본 헤더 텍스트
+        self._column_headers: Dict[str, str] = {
+            "id": "ID",
+            "status": "상태",
+            "src_len": "원문",
+            "trans_len": "번역",
+            "ratio": "비율",
+            "z_score": "Z-Score"
+        }
+        
     def create_widgets(self) -> ttk.Frame:
         """탭 위젯 생성"""
         self.frame = ttk.Frame(self.parent)
@@ -200,13 +214,14 @@ class ReviewTab(BaseTab):
         columns = ("id", "status", "src_len", "trans_len", "ratio", "z_score")
         self.tree = ttk.Treeview(tree_container, columns=columns, show='headings', height=20, selectmode='extended')
         
-        # 컬럼 설정
-        self.tree.heading("id", text="ID", anchor='center')
-        self.tree.heading("status", text="상태", anchor='center')
-        self.tree.heading("src_len", text="원문", anchor='center')
-        self.tree.heading("trans_len", text="번역", anchor='center')
-        self.tree.heading("ratio", text="비율", anchor='center')
-        self.tree.heading("z_score", text="Z-Score", anchor='center')
+        # 컬럼 설정 (클릭 시 정렬 기능 포함)
+        for col in columns:
+            self.tree.heading(
+                col, 
+                text=self._column_headers[col], 
+                anchor='center',
+                command=lambda c=col: self._sort_by_column(c)
+            )
         
         self.tree.column("id", width=50, anchor='center')
         self.tree.column("status", width=60, anchor='center')
@@ -377,6 +392,109 @@ class ReviewTab(BaseTab):
             self.tree.tag_configure(self.TAG_OMISSION, background='#fff3cd')  # 연한 주황색
             self.tree.tag_configure(self.TAG_HALLUCINATION, background='#e2d5f1')  # 연한 보라색
             self.tree.tag_configure(self.TAG_PENDING, background='#e2e3e5')  # 연한 회색
+    
+    # === Treeview 정렬 메서드 ===
+    
+    def _sort_by_column(self, column: str) -> None:
+        """컬럼 기준으로 Treeview 정렬
+        
+        Args:
+            column: 정렬할 컬럼명
+        """
+        if not self.tree:
+            return
+        
+        # 같은 컬럼 클릭 시 정렬 방향 토글
+        if self._sort_column == column:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = column
+            self._sort_reverse = False
+        
+        # 현재 데이터 수집
+        items = []
+        for item_id in self.tree.get_children(''):
+            values = self.tree.item(item_id, 'values')
+            tags = self.tree.item(item_id, 'tags')
+            items.append((item_id, values, tags))
+        
+        # 컬럼 인덱스 찾기
+        columns = ("id", "status", "src_len", "trans_len", "ratio", "z_score")
+        col_idx = columns.index(column)
+        
+        # 정렬 키 함수 정의
+        def sort_key(item):
+            value = item[1][col_idx]  # values[col_idx]
+            
+            if column == "id":
+                # ID: 숫자 정렬
+                try:
+                    return int(value)
+                except (ValueError, TypeError):
+                    return 0
+            
+            elif column == "status":
+                # 상태: 커스텀 우선순위 (실패 → 누락 → 환각 → 미번역 → 성공)
+                priority = {
+                    "❌": 0,
+                    "⚠️ 누락": 1,
+                    "⚠️ 환각": 2,
+                    "⏳": 3,
+                    "✅": 4
+                }
+                return priority.get(value, 5)
+            
+            elif column in ("src_len", "trans_len"):
+                # 길이: 숫자 정렬 ('-'는 -1로 처리)
+                if value == '-':
+                    return -1
+                try:
+                    return int(value)
+                except (ValueError, TypeError):
+                    return -1
+            
+            elif column in ("ratio", "z_score"):
+                # 비율/Z-Score: 실수 정렬 ('-'는 -999로 처리)
+                if value == '-':
+                    return -999.0
+                try:
+                    return float(value)
+                except (ValueError, TypeError):
+                    return -999.0
+            
+            return str(value)
+        
+        # 정렬 수행
+        items.sort(key=sort_key, reverse=self._sort_reverse)
+        
+        # Treeview 재배치
+        for idx, (item_id, _, _) in enumerate(items):
+            self.tree.move(item_id, '', idx)
+        
+        # 헤더 텍스트 업데이트 (정렬 방향 표시)
+        self._update_column_headers()
+    
+    def _update_column_headers(self) -> None:
+        """컬럼 헤더에 정렬 방향 표시 업데이트"""
+        if not self.tree:
+            return
+        
+        for col, base_text in self._column_headers.items():
+            if col == self._sort_column:
+                # 현재 정렬 중인 컬럼: 방향 표시 추가
+                arrow = "▼" if self._sort_reverse else "▲"
+                text = f"{base_text} {arrow}"
+            else:
+                # 다른 컬럼: 기본 텍스트
+                text = base_text
+            
+            self.tree.heading(col, text=text)
+    
+    def _reset_sort_state(self) -> None:
+        """정렬 상태 초기화 (데이터 새로 로드 시 호출)"""
+        self._sort_column = None
+        self._sort_reverse = False
+        self._update_column_headers()
     
     # === 파일 경로 헬퍼 메서드 ===
     
@@ -645,6 +763,14 @@ class ReviewTab(BaseTab):
                 values=(i, status, src_len, trans_len, ratio, z_score),
                 tags=(tag,)
             )
+        
+        # 정렬 상태가 있으면 다시 적용 (방향 유지)
+        if self._sort_column:
+            # 현재 정렬 상태 백업
+            saved_reverse = self._sort_reverse
+            # 정렬 호출 (내부에서 토글되므로 반대로 설정)
+            self._sort_reverse = not saved_reverse
+            self._sort_by_column(self._sort_column)
     
     def _update_statistics(self) -> None:
         """통계 레이블 업데이트"""
