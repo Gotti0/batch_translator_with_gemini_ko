@@ -245,23 +245,31 @@ class SimpleGlossaryService:
             raise BtgFileHandlerException(f"용어집 JSON 파일 저장 실패: {output_path}", original_exception=e) from e
 
     def _resolve_glossary_conflicts(self, all_extracted_entries: List[GlossaryEntryDTO]) -> List[GlossaryEntryDTO]: # 함수명 및 DTO 변경
-        """추출된 용어집 항목들의 충돌을 해결합니다. (경량화 버전: 중복 제거 및 등장 횟수 합산)"""
+        """
+        추출된 용어집 항목들의 충돌을 해결합니다. (경량화 버전: 중복 제거 및 등장 횟수 합산)
+        
+        같은 원본 용어(keyword)에 대해 여러 번역이 있을 경우:
+        - 리스트에서 먼저 등장한 번역(translated_keyword)을 유지
+        - 등장 횟수(occurrence_count)는 모두 합산
+        
+        따라서 시드 용어집의 번역을 우선하려면 시드 항목을 리스트 앞에 배치해야 합니다.
+        """
         if not all_extracted_entries:
             return []
 
         logger.info(f"용어집 충돌 해결 시작. 총 {len(all_extracted_entries)}개 항목 검토 중...")
         
         # (keyword, target_language)를 키로 사용하여 그룹화 및 등장 횟수 합산       
-        # translated_keyword는 첫 번째 등장한 것을 사용하거나, 가장 긴 것을 사용하는 등의 규칙 적용 가능
-        # 여기서는 첫 번째 등장한 translated_keyword를 사용
+        # translated_keyword는 첫 번째 등장한 것을 사용 (시드 우선을 위해 시드를 먼저 넣어야 함)
         final_entries_map: Dict[Tuple[str, str], GlossaryEntryDTO] = {} # 키에서 source_language 제거
 
         for entry in all_extracted_entries:
             key_tuple = (entry.keyword.lower(), entry.target_language.lower()) # 키에서 source_language 제거
             if key_tuple not in final_entries_map:
+                # 첫 번째 등장: 이 번역을 최종 번역으로 사용
                 final_entries_map[key_tuple] = entry
             else:
-                # 이미 존재하는 키이면 등장 횟수만 합산
+                # 이미 존재하는 키: 번역은 유지하고 등장 횟수만 합산
                 final_entries_map[key_tuple].occurrence_count += entry.occurrence_count
         
         final_glossary = list(final_entries_map.values())
@@ -432,9 +440,11 @@ class SimpleGlossaryService:
                                 extracted_entries_count=len(all_extracted_entries_from_segments) + len(seed_entries)
                             ))
         # 시드 항목이 있고, 새로운 추출도 있었다면 병합
+        # 중요: 시드 항목을 먼저 넣어서 충돌 해결 시 시드의 번역이 우선되도록 함
         if seed_entries and (novel_text_content.strip() and sample_segments): # Check if new extraction happened
-            logger.info(f"{len(seed_entries)}개의 시드 항목을 새로 추출된 항목과 병합합니다.")
-            all_extracted_entries_from_segments.extend(seed_entries)
+            logger.info(f"{len(seed_entries)}개의 시드 항목을 새로 추출된 항목과 병합합니다. (시드 항목 우선)")
+            # 시드를 앞에 넣어서 _resolve_glossary_conflicts에서 시드의 번역이 유지되도록 함
+            all_extracted_entries_from_segments = seed_entries + all_extracted_entries_from_segments
         elif not (novel_text_content.strip() and sample_segments) and seed_entries: # No new extraction, only seed
             # all_extracted_entries_from_segments already contains seed_entries if this branch is hit
             pass
