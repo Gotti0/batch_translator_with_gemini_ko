@@ -1008,6 +1008,7 @@ class AppService:
     def translate_single_chunk(
         self,
         input_file_path: Union[str, Path],
+        chunk_file_path: Union[str, Path],
         chunk_index: int,
         progress_callback: Optional[Callable[[str], None]] = None
     ) -> Tuple[bool, str]:
@@ -1015,7 +1016,8 @@ class AppService:
         단일 청크를 재번역합니다.
         
         Args:
-            input_file_path: 원본 입력 파일 경로
+            input_file_path: 원본 입력 파일 경로.
+            chunk_file_path: 업데이트할 청크 파일 경로.
             chunk_index: 재번역할 청크 인덱스
             progress_callback: 진행 상태 콜백 (상태 메시지)
             
@@ -1028,6 +1030,7 @@ class AppService:
             return False, error_msg
         
         input_file_path_obj = Path(input_file_path)
+        chunk_file_path_obj = Path(chunk_file_path)
         
         try:
             # 1. 원문을 원본 파일에서 동적으로 청킹하여 로드
@@ -1092,8 +1095,8 @@ class AppService:
                 logger.error(f"청크 #{chunk_index} 재번역 실패: {error_msg}")
                 return False, error_msg
             
-            # 5. 번역된 청크 파일 업데이트 (.chunked.txt가 번역 결과 파일)
-            translated_chunked_path = input_file_path_obj.with_suffix('.chunked.txt')
+            # 5. 번역된 청크 파일 업데이트 (전달받은 chunk_file_path_obj 사용)
+            translated_chunked_path = chunk_file_path_obj
             
             # 기존 번역된 청크 로드
             translated_chunks = {}

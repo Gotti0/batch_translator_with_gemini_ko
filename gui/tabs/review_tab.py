@@ -926,9 +926,15 @@ class ReviewTab(BaseTab):
                 def progress_callback(msg: str):
                     # UI 스레드에서 상태 업데이트
                     self.frame.after(0, lambda: self._update_status(msg))
-                
+
+                # 재번역 결과를 저장할 정확한 청크 파일 경로를 가져옵니다.
+                chunk_file_path = self._get_translated_chunked_file_path(self.current_input_file)
+                if not chunk_file_path.exists():
+                    raise FileNotFoundError(f"청크 파일을 찾을 수 없습니다: {chunk_file_path}")
+
                 success, result = self.app_service.translate_single_chunk(
                     self.current_input_file,
+                    str(chunk_file_path),  # 정확한 청크 파일 경로 전달
                     chunk_idx,
                     progress_callback=progress_callback
                 )
