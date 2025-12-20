@@ -237,12 +237,6 @@ class TranslationService:
             )
             
             # Check if actual content was formatted (not just "없음" messages)
-            if not formatted_glossary_context.startswith("용어집 컨텍스트 없음"): # Check simplified
-                logger.info(f"API 요청에 동적 용어집 컨텍스트 주입됨. 내용 일부: {formatted_glossary_context[:100]}...") # 메시지 변경
-                # 주입된 용어집 키워드 로깅
-                # 상세 로깅은 _format_glossary_for_prompt 내부 또는 호출부에서 처리 가능
-            else:
-                logger.debug(f"동적 용어집 주입 시도했으나, 관련 항목 없거나 제한으로 인해 실제 주입 내용 없음. 사용된 메시지: {formatted_glossary_context}")
             final_prompt = final_prompt.replace("{{glossary_context}}", formatted_glossary_context) # Placeholder changed
         else:
             if "{{glossary_context}}" in final_prompt: # Placeholder changed
@@ -273,6 +267,7 @@ class TranslationService:
         
         # 용어집 로직 수행 (기존 _construct_prompt 참조하여 문자열만 추출)
         if self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
+             logger.info("용어집 컨텍스트 주입 활성화됨 (청크 내 관련 키워드 체크).")
              # ... (기존 용어집 필터링 로직과 동일하게 수행하여 glossary_context_str 생성) ...
              # 코드 간결화를 위해 핵심 로직만 요약:
              chunk_text_lower = text_chunk.lower()
@@ -288,6 +283,11 @@ class TranslationService:
              max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3)
              max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
              glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
+
+             if not glossary_context_str.startswith("용어집 컨텍스트 없음"):
+                logger.info(f"API 요청에 주입할 용어집 컨텍스트 생성됨. 내용 일부: {glossary_context_str[:100]}...")
+             else:
+                logger.debug("현재 청크에 주입할 관련 용어집 항목을 찾지 못함.")
         
         # 2. 치환 데이터 맵 준비
         replacements = {
