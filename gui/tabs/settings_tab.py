@@ -18,6 +18,7 @@ import logging
 from gui.tabs.base_tab import BaseTab
 from gui.components.tooltip import Tooltip
 from gui.components.scrollable_frame import ScrollableFrame
+from gui.components.prefill_history_editor import PrefillHistoryEditor
 
 
 class SettingsTab(BaseTab):
@@ -109,7 +110,7 @@ class SettingsTab(BaseTab):
         self.enable_prefill_var: Optional[tk.BooleanVar] = None
         self.enable_prefill_check = None
         self.prefill_system_instruction_text: Optional[scrolledtext.ScrolledText] = None
-        self.prefill_cached_history_text: Optional[scrolledtext.ScrolledText] = None
+        self.history_editor: Optional[PrefillHistoryEditor] = None
         
         # === 콘텐츠 안전 재시도 설정 위젯 ===
         self.use_content_safety_retry_var: Optional[tk.BooleanVar] = None
@@ -388,11 +389,19 @@ class SettingsTab(BaseTab):
         self.prefill_system_instruction_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=10, width=70)
         self.prefill_system_instruction_text.pack(fill="both", expand=True, padx=5, pady=5)
 
-        prefill_cached_history_label = ttk.Label(prefill_frame, text="프리필 캐시된 히스토리 (JSON 형식):")
+        prefill_cached_history_label = ttk.Label(prefill_frame, text="프리필 캐시된 히스토리 (편집기):")
         prefill_cached_history_label.pack(anchor="w", padx=5, pady=(5, 0))
-        Tooltip(prefill_cached_history_label, "미리 정의된 대화 기록을 JSON 형식으로 입력합니다.\n예: [{\"role\": \"user\", \"parts\": [\"안녕\"]}, {\"role\": \"model\", \"parts\": [\"안녕하세요.\"]}]")
-        self.prefill_cached_history_text = scrolledtext.ScrolledText(prefill_frame, wrap=tk.WORD, height=10, width=70)
-        self.prefill_cached_history_text.pack(fill="both", expand=True, padx=5, pady=5)
+        Tooltip(prefill_cached_history_label, "미리 정의된 대화 기록을 편집합니다.")
+
+        # PrefillHistoryEditor 인스턴스 생성
+        self.history_editor = PrefillHistoryEditor(
+            prefill_frame,
+            history_data=[], # 초기 데이터는 load_config에서 설정
+            on_change=self._on_prefill_history_changed,
+            height=200 # 적절한 높이 설정
+        )
+        self.history_editor.pack(fill="both", expand=True, padx=5, pady=5)
+
     
     def _create_content_safety_section(self, parent: ttk.Frame) -> None:
         """콘텐츠 안전 재시도 설정 섹션 생성"""
@@ -651,6 +660,16 @@ class SettingsTab(BaseTab):
             
         self.log_message(f"Vertex 필드 상태: {vertex_related_state}, API 키 필드 상태: {api_related_state}", "DEBUG")
 
+    def _on_prefill_history_changed(self, new_history_data: List[Dict[str, Any]]) -> None:
+        """
+        PrefillHistoryEditor에서 변경사항이 발생했을 때 호출되는 콜백.
+        앱 서비스의 설정 객체에 즉시 반영합니다.
+        """
+        if self.app_service:
+            # 설정 객체에 직접 반영
+            self.app_service.config["prefill_cached_history"] = new_history_data
+            self.log_message("Prefill 히스토리 변경 감지 및 설정에 반영.", "DEBUG")
+    
     # ========== 번역 제어 메서드 ==========
     
     def _start_translation_thread(self, retranslate_failed_only: bool = False) -> None:
@@ -942,17 +961,8 @@ class SettingsTab(BaseTab):
 
         # 프리필 캐시된 히스토리 JSON 파싱
         prefill_cached_history_obj = []
-        if self.prefill_cached_history_text:
-            prefill_cached_history_json_str = self.prefill_cached_history_text.get("1.0", tk.END).strip()
-            if prefill_cached_history_json_str:
-                try:
-                    prefill_cached_history_obj = json.loads(prefill_cached_history_json_str)
-                    if not isinstance(prefill_cached_history_obj, list):
-                        messagebox.showwarning("입력 오류", "프리필 캐시된 히스토리는 JSON 배열이어야 합니다. 기본값 []으로 설정됩니다.")
-                        prefill_cached_history_obj = []
-                except json.JSONDecodeError:
-                    messagebox.showwarning("입력 오류", "프리필 캐시된 히스토리 형식이 잘못되었습니다 (JSON 파싱 실패). 기본값 []으로 설정됩니다.")
-                    prefill_cached_history_obj = []
+        if self.history_editor: # PrefillHistoryEditor에서 직접 데이터 가져오기
+            prefill_cached_history_obj = self.history_editor.history_data
 
         # Thinking Budget 유효성 검사
         thinking_budget_ui_val: Optional[int] = None
@@ -1137,14 +1147,10 @@ class SettingsTab(BaseTab):
                 self.prefill_system_instruction_text.delete('1.0', tk.END)
                 self.prefill_system_instruction_text.insert('1.0', prefill_system_instruction_val)
 
-            if self.prefill_cached_history_text:
+            if self.history_editor:
                 prefill_cached_history_obj = config.get("prefill_cached_history", [])
-                try:
-                    prefill_cached_history_json_str = json.dumps(prefill_cached_history_obj, indent=2, ensure_ascii=False)
-                except TypeError:
-                    prefill_cached_history_json_str = "[]"
-                self.prefill_cached_history_text.delete('1.0', tk.END)
-                self.prefill_cached_history_text.insert('1.0', prefill_cached_history_json_str)
+                self.history_editor.history_data = prefill_cached_history_obj
+                self.history_editor._render_items() # UI 갱신
 
             # 콘텐츠 안전 재시도 설정
             if self.use_content_safety_retry_var:

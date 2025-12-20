@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union, Callable
 import os
+import copy # Moved here
 
 try:
     from infrastructure.gemini_client import (
@@ -77,6 +78,37 @@ def _format_glossary_for_prompt( # 함수명 변경
         return "용어집 컨텍스트 없음 (제한으로 인해 선택된 항목 없음)" # 메시지 변경
         
     return "\n".join(selected_entries_str)
+
+def _inject_slots_into_history(
+    history: List[genai_types.Content], 
+    replacements: Dict[str, str]
+) -> tuple[List[genai_types.Content], bool]:
+    """
+    히스토리 내의 Content 객체들을 순회하며 슬롯({{slot}} 등)을 실제 값으로 치환합니다.
+    반환값: (수정된 히스토리, 치환 발생 여부)
+    """
+    # 깊은 복사로 원본 오염 방지
+    new_history = copy.deepcopy(history)
+    replacement_occurred = False
+
+    for content in new_history:
+        if not hasattr(content, 'parts'):
+            continue
+            
+        for part in content.parts:
+            if hasattr(part, 'text') and part.text:
+                original_text = part.text
+                modified_text = original_text
+                
+                for key, value in replacements.items():
+                    if key in modified_text:
+                        modified_text = modified_text.replace(key, value)
+                        replacement_occurred = True
+                
+                if original_text != modified_text:
+                    part.text = modified_text
+    
+    return new_history, replacement_occurred
 
 class TranslationService:
     def __init__(self, gemini_client: GeminiClient, config: Dict[str, Any]):
@@ -224,93 +256,133 @@ class TranslationService:
     def translate_text(self, text_chunk: str, stream: bool = False) -> str:
         """
         주어진 텍스트 청크를 번역합니다.
-        프리필 모드 사용 시 prefill_system_instruction과 prefill_cached_history를 사용합니다.
-        chat_prompt (user prompt)는 _construct_prompt를 통해 구성됩니다.
+        슬롯 주입(Slot Injection) 방식을 지원하도록 리팩토링되었습니다.
         """
         if not text_chunk.strip():
             logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
         
-        # 소설 본문 미리보기 로깅 (INFO 레벨 - 누락 청크 재작업 용이)
+        # 소설 본문 미리보기 로깅
         text_preview = text_chunk[:100].replace('\n', ' ')
         logger.info(f"번역 요청 텍스트: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")
         
-        api_prompt_for_gemini_client: Union[str, List[genai_types.Content]] # 변경: List[Content] 사용
-        api_system_instruction: Optional[str] # 변경: Optional[str]
+        # 1. 용어집 및 프롬프트 준비
+        # 기존 _construct_prompt 로직 중 용어집 생성 부분만 가져옵니다.
+        # (단, Slot Injection 모드에서는 프롬프트 템플릿 전체를 가져오는게 아니라 용어집 문자열만 필요함)
+        glossary_context_str = "용어집 컨텍스트 없음"
+        
+        # 용어집 로직 수행 (기존 _construct_prompt 참조하여 문자열만 추출)
+        if self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
+             # ... (기존 용어집 필터링 로직과 동일하게 수행하여 glossary_context_str 생성) ...
+             # 코드 간결화를 위해 핵심 로직만 요약:
+             chunk_text_lower = text_chunk.lower()
+             final_target_lang = self.config.get("target_translation_language", "ko").lower()
+             relevant_entries = []
+             
+             # 용어집 필터링 로직 (기존과 동일)
+             config_source_lang = self.config.get("novel_language", "auto")
+             for entry in self.glossary_entries_for_injection:
+                if entry.target_language.lower() == final_target_lang and entry.keyword.lower() in chunk_text_lower:
+                    relevant_entries.append(entry)
+             
+             max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3)
+             max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
+             glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
+        
+        # 2. 치환 데이터 맵 준비
+        replacements = {
+            "{{slot}}": text_chunk,
+            "{{glossary_context}}": glossary_context_str
+        }
 
+        api_prompt_for_gemini_client: List[genai_types.Content] = []
+        api_system_instruction: Optional[str] = None
+
+        # 3. 프리필 및 히스토리 구성 로직 (핵심 변경 사항)
         if self.config.get("enable_prefill_translation", False):
-            logger.info("프리필 번역 모드 활성화됨.")
+            logger.info("프리필 번역 모드 활성화됨 (Slot Injection 체크).")
+            
+            # 시스템 지침 설정
             api_system_instruction = self.config.get("prefill_system_instruction", "")
+            
+            # 캐시된 히스토리 로드 및 Content 객체 변환
             prefill_cached_history_raw = self.config.get("prefill_cached_history", [])
-
-            # prefill_cached_history_raw가 올바른 형식인지 확인 (리스트이며, 각 항목이 딕셔너리인지)
-            if not isinstance(prefill_cached_history_raw, list):
-                logger.warning(f"잘못된 prefill_cached_history 형식 ({type(prefill_cached_history_raw)}). 빈 리스트로 대체합니다.")
-                prefill_cached_history = []
-            else:
-                prefill_cached_history = []
+            base_history: List[genai_types.Content] = []
+            
+            if isinstance(prefill_cached_history_raw, list):
                 for item in prefill_cached_history_raw:
                     if isinstance(item, dict) and "role" in item and "parts" in item:
-                        raw_parts = item.get("parts")
-                        # parts 내부의 문자열들을 Part 객체로 변환
                         sdk_parts = []
-                        if isinstance(raw_parts, list):
-                            for part_item in raw_parts:
-                                if isinstance(part_item, str):
-                                    sdk_parts.append(genai_types.Part.from_text(text=part_item)) # 명시적으로 text= 사용
-                                elif isinstance(part_item, genai_types.Part): # 이미 Part 객체인 경우
-                                    sdk_parts.append(part_item)
-                        if sdk_parts: # 유효한 part가 있는 경우에만 추가
-                            prefill_cached_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
-                    else:
-                        logger.warning(f"잘못된 prefill_cached_history 항목 건너뜀: {item}")
-            
-            # 현재 청크에 대한 사용자 프롬프트 (기존 _construct_prompt 결과)
-            current_chunk_user_prompt_str = self._construct_prompt(text_chunk)
-            
-            # API에 전달할 contents 구성: List[Content] 형태
-            api_prompt_for_gemini_client = list(prefill_cached_history) # 복사해서 사용
-            api_prompt_for_gemini_client.append(
-                genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=str(current_chunk_user_prompt_str))]) # 명시적으로 text= 사용 및 str() 변환
-            )
-            logger.debug(f"프리필 모드: 시스템 지침='{api_system_instruction[:50]}...', contents 개수={len(api_prompt_for_gemini_client)}")
+                        for part_item in item.get("parts", []):
+                            if isinstance(part_item, str):
+                                sdk_parts.append(genai_types.Part.from_text(text=part_item))
+                        if sdk_parts:
+                            base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
 
+            # [Slot Injection] 히스토리 내 슬롯 치환 시도
+            injected_history, injected = _inject_slots_into_history(base_history, replacements)
+
+            if injected:
+                logger.info("히스토리 내부에서 '{{slot}}'이 감지되어 원문을 주입했습니다 (Jailbreak 모드).")
+                api_prompt_for_gemini_client = injected_history
+                
+                # [Trigger Logic] 마지막 메시지 확인
+                if api_prompt_for_gemini_client:
+                    last_msg = api_prompt_for_gemini_client[-1]
+                    
+                    if last_msg.role == "model":
+                        # 마지막이 모델(프리필)이면, 이어 쓰기를 유도하기 위해 빈 유저 메시지(Trigger) 추가
+                        logger.debug("마지막 메시지가 Model이므로 이어쓰기를 위한 빈 User 트리거를 추가합니다.")
+                        api_prompt_for_gemini_client.append(
+                            genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=" ")])
+                        )
+                    # 마지막이 User라면 그대로 전송 (User 메시지가 Trigger가 됨)
+            else:
+                # 슬롯이 없으면 기존 방식대로: 히스토리 + (프롬프트 + 원문)
+                logger.info("히스토리 내부에 슬롯이 없습니다. 표준 프리필 방식으로 원문을 끝에 추가합니다.")
+                api_prompt_for_gemini_client = injected_history # 치환된게 없으면 원본과 같음
+                
+                # 기존 방식의 프롬프트 생성 (여기서 {{slot}} 처리됨)
+                user_prompt_str = self._construct_prompt(text_chunk)
+                api_prompt_for_gemini_client.append(
+                    genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+                )
         else:
-            logger.info("표준 번역 모드 활성화됨.")
-            api_system_instruction = None # 프리필 비활성화 시 시스템 지침 없음
-            api_prompt_for_gemini_client = self._construct_prompt(text_chunk) # 문자열
-            logger.debug(f"표준 모드: 시스템 지침 없음, 프롬프트 길이={len(api_prompt_for_gemini_client)}")
+            # 표준 모드 (프리필 끔)
+            logger.info("표준 번역 모드 (프리필 Off).")
+            user_prompt_str = self._construct_prompt(text_chunk)
+            api_prompt_for_gemini_client = [
+                genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+            ]
 
         try:
-            logger.debug(f"Gemini API 호출 시작. 모델: {self.config.get('model_name')}")
-            
-            translated_text_from_api = self.gemini_client.generate_text( # Renamed variable                
-                prompt=api_prompt_for_gemini_client, # Union[str, List[Dict]]
+            # Gemini Client 호출
+            translated_text_from_api = self.gemini_client.generate_text(
+                prompt=api_prompt_for_gemini_client, # 이제 항상 List[Content]
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict={
                     "temperature": self.config.get("temperature", 0.7),
                     "top_p": self.config.get("top_p", 0.9)
                 },
-                thinking_budget= self.config.get("thinking_budget", None), # Optional[int]
-                system_instruction_text=api_system_instruction, # Optional[str] 전달
-                stream=stream 
+                thinking_budget=self.config.get("thinking_budget", None),
+                system_instruction_text=api_system_instruction,
+                stream=stream
             )
 
             if translated_text_from_api is None:
                 logger.error("GeminiClient.generate_text가 None을 반환했습니다.")
                 raise GeminiContentSafetyException("API로부터 응답을 받지 못했습니다 (None 반환).")
 
+            # 빈 문자열 응답도 콘텐츠 안전 문제로 간주하여 재시도 로직을 타도록 수정
             if not translated_text_from_api.strip() and text_chunk.strip():
                 logger.warning(f"API가 비어있지 않은 입력에 대해 빈 문자열을 반환했습니다. 원본: '{text_chunk[:100]}...'")
                 raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
 
             logger.debug(f"Gemini API 호출 성공. 번역된 텍스트 (일부): {translated_text_from_api[:100]}...")
-            
-            # 문장부호 일관성 검사 로직 제거
-        
+            return translated_text_from_api.strip()
+
         except GeminiContentSafetyException as e_safety:
             logger.warning(f"콘텐츠 안전 문제로 번역 실패: {e_safety}")
-            # 콘텐츠 안전 문제 발생 시, 분할 재시도 로직을 호출하도록 변경            # translate_text_with_content_safety_retry가 이 예외를 처리하도록 함
             raise BtgTranslationException(f"콘텐츠 안전 문제로 번역할 수 없습니다. ({e_safety})", original_exception=e_safety) from e_safety
         except GeminiAllApiKeysExhaustedException as e_keys:
             logger.error(f"API 키 회전 실패: 모든 API 키 소진 또는 유효하지 않음. 원본 오류: {e_keys}")
@@ -321,18 +393,13 @@ class TranslationService:
         except GeminiInvalidRequestException as e_invalid:
             logger.error(f"잘못된 API 요청: {e_invalid}")
             raise BtgApiClientException(f"잘못된 API 요청입니다: {e_invalid}", original_exception=e_invalid) from e_invalid
-        except GeminiApiException as e_api: # Catches other general API errors from GeminiClient
+        except GeminiApiException as e_api:
             logger.error(f"Gemini API 호출 중 일반 오류 발생: {e_api}")
             raise BtgApiClientException(f"API 호출 중 오류가 발생했습니다: {e_api}", original_exception=e_api) from e_api
-        # BtgTranslationException for empty string is now caught here if raised from above
-        except BtgTranslationException: # Re-raise if it's our specific empty string exception
-            raise
-        except Exception as e: # Catch-all for other unexpected errors
+        except Exception as e:
             logger.error(f"번역 중 예상치 못한 오류 발생: {e}", exc_info=True)
             raise BtgTranslationException(f"번역 중 알 수 없는 오류가 발생했습니다: {e}", original_exception=e) from e
-        
-        return translated_text_from_api.strip() # Return the stripped translated text
-    
+
     def translate_text_with_content_safety_retry(
         self, 
         text_chunk: str, 

@@ -4,3 +4,5 @@ google-genai
 ttkbootstrap>=1.10.1
 concurrent-log-handler>=0.9.25
 google-api-core
+customtkinter
+
