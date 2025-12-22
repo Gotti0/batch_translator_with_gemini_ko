@@ -38,7 +38,8 @@ class PostProcessingService:
             r'(?:```)',
         ]
 
-        # HTML/XML 태그 정리 패턴
+        # [참고] 기존 self.html_cleanup_patterns는 clean_translated_content 내의 새로운 로직으로 대체되었으므로 사용되지 않을 수 있습니다.
+        # 하위 호환성을 위해 남겨두거나, 필요 시 삭제하셔도 됩니다.
         self.html_cleanup_patterns = [
             (r'</?[a-zA-Z][^>]*>', ''),
         ]
@@ -51,14 +52,20 @@ class PostProcessingService:
             
         cleaned = content.strip()
 
-        # 기본 패턴 제거
+        # [수정 1] Thinking Process 블록 우선 제거 (가장 중요)
+        # <thinking> 태그와 그 사이의 모든 내용(줄바꿈 포함)을 가장 먼저 삭제합니다.
+        # [\s\S]*? : 줄바꿈을 포함한 모든 문자를 최단 일치(Non-greedy)로 매칭
+        cleaned = re.sub(r'<thinking>[\s\S]*?</thinking>', '', cleaned, flags=re.IGNORECASE)
+
+        # 기본 패턴 제거 (광고, 불필요한 헤더 등)
         for pattern in self.removal_patterns:
             cleaned = re.sub(pattern, '', cleaned, flags=re.MULTILINE | re.IGNORECASE)
         
-        # HTML 태그 정리
+        # [수정 2] HTML 태그 정리 로직 변경
         if config.get("clean_html_tags", True):
-            for pattern, replacement in self.html_cleanup_patterns:
-                cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+            # 사용자 요청: <> 안에 영어, 숫자, 공백, 특수문자(/ " = ' -)만 있는 경우를 HTML 태그로 간주하여 삭제
+            # 한글이 포함된 태그(<상태창>, <스킬>)는 삭제하지 않음
+            cleaned = re.sub(r'<[a-zA-Z0-9/\s"=\'-]+>', '', cleaned)
         
         # 연속된 빈 줄 정리 (3개 이상의 연속 개행을 2개로)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
