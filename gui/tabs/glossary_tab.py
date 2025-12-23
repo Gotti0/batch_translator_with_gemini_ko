@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any, List, Callable
 from gui.tabs.base_tab import BaseTab
 from gui.components.tooltip import Tooltip
 from gui.components.scrollable_frame import ScrollableFrame
+from gui.components.prefill_history_editor import PrefillHistoryEditor  # 컴포넌트 임포트
 from gui.dialogs.glossary_editor import GlossaryEditorWindow
 
 # 예외 클래스 임포트
@@ -82,6 +83,11 @@ class GlossaryTab(BaseTab):
         self.extraction_temp_label: Optional[ttk.Label] = None
         self.user_override_glossary_prompt_text: Optional[scrolledtext.ScrolledText] = None
         
+        # === 프리필 설정 위젯 ===
+        self.enable_prefill_var: Optional[tk.BooleanVar] = None
+        self.enable_prefill_chk: Optional[ttk.Checkbutton] = None
+        self.edit_prefill_btn: Optional[ttk.Button] = None
+        
         # === 액션 버튼 위젯 ===
         self.save_glossary_settings_button = None
         self.reset_glossary_settings_button = None
@@ -97,6 +103,7 @@ class GlossaryTab(BaseTab):
         
         # === 동적 용어집 주입 설정 위젯 ===
         self.enable_dynamic_glossary_injection_var: Optional[tk.BooleanVar] = None
+        self.enable_dynamic_glossary_injection_check: Optional[ttk.Checkbutton] = None # Added
         self.max_glossary_entries_injection_entry: Optional[ttk.Entry] = None
         self.max_glossary_chars_injection_entry: Optional[ttk.Entry] = None
 
@@ -260,6 +267,31 @@ class GlossaryTab(BaseTab):
         )
         self.user_override_glossary_prompt_text.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
         Tooltip(self.user_override_glossary_prompt_text, "사용자 정의 프롬프트를 입력하세요. JSON 응답 형식을 유지해야 합니다.")
+        
+        # --- Prefill Settings (New) ---
+        prefill_settings_labelframe = ttk.Labelframe(extraction_settings_frame, text="프리필(Prefill) 설정", padding="10")
+        prefill_settings_labelframe.grid(row=6, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
+        prefill_settings_labelframe.grid_columnconfigure(0, weight=1) # Make checkbox span
+
+        self.enable_prefill_var = tk.BooleanVar(value=False) # Value will be loaded by load_config
+        self.enable_prefill_chk = ttk.Checkbutton(
+            prefill_settings_labelframe, 
+            text="용어집 추출 프리필 활성화", 
+            variable=self.enable_prefill_var,
+            command=self._save_prefill_config # 즉시 저장 또는 변경 플래그 설정
+        )
+        self.enable_prefill_chk.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(self.enable_prefill_chk, "용어집 추출 시 프리필(Few-shot) 모드를 활성화합니다.\n이를 통해 모델에 추출 예시를 제공하여 정확도를 높일 수 있습니다.")
+
+        self.edit_prefill_btn = ttk.Button(
+            prefill_settings_labelframe, 
+            text="프리필/히스토리 편집", 
+            command=self._open_prefill_editor,
+            bootstyle="info", # 설정 버튼 느낌
+        )
+        self.edit_prefill_btn.grid(row=0, column=1, padx=5, pady=5, sticky="e")
+        Tooltip(self.edit_prefill_btn, "용어집 추출 프리필에 사용될 시스템 지침과 예시 대화(Few-shot history)를 편집합니다.")
+        # -----------------------------
     
     def _create_action_section(self, parent: ttk.Frame) -> None:
         """액션 버튼 섹션 생성"""
@@ -362,14 +394,14 @@ class GlossaryTab(BaseTab):
         
         # 동적 주입 활성화 체크박스
         self.enable_dynamic_glossary_injection_var = tk.BooleanVar(value=False)
-        enable_dynamic_glossary_injection_check = ttk.Checkbutton(
+        self.enable_dynamic_glossary_injection_check = ttk.Checkbutton( # Changed to self.
             dynamic_glossary_frame,
             text="동적 용어집 주입 활성화",
             variable=self.enable_dynamic_glossary_injection_var,
             command=self._on_glossary_setting_changed
         )
-        enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
-        Tooltip(enable_dynamic_glossary_injection_check, "번역 시 현재 청크와 관련된 용어집 항목을 자동으로 프롬프트에 주입합니다.")
+        self.enable_dynamic_glossary_injection_check.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        Tooltip(self.enable_dynamic_glossary_injection_check, "번역 시 현재 청크와 관련된 용어집 항목을 자동으로 프롬프트에 주입합니다.")
         
         # 청크당 최대 주입 항목 수
         max_entries_injection_label = ttk.Label(dynamic_glossary_frame, text="청크당 최대 주입 항목 수:")
@@ -491,6 +523,64 @@ class GlossaryTab(BaseTab):
                 # bootstyle이 지원되지 않는 경우 무시
                 pass
 
+    # --- New Methods for Prefill ---
+    def _save_prefill_config(self) -> None:
+        """체크박스 상태 저장 및 설정 변경 알림"""
+        if self.app_service and self.enable_prefill_var:
+            self.app_service.config["enable_glossary_prefill"] = self.enable_prefill_var.get()
+            self._on_glossary_setting_changed() # 설정 변경 알림
+
+    def _open_prefill_editor(self) -> None:
+        """기존 PrefillHistoryEditor 재사용하여 용어집 프리필 편집"""
+        if not self.app_service or not self.parent:
+            return
+
+        editor_window = tk.Toplevel(self.parent)
+        editor_window.title("용어집 추출 프리필 설정")
+        editor_window.transient(self.parent)
+        editor_window.grab_set()
+
+        # 1. System Instruction Editor
+        system_frame = ttk.Labelframe(editor_window, text="시스템 지침", padding=10)
+        system_frame.pack(padx=10, pady=(10, 5), fill="x")
+
+        system_instruction_text = scrolledtext.ScrolledText(system_frame, wrap=tk.WORD, height=8, width=80)
+        system_instruction_text.pack(fill="both", expand=True)
+        system_instruction_val = self.app_service.config.get("glossary_prefill_system_instruction", "")
+        system_instruction_text.insert('1.0', system_instruction_val)
+        
+        # 2. History Editor
+        history_frame = ttk.Labelframe(editor_window, text="프리필 히스토리", padding=10)
+        history_frame.pack(padx=10, pady=5, fill="both", expand=True)
+
+        history_data = self.app_service.config.get("glossary_prefill_cached_history", [])
+
+        def on_editor_change(new_history_data):
+            self.app_service.config["glossary_prefill_cached_history"] = new_history_data
+            self._on_glossary_setting_changed()
+
+        history_editor = PrefillHistoryEditor(
+            history_frame,
+            history_data=history_data,
+            on_change=on_editor_change,
+            height=200
+        )
+        history_editor.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # 3. Save Button
+        def save_and_close():
+            new_system_instruction = system_instruction_text.get('1.0', tk.END).strip()
+            self.app_service.config["glossary_prefill_system_instruction"] = new_system_instruction
+            self._on_glossary_setting_changed()
+            editor_window.destroy()
+
+        button_frame = ttk.Frame(editor_window)
+        button_frame.pack(padx=10, pady=(5, 10))
+        save_button = ttk.Button(button_frame, text="저장하고 닫기", command=save_and_close)
+        save_button.pack()
+
+    # -------------------------------
+
     # ========== 용어집 추출 메서드 ==========
     
     def _extract_glossary_thread(self) -> None:
@@ -536,6 +626,7 @@ class GlossaryTab(BaseTab):
         self.glossary_stop_requested = False
         self.extract_glossary_button.config(state=tk.DISABLED)
         self.stop_glossary_button.config(state=tk.NORMAL)
+        self._set_extraction_settings_state("disabled") # 추출 중 설정 비활성화
         
         def _extraction_task_wrapper():
             try:
@@ -592,6 +683,7 @@ class GlossaryTab(BaseTab):
             finally:
                 self.parent.after(0, lambda: self.extract_glossary_button.config(state=tk.NORMAL))
                 self.parent.after(0, lambda: self.stop_glossary_button.config(state=tk.DISABLED))
+                self.parent.after(0, lambda: self._set_extraction_settings_state("normal")) # 추출 후 설정 다시 활성화
                 self.logger.info("용어집 추출 스레드 종료.")
         
         thread = threading.Thread(target=_extraction_task_wrapper, daemon=True)
@@ -614,6 +706,39 @@ class GlossaryTab(BaseTab):
         """용어집 추출 중지 요청"""
         self.glossary_stop_requested = True
         self.logger.info("용어집 추출 중지 요청됨.")
+    
+    def _set_extraction_settings_state(self, state: str) -> None:
+        """
+        용어집 추출 설정 UI 요소들의 상태를 변경합니다.
+        state: "normal" 또는 "disabled"
+        """
+        if self.sample_ratio_scale:
+            self.sample_ratio_scale.config(state=state)
+        if self.advanced_var and self.advanced_frame:
+            # 고급 설정 프레임 내 위젯들을 개별적으로 제어
+            for child in self.advanced_frame.winfo_children():
+                if isinstance(child, (ttk.Scale, scrolledtext.ScrolledText, ttk.Entry, ttk.Checkbutton)): # Add other widget types as needed
+                    child.config(state=state)
+        
+        # 프리필 설정 위젯
+        if self.enable_prefill_chk:
+            self.enable_prefill_chk.config(state=state)
+        if self.edit_prefill_btn:
+            self.edit_prefill_btn.config(state=state)
+        
+        # 동적 용어집 주입 설정 위젯들도 제어
+        if self.enable_dynamic_glossary_injection_check: # Corrected to use the instance variable
+            self.enable_dynamic_glossary_injection_check.config(state=state)
+        if self.max_glossary_entries_injection_entry:
+            self.max_glossary_entries_injection_entry.config(state=state)
+        if self.max_glossary_chars_injection_entry:
+            self.max_glossary_chars_injection_entry.config(state=state)
+        
+        # save/reset settings buttons
+        if self.save_glossary_settings_button:
+            self.save_glossary_settings_button.config(state=state)
+        if self.reset_glossary_settings_button:
+            self.reset_glossary_settings_button.config(state=state)
     
     def _show_sampling_estimate(self) -> None:
         """샘플링 비율에 따른 예상 처리량 표시"""
@@ -817,6 +942,10 @@ class GlossaryTab(BaseTab):
                 "user_override_glossary_extraction_prompt": (
                     self.user_override_glossary_prompt_text.get("1.0", tk.END).strip()
                 ) if self.user_override_glossary_prompt_text else "",
+                
+                "enable_glossary_prefill": (
+                    self.enable_prefill_var.get()
+                ) if self.enable_prefill_var else False,
             }
             
             # None 값 필터링
@@ -876,12 +1005,17 @@ class GlossaryTab(BaseTab):
                 )
             
             # 사용자 정의 추출 프롬프트
+            # 사용자 정의 추출 프롬프트
             if self.user_override_glossary_prompt_text:
                 self.user_override_glossary_prompt_text.delete('1.0', tk.END)
                 self.user_override_glossary_prompt_text.insert(
                     '1.0',
                     config.get("user_override_glossary_extraction_prompt", "")
                 )
+            
+            # 프리필 활성화 여부
+            if self.enable_prefill_var:
+                self.enable_prefill_var.set(config.get("enable_glossary_prefill", False))
             
             self.logger.debug("용어집 탭 설정 로드 완료")
             

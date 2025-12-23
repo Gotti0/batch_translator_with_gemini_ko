@@ -5,6 +5,7 @@ import re
 import time
 import os
 import threading
+import copy # Added for deepcopy
 from pathlib import Path
 from pydantic import BaseModel, Field as PydanticField # Field 이름 충돌 방지
 from typing import Dict, Any, Optional, List, Union, Tuple, Callable
@@ -17,6 +18,8 @@ try:
     from utils.chunk_service import ChunkService
     from core.exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException
     from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO
+    # genai types 임포트 추가 (TranslationService와 동일)
+    from google.genai import types as genai_types
 except ImportError:
     # 단독 실행 또는 다른 경로에서의 import를 위한 fallback
     from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException # type: ignore
@@ -25,6 +28,7 @@ except ImportError:
     from infrastructure.logger_config import setup_logger # type: ignore
     from core.exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException # type: ignore
     from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO # type: ignore
+    from google.genai import types as genai_types # type: ignore
 
 logger = setup_logger(__name__)
 
@@ -34,6 +38,36 @@ class ApiGlossaryTerm(BaseModel):
     translated_keyword: str = PydanticField(description="The translation of the keyword.")
     target_language: str = PydanticField(description="The BCP-47 language code of the translated_keyword.")
     occurrence_count: int = PydanticField(description="Estimated number of times the keyword appears in the segment.")
+
+def _inject_slots_into_history(
+    history: List[genai_types.Content], 
+    replacements: Dict[str, str]
+) -> tuple[List[genai_types.Content], bool]:
+    """
+    히스토리 내의 Content 객체들을 순회하며 슬롯({{slot}} 등)을 실제 값으로 치환합니다.
+    반환값: (수정된 히스토리, 치환 발생 여부)
+    """
+    new_history = copy.deepcopy(history)
+    replacement_occurred = False
+
+    for content in new_history:
+        if not hasattr(content, 'parts'):
+            continue
+            
+        for part in content.parts:
+            if hasattr(part, 'text') and part.text:
+                original_text = part.text
+                modified_text = original_text
+                
+                for key, value in replacements.items():
+                    if key in modified_text:
+                        modified_text = modified_text.replace(key, value)
+                        replacement_occurred = True
+                
+                if original_text != modified_text:
+                    part.text = modified_text
+    
+    return new_history, replacement_occurred
 
 class SimpleGlossaryService:
     """
@@ -124,66 +158,116 @@ class SimpleGlossaryService:
     # _get_conflict_resolution_prompt, _group_similar_keywords_via_api 메서드는 경량화로 인해 제거 또는 대폭 단순화.
     # 여기서는 제거하는 것으로 가정. 필요하다면 매우 단순한 형태로 재구현.
 
-    def _extract_glossary_entries_from_segment_via_api( # 함수명 변경
+    def _extract_glossary_entries_from_segment_via_api(
         self,
         segment_text: str,
         user_override_glossary_prompt: Optional[str] = None
-    ) -> List[GlossaryEntryDTO]: # 반환 타입 변경
+    ) -> List[GlossaryEntryDTO]:
         """
         단일 텍스트 세그먼트에서 Gemini API를 사용하여 용어집 항목들을 추출합니다.
-        GeminiClient의 내장 재시도 로직을 활용합니다.         """
-        prompt = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
-        model_name = self.config.get("model_name", "gemini-2.0-flash")        # 새로운 google-genai SDK의 올바른 구조화된 출력 방식
-        # 문서: https://ai.google.dev/gemini-api/docs/structured-output?hl=ko
+        프리필(Prefill) 및 구조화된 출력(Structured Output)을 지원합니다.
+        """
+        model_name = self.config.get("model_name", "gemini-2.0-flash")
         generation_config_params = { 
             "temperature": self.config.get("glossary_extraction_temperature", 0.3),
             "response_mime_type": "application/json",
-            "response_schema": list[ApiGlossaryTerm]  # Pydantic 모델을 직접 전달
+            "response_schema": list[ApiGlossaryTerm]
         }
+
+        api_prompt_for_gemini_client: Union[str, List[genai_types.Content]]
+        api_system_instruction: Optional[str] = None
+
+        # --- 프리필(Prefill) 모드 확인 ---
+        if self.config.get("enable_glossary_prefill", False):
+            logger.info("용어집 추출 프리필 모드 활성화됨.")
+            
+            # 1. 시스템 지침 설정
+            api_system_instruction = self.config.get("glossary_prefill_system_instruction", "")
+            
+            # 2. 캐시된 히스토리 로드 및 변환
+            prefill_history_raw = self.config.get("glossary_prefill_cached_history", [])
+            base_history: List[genai_types.Content] = []
+            
+            if isinstance(prefill_history_raw, list):
+                for item in prefill_history_raw:
+                    if isinstance(item, dict) and "role" in item and "parts" in item:
+                        sdk_parts = []
+                        for part_item in item.get("parts", []):
+                            if isinstance(part_item, str):
+                                sdk_parts.append(genai_types.Part.from_text(text=part_item))
+                        if sdk_parts:
+                            base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
+            
+            # 3. 슬롯 주입 ({novelText})
+            replacements = {
+                "{novelText}": segment_text
+            }
+            
+            injected_history, injected = _inject_slots_into_history(base_history, replacements)
+            
+            if injected:
+                logger.debug("히스토리 내 슬롯이 감지되어 세그먼트 텍스트를 주입했습니다.")
+                api_prompt_for_gemini_client = injected_history
+                
+                # [Trigger Logic] 마지막 메시지가 Model이면 이어쓰기를 위한 빈 User 메시지 추가
+                if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "model":
+                    logger.debug("마지막 메시지가 Model이므로 이어쓰기를 위한 빈 User 트리거를 추가합니다.")
+                    api_prompt_for_gemini_client.append(
+                        genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=" ")])
+                    )
+            else:
+                # 슬롯이 없으면 기존 템플릿 방식 프롬프트를 유저 메시지로 추가
+                logger.info("히스토리 내부에 슬롯이 없습니다. 표준 프롬프트를 추가합니다.")
+                prompt_str = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
+                api_prompt_for_gemini_client = injected_history
+                api_prompt_for_gemini_client.append(
+                    genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=prompt_str)])
+                )
+        else:
+            # --- 표준 모드 ---
+            # api_prompt_for_gemini_client는 문자열 또는 Content 리스트가 될 수 있음
+            # 기존 호환성을 위해 문자열로 생성
+            api_prompt_for_gemini_client = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
 
         try:
             response_data = self.gemini_client.generate_text(
-                prompt=prompt,
+                prompt=api_prompt_for_gemini_client,
                 model_name=model_name,
-                generation_config_dict=generation_config_params
+                generation_config_dict=generation_config_params,
+                system_instruction_text=api_system_instruction
             )
 
+            # --- 응답 처리 로직 (기존과 동일) ---
             if isinstance(response_data, list) and all(isinstance(item, ApiGlossaryTerm) for item in response_data):
                 logger.debug("GeminiClient가 ApiGlossaryTerm 객체 리스트를 반환했습니다.")
                 return self._parse_api_glossary_terms_to_dto(response_data)
             elif isinstance(response_data, list) and all(isinstance(item, dict) for item in response_data):
-                # GeminiClient가 Pydantic 파싱에 실패하고 dict 리스트를 반환한 경우 (예: response.text 파싱)
-                logger.warning("GeminiClient가 dict 리스트를 반환했습니다. 스키마 적용이 부분적으로 성공했을 수 있습니다.")
+                logger.warning("GeminiClient가 dict 리스트를 반환했습니다.")
                 return self._parse_dict_list_to_dto(response_data)
             elif isinstance(response_data, dict):
-                # 이전 프롬프트 방식("terms" 키를 가진 객체)에 대한 폴백 (스키마가 완전히 무시된 경우)
-                logger.warning(f"GeminiClient가 예상치 못한 딕셔너리를 반환했습니다 (스키마 미적용 가능성): {str(response_data)[:200]}")
+                logger.warning(f"GeminiClient가 예상치 못한 딕셔너리를 반환했습니다: {str(response_data)[:200]}")
                 raw_terms_fallback = response_data.get("terms")
                 if isinstance(raw_terms_fallback, list):
                     return self._parse_dict_list_to_dto(raw_terms_fallback)
                 else:
-                    logger.error(f"API 응답이 예상된 리스트나 'terms' 키를 포함한 딕셔너리가 아닙니다: {response_data}")
-                    return [] # 유효한 'terms'가 없으면 빈 리스트 반환
+                    logger.error(f"API 응답이 유효한 형식이 아닙니다: {response_data}")
+                    return []
             elif response_data is None:
-                logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다 (GeminiClient가 None 반환). 세그먼트: {segment_text[:50]}...")
+                logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다.")
                 return []
-            elif isinstance(response_data, str): # GeminiClient가 JSON 파싱에 실패하여 문자열을 반환한 경우
-                logger.warning(f"GeminiClient가 JSON 파싱에 실패하여 문자열을 반환했습니다. 응답: {response_data[:200]}... 세그먼트: {segment_text[:50]}...")
-                # 이 경우, API가 유효하지 않은 JSON을 생성했거나 GeminiClient의 파서에 문제가 있을 수 있습니다.
-                # 서비스 레벨에서 단순 API 재시도는 도움이 되지 않을 가능성이 높습니다.                          
+            elif isinstance(response_data, str):
+                logger.warning(f"GeminiClient가 문자열을 반환했습니다 (JSON 파싱 실패 추정): {response_data[:200]}...")
                 return []
             else:
-                logger.warning(f"GeminiClient로부터 예상치 않은 타입의 응답 ({type(response_data)})을 받았습니다. 세그먼트: {segment_text[:50]}...")              
+                logger.warning(f"GeminiClient로부터 예상치 않은 타입의 응답 ({type(response_data)})을 받았습니다.")
                 return []
             
-        except GeminiApiException as e_api: # GeminiClient의 자체 재시도 후에도 해결되지 않은 API 오류
-            logger.error(f"용어집 추출 API 호출 최종 실패 (GeminiClient 재시도 후 발생): {e_api}. 세그먼트: {segment_text[:50]}...")
+        except GeminiApiException as e_api:
+            logger.error(f"용어집 추출 API 호출 최종 실패: {e_api}. 세그먼트: {segment_text[:50]}...")
             raise BtgApiClientException(f"용어집 추출 API 호출 최종 실패: {e_api}", original_exception=e_api) from e_api       
         except Exception as e:
-            logger.error(f"용어집 추출 중 예상치 못한 내부 오류: {e}. 세그먼트: {segment_text[:50]}...", exc_info=True)
-            # DTO 변환 등 이 메서드 내 다른 로직에서 발생할 수 있는 예외
+            logger.error(f"용어집 추출 중 예상치 못한 내부 오류: {e}.", exc_info=True)
             raise BtgBusinessLogicException(f"용어집 추출 중 내부 오류: {e}", original_exception=e) from e
-
 
     def _select_sample_segments(self, all_segments: List[str]) -> List[str]:
         """전체 세그먼트 리스트에서 표본 세그먼트를 선택합니다."""

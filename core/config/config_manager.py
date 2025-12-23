@@ -143,6 +143,12 @@ class ConfigManager:
             ),
             "user_override_glossary_extraction_prompt": "", # 사용자 재정의 용어집 추출 프롬프트 기본값 (비워두면 simple_glossary_extraction_prompt_template 사용)
 
+            # --- 용어집 프리필 관련 설정 추가 ---
+            "enable_glossary_prefill": False,
+            "glossary_prefill_system_instruction": "당신은 소설 번역을 위한 전문 용어 추출가입니다. 텍스트에서 등장인물, 고유명사, 지명 등을 식별하여 JSON 형식으로 추출하세요.",
+            "glossary_prefill_cached_history": [],
+            # ----------------------------------
+
             # 후처리 관련 설정 (기존 위치에서 이동 또는 기본값으로 통합)
             "remove_translation_headers": True,
             "remove_markdown_blocks": True,
