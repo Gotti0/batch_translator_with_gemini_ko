@@ -109,7 +109,7 @@ class GeminiClient:
     _CONTENT_SAFETY_PATTERNS = [
         "PROHIBITED_CONTENT", "SAFETY", "response was blocked",
         "BLOCKED_PROMPT", "SAFETY_BLOCKED", "blocked due to safety",
-        "INTERNAL", "500"
+        "INTERNAL", "500", "504", "DEADLINE_EXCEEDED"
     ]
 
     _INVALID_REQUEST_PATTERNS = [
