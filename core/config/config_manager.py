@@ -96,6 +96,7 @@ class ConfigManager:
             "model_name": "gemini-2.0-flash",
             "temperature": 0.7,
             "thinking_budget": None, # thinking_budget 기본값 (None이면 모델 기본값 사용 또는 자동)
+            "thinking_level": "high",  # [추가] Thinking Level 기본값 (low, medium, high, minimal)
             "top_p": 0.9, # type: ignore
             "prompts": ( # type: ignore
                 "# 용어집 컨텍스트 (제공된 경우 아래 용어집에 명시된 번역어를 반드시 준수하세요.)\n"

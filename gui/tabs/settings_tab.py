@@ -88,6 +88,8 @@ class SettingsTab(BaseTab):
         self.top_p_scale: Optional[ttk.Scale] = None
         self.top_p_label: Optional[ttk.Label] = None
         self.thinking_budget_entry: Optional[ttk.Entry] = None
+        self.thinking_level_combobox: Optional[ttk.Combobox] = None # [추가]
+        self.thinking_level_label: Optional[ttk.Label] = None       # [추가]
         
         # === 파일 및 처리 설정 위젯 ===
         self.input_file_listbox: Optional[tk.Listbox] = None
@@ -217,6 +219,9 @@ class SettingsTab(BaseTab):
         model_name_label.grid(row=5, column=0, padx=5, pady=5, sticky="w")
         Tooltip(model_name_label, "번역에 사용할 AI 모델의 이름입니다.")
         self.model_name_combobox = ttk.Combobox(api_frame, width=57) 
+        # [추가] 콤보박스 선택 이벤트 바인딩
+        self.model_name_combobox.bind("<<ComboboxSelected>>", self._on_model_changed)
+        self.model_name_combobox.bind("<KeyRelease>", self._on_model_changed) # 직접 입력 시에도 반응하도록
         self.model_name_combobox.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
         Tooltip(self.model_name_combobox, "사용 가능한 모델 목록에서 선택하거나 직접 입력하세요.\n'새로고침' 버튼으로 목록을 업데이트할 수 있습니다.")
         self.refresh_models_button = ttk.Button(api_frame, text="새로고침", command=self._update_model_list_ui)
@@ -262,13 +267,31 @@ class SettingsTab(BaseTab):
         self.top_p_label = ttk.Label(gen_param_frame, text="0.00")
         self.top_p_label.grid(row=1, column=2, padx=5, pady=5)
 
-        # Thinking Budget 설정
-        thinking_budget_param_label = ttk.Label(gen_param_frame, text="Thinking Budget:")
-        thinking_budget_param_label.grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(thinking_budget_param_label, "모델이 추론에 사용할 토큰 수 (Gemini 2.5 모델).\nFlash: 0-24576, Pro: 128-32768.\n비워두면 자동 또는 모델 기본값 사용.")
+        # [수정] Thinking Budget (Gemini 2.5) 및 Level (Gemini 3) 설정
+        
+        # 1. Thinking Budget
+        budget_label = ttk.Label(gen_param_frame, text="Thinking Budget (Gemini 2.5):")
+        budget_label.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(budget_label, "Gemini 2.5 모델용 토큰 예산.\n-1로 설정 시 Dynamic 모드로 동작합니다.")
+        
         self.thinking_budget_entry = ttk.Entry(gen_param_frame, width=10)
         self.thinking_budget_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
-        Tooltip(self.thinking_budget_entry, "Thinking Budget 값을 정수로 입력하세요.\nFlash 모델에서 0은 기능 비활성화입니다.\n비워두는것을 추천함")
+        Tooltip(self.thinking_budget_entry, "예: 1024, -1(자동)")
+
+        # 2. Thinking Level
+        self.thinking_level_label = ttk.Label(gen_param_frame, text="Thinking Level (Gemini 3):")
+        self.thinking_level_label.grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        Tooltip(self.thinking_level_label, "Gemini 3 모델용 사고 수준 설정.\n- Pro: low, high\n- Flash: minimal, low, medium, high")
+
+        self.thinking_level_combobox = ttk.Combobox(
+            gen_param_frame, 
+            values=["low", "high"], # 초기값
+            state="readonly", 
+            width=10
+        )
+        self.thinking_level_combobox.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+        self.thinking_level_combobox.set("high")
+        Tooltip(self.thinking_level_combobox, "Gemini 3 모델 버전에 따라 사용 가능한 옵션이 자동 변경됩니다.")
     
     def _create_file_section(self, parent: ttk.Frame) -> None:
         """파일 및 처리 설정 섹션 생성"""
@@ -619,6 +642,9 @@ class SettingsTab(BaseTab):
             self.model_name_combobox.set(model_display_names_for_ui[0])
         else:
             self.model_name_combobox.set("")
+        
+        # UI 상태 업데이트 (Thinking 파라미터)
+        self._on_model_changed()
     
     def _on_api_key_changed(self, event=None) -> None:
         """API 키 변경 이벤트 핸들러"""
@@ -669,6 +695,55 @@ class SettingsTab(BaseTab):
             # 설정 객체에 직접 반영
             self.app_service.config["prefill_cached_history"] = new_history_data
             self.log_message("Prefill 히스토리 변경 감지 및 설정에 반영.", "DEBUG")
+
+    def _on_model_changed(self, event=None) -> None:
+        """모델명 변경 시 호출되어 Thinking 파라미터 UI 상태를 제어합니다."""
+        if not self.model_name_combobox:
+            return
+            
+        model_name = self.model_name_combobox.get().lower()
+        
+        # 1. Gemini 3 계열 감지
+        if "gemini-3" in model_name:
+            # Level 활성화 / Budget 비활성화
+            if self.thinking_level_combobox: 
+                self.thinking_level_combobox.config(state="readonly")
+                
+                # [핵심] 모델 버전에 따른 옵션 동적 변경
+                valid_values = []
+                if "flash" in model_name:
+                    # Gemini 3 Flash: 모든 옵션 지원
+                    valid_values = ["minimal", "low", "medium", "high"]
+                else:
+                    # Gemini 3 Pro (또는 기타): low, high만 지원
+                    valid_values = ["low", "high"]
+                
+                self.thinking_level_combobox['values'] = valid_values
+                
+                # 현재 선택된 값이 유효하지 않으면 기본값(high)으로 재설정
+                current_val = self.thinking_level_combobox.get()
+                if current_val not in valid_values:
+                    self.thinking_level_combobox.set("high")
+
+            if self.thinking_budget_entry: 
+                self.thinking_budget_entry.config(state=tk.DISABLED)
+            
+        # 2. Gemini 2.5 계열 감지
+        elif "gemini-2.5" in model_name:
+            # Level 비활성화 / Budget 활성화
+            if self.thinking_level_combobox: 
+                self.thinking_level_combobox.config(state=tk.DISABLED)
+            if self.thinking_budget_entry: 
+                self.thinking_budget_entry.config(state=tk.NORMAL)
+            
+        # 3. 그 외 모델 (기본 상태)
+        else:
+            # 둘 다 활성화 상태로 두거나(사용자 자율), 혹은 비활성화
+            # 여기서는 편의상 Budget만 활성화하고 Level은 닫아둡니다 (하위 호환)
+            if self.thinking_level_combobox: 
+                self.thinking_level_combobox.config(state=tk.DISABLED)
+            if self.thinking_budget_entry: 
+                self.thinking_budget_entry.config(state=tk.NORMAL)
     
     # ========== 번역 제어 메서드 ==========
     
@@ -981,6 +1056,20 @@ class SettingsTab(BaseTab):
         if self._get_glossary_path:
             glossary_path = self._get_glossary_path()
 
+        # [추가] Thinking Parameter 추출
+        thinking_budget_val = None
+        if self.thinking_budget_entry and self.thinking_budget_entry['state'] != tk.DISABLED:
+            val_str = self.thinking_budget_entry.get().strip()
+            if val_str:
+                try:
+                    thinking_budget_val = int(val_str)
+                except ValueError:
+                    pass # 유효하지 않으면 None
+
+        thinking_level_val = "high"
+        if self.thinking_level_combobox and self.thinking_level_combobox['state'] != tk.DISABLED:
+            thinking_level_val = self.thinking_level_combobox.get()
+
         # 설정 딕셔너리 구성
         config_data: Dict[str, Any] = {
             # API 설정
@@ -994,7 +1083,8 @@ class SettingsTab(BaseTab):
             # 생성 파라미터
             "temperature": self.temperature_scale.get() if self.temperature_scale else 0.7,
             "top_p": self.top_p_scale.get() if self.top_p_scale else 0.9,
-            "thinking_budget": thinking_budget_ui_val,
+            "thinking_budget": thinking_budget_val, # [수정] 위에서 추출한 값 사용
+            "thinking_level": thinking_level_val,   # [추가]
             
             # 파일 및 처리 설정
             "chunk_size": int(self.chunk_size_entry.get() or "6000") if self.chunk_size_entry else 6000,
@@ -1100,6 +1190,11 @@ class SettingsTab(BaseTab):
                 if thinking_budget_val is not None:
                     self.thinking_budget_entry.insert(0, str(thinking_budget_val))
 
+            # Thinking Level
+            if self.thinking_level_combobox:
+                val = config.get("thinking_level", "high")
+                self.thinking_level_combobox.set(val)
+
             # 청크 크기
             if self.chunk_size_entry:
                 chunk_size_val = config.get("chunk_size", 6000)
@@ -1167,13 +1262,23 @@ class SettingsTab(BaseTab):
                 self.min_chunk_size_entry.delete(0, tk.END)
                 self.min_chunk_size_entry.insert(0, str(min_chunk_size_val))
             
+            # [중요] 모든 UI 설정 로드 후, 모델에 따라 Thinking 파라미터 UI 상태 갱신
+            
+            self._on_model_changed()
+            
+
+            
             self.log_message("UI에 설정 로드 완료.", "DEBUG")
             
+            
+            
         except Exception as e:
+            
             messagebox.showerror("오류", f"설정 UI 반영 중 예상치 못한 오류: {e}")
+            
             self.log_message(f"설정 UI 반영 중 오류: {e}", "ERROR", exc_info=True)
-
-    # ========== 유틸리티 메서드 ==========
+            
+        # ========== 유틸리티 메서드 ==========
     
     def get_input_files(self) -> List[str]:
         """

@@ -531,11 +531,40 @@ class GeminiClient:
                          del final_generation_config_params['system_instruction']
                     
                     # thinking_budget이 제공되면 thinking_config를 설정합니다.
+                    # [수정 시작] 모델 버전에 따른 Thinking Config 스마트 설정 로직 적용 (thinking_parameter.md 가이드 반영)
+                    thinking_config = None
+                    
+                    # 1. generate_text 인자로 thinking_budget이 명시적으로 제공된 경우 (주로 Gemini 2.5용)
                     if thinking_budget is not None:
-                        final_generation_config_params['thinking_config'] = genai_types.ThinkingConfig(
+                         thinking_config = genai_types.ThinkingConfig(
                             thinking_budget=thinking_budget
                         )
-                        logger.info(f"Thinking budget 설정됨: {thinking_budget}")
+                         logger.info(f"Thinking budget 설정됨 (인자): {thinking_budget}")
+                    else:
+                        # 2. 명시적 thinking_budget 인자가 없을 때, 모델명 기반 자동 설정 또는 generation_config_dict에서 추출
+                        check_name = effective_model_name.lower()
+                        
+                        if "gemini-3" in check_name:
+                            # generation_config_dict에서 thinking_level 추출 시도
+                            level = "high" # 기본값
+                            if "thinking_level" in final_generation_config_params:
+                                level = final_generation_config_params.pop("thinking_level") # 사용 후 제거
+                            
+                            thinking_config = genai_types.ThinkingConfig(
+                                thinking_level=level
+                            )
+                            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용 (generation_config_dict에서 추출).")
+                            
+                        elif "gemini-2.5" in check_name:
+                            # Gemini 2.5인데 예산 설정 인자가 없으면 Dynamic(-1) 적용
+                            thinking_config = genai_types.ThinkingConfig(
+                                thinking_budget=-1
+                            )
+                            logger.info("Gemini 2.5 감지: Thinking Budget=-1(Dynamic) 자동 적용 (인자 부재).")
+
+                    if thinking_config:
+                        final_generation_config_params['thinking_config'] = thinking_config
+                    # [수정 끝]
 
 
                     forced_safety_settings = [
