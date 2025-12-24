@@ -348,7 +348,7 @@ class SimpleGlossaryService:
         final_entries_map: Dict[Tuple[str, str], GlossaryEntryDTO] = {} # 키에서 source_language 제거
 
         for entry in all_extracted_entries:
-            key_tuple = (entry.keyword.lower(), entry.target_language.lower()) # 키에서 source_language 제거
+            key_tuple = (entry.keyword.lower(), entry.target_language.lower().split('-')[0]) # 키에서 source_language 제거
             if key_tuple not in final_entries_map:
                 # 첫 번째 등장: 이 번역을 최종 번역으로 사용
                 final_entries_map[key_tuple] = entry
