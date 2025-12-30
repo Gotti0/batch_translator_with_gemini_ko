@@ -868,10 +868,6 @@ class AppService:
                         else:
                             logger.warning("청크 인덱스 마커 제거에 실패했습니다.")
                             
-                        # 5. 후처리된 내용도 백업 파일에 업데이트 (청크 인덱스 포함)
-                        save_merged_chunks_to_file(chunked_backup_path, processed_chunks)
-                        logger.info(f"후처리된 청크 백업 파일 업데이트 완료: {chunked_backup_path}")
-                        
                     except Exception as post_proc_e:
                         logger.error(f"후처리 중 오류 발생: {post_proc_e}. 후처리를 건너뜁니다.", exc_info=True)
                         # 후처리 실패 시에도 청크 백업 파일은 보장
