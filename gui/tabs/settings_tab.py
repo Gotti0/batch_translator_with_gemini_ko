@@ -18,7 +18,8 @@ import logging
 from gui.tabs.base_tab import BaseTab
 from gui.components.tooltip import Tooltip
 from gui.components.scrollable_frame import ScrollableFrame
-from gui.components.prefill_history_editor import PrefillHistoryEditor
+# from gui.components.prefill_history_editor import PrefillHistoryEditor  # Removed, using dialog instead
+from gui.dialogs.prefill_history_editor_dialog import PrefillHistoryEditorDialog
 
 
 class SettingsTab(BaseTab):
@@ -112,7 +113,8 @@ class SettingsTab(BaseTab):
         self.enable_prefill_var: Optional[tk.BooleanVar] = None
         self.enable_prefill_check = None
         self.prefill_system_instruction_text: Optional[scrolledtext.ScrolledText] = None
-        self.history_editor: Optional[PrefillHistoryEditor] = None
+        # self.history_editor: Optional[PrefillHistoryEditor] = None # Removed
+        self.edit_history_button: Optional[ttk.Button] = None # Added button
         
         # === 콘텐츠 안전 재시도 설정 위젯 ===
         self.use_content_safety_retry_var: Optional[tk.BooleanVar] = None
@@ -416,14 +418,16 @@ class SettingsTab(BaseTab):
         prefill_cached_history_label.pack(anchor="w", padx=5, pady=(5, 0))
         Tooltip(prefill_cached_history_label, "미리 정의된 대화 기록을 편집합니다.")
 
-        # PrefillHistoryEditor 인스턴스 생성
-        self.history_editor = PrefillHistoryEditor(
+        # PrefillHistoryEditor 인스턴스 대신 다이얼로그 호출 버튼 생성
+        self.edit_history_button = ttk.Button(
             prefill_frame,
-            history_data=[], # 초기 데이터는 load_config에서 설정
-            on_change=self._on_prefill_history_changed,
-            height=200 # 적절한 높이 설정
+            text="프리필 히스토리 편집 (새 창)",
+            command=self._open_prefill_history_dialog,
+            bootstyle="info-outline"
         )
-        self.history_editor.pack(fill="both", expand=True, padx=5, pady=5)
+        self.edit_history_button.pack(fill="x", padx=5, pady=5)
+        
+        # self.history_editor = PrefillHistoryEditor( ... ) # Removed
 
     
     def _create_content_safety_section(self, parent: ttk.Frame) -> None:
@@ -688,13 +692,34 @@ class SettingsTab(BaseTab):
 
     def _on_prefill_history_changed(self, new_history_data: List[Dict[str, Any]]) -> None:
         """
-        PrefillHistoryEditor에서 변경사항이 발생했을 때 호출되는 콜백.
+        PrefillHistoryEditorDialog에서 변경사항이 저장되었을 때 호출되는 콜백.
         앱 서비스의 설정 객체에 즉시 반영합니다.
         """
         if self.app_service:
             # 설정 객체에 직접 반영
             self.app_service.config["prefill_cached_history"] = new_history_data
-            self.log_message("Prefill 히스토리 변경 감지 및 설정에 반영.", "DEBUG")
+            self.log_message(f"Prefill 히스토리 변경됨 (총 {len(new_history_data)} 턴).", "INFO")
+
+            # 버튼 텍스트 업데이트 등으로 피드백 제공 가능
+            if self.edit_history_button:
+                 self.edit_history_button.configure(text=f"프리필 히스토리 편집 (현재 {len(new_history_data)} 턴)")
+
+    def _open_prefill_history_dialog(self) -> None:
+        """프리필 히스토리 편집 다이얼로그 열기"""
+        if not self.app_service:
+             messagebox.showerror("오류", "AppService가 초기화되지 않았습니다.")
+             return
+
+        # 현재 설정에서 데이터 가져오기
+        current_history = self.app_service.config.get("prefill_cached_history", [])
+        
+        # 다이얼로그 생성
+        PrefillHistoryEditorDialog(
+            self.parent,
+            history_data=current_history,
+            on_save=self._on_prefill_history_changed,
+            title="프리필 히스토리 편집"
+        )
 
     def _on_model_changed(self, event=None) -> None:
         """모델명 변경 시 호출되어 Thinking 파라미터 UI 상태를 제어합니다."""
@@ -1242,10 +1267,10 @@ class SettingsTab(BaseTab):
                 self.prefill_system_instruction_text.delete('1.0', tk.END)
                 self.prefill_system_instruction_text.insert('1.0', prefill_system_instruction_val)
 
-            if self.history_editor:
+            if self.edit_history_button:
                 prefill_cached_history_obj = config.get("prefill_cached_history", [])
-                self.history_editor.history_data = prefill_cached_history_obj
-                self.history_editor._render_items() # UI 갱신
+                count = len(prefill_cached_history_obj)
+                self.edit_history_button.configure(text=f"프리필 히스토리 편집 (현재 {count} 턴)")
 
             # 콘텐츠 안전 재시도 설정
             if self.use_content_safety_retry_var:

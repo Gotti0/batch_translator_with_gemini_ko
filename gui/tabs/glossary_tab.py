@@ -17,7 +17,8 @@ from typing import Optional, Dict, Any, List, Callable
 from gui.tabs.base_tab import BaseTab
 from gui.components.tooltip import Tooltip
 from gui.components.scrollable_frame import ScrollableFrame
-from gui.components.prefill_history_editor import PrefillHistoryEditor  # 컴포넌트 임포트
+# from gui.components.prefill_history_editor import PrefillHistoryEditor  # Removed
+from gui.dialogs.prefill_history_editor_dialog import PrefillHistoryEditorDialog
 from gui.dialogs.glossary_editor import GlossaryEditorWindow
 
 # 예외 클래스 임포트
@@ -531,53 +532,31 @@ class GlossaryTab(BaseTab):
             self._on_glossary_setting_changed() # 설정 변경 알림
 
     def _open_prefill_editor(self) -> None:
-        """기존 PrefillHistoryEditor 재사용하여 용어집 프리필 편집"""
+        """PrefillHistoryEditorDialog를 사용하여 용어집 프리필 편집"""
         if not self.app_service or not self.parent:
             return
 
-        editor_window = tk.Toplevel(self.parent)
-        editor_window.title("용어집 추출 프리필 설정")
-        editor_window.transient(self.parent)
-        editor_window.grab_set()
+        # 1. Load Data
+        current_sys_inst = self.app_service.config.get("glossary_prefill_system_instruction", "")
+        current_history = self.app_service.config.get("glossary_prefill_cached_history", [])
 
-        # 1. System Instruction Editor
-        system_frame = ttk.Labelframe(editor_window, text="시스템 지침", padding=10)
-        system_frame.pack(padx=10, pady=(10, 5), fill="x")
-
-        system_instruction_text = scrolledtext.ScrolledText(system_frame, wrap=tk.WORD, height=8, width=80)
-        system_instruction_text.pack(fill="both", expand=True)
-        system_instruction_val = self.app_service.config.get("glossary_prefill_system_instruction", "")
-        system_instruction_text.insert('1.0', system_instruction_val)
-        
-        # 2. History Editor
-        history_frame = ttk.Labelframe(editor_window, text="프리필 히스토리", padding=10)
-        history_frame.pack(padx=10, pady=5, fill="both", expand=True)
-
-        history_data = self.app_service.config.get("glossary_prefill_cached_history", [])
-
-        def on_editor_change(new_history_data):
+        # 2. Define Callback
+        def on_save(new_history_data: List[Dict[str, Any]], new_sys_inst: str):
             self.app_service.config["glossary_prefill_cached_history"] = new_history_data
+            self.app_service.config["glossary_prefill_system_instruction"] = new_sys_inst
             self._on_glossary_setting_changed()
+            
+            # Optional: Log the change
+            self.logger.info(f"용어집 프리필 설정 업데이트됨: 턴 {len(new_history_data)}개, 시스템 지침 길이 {len(new_sys_inst)}")
 
-        history_editor = PrefillHistoryEditor(
-            history_frame,
-            history_data=history_data,
-            on_change=on_editor_change,
-            height=200
+        # 3. Open Dialog
+        PrefillHistoryEditorDialog(
+            self.parent,
+            history_data=current_history,
+            on_save=on_save,
+            title="용어집 추출 프리필 설정",
+            system_instruction=current_sys_inst
         )
-        history_editor.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # 3. Save Button
-        def save_and_close():
-            new_system_instruction = system_instruction_text.get('1.0', tk.END).strip()
-            self.app_service.config["glossary_prefill_system_instruction"] = new_system_instruction
-            self._on_glossary_setting_changed()
-            editor_window.destroy()
-
-        button_frame = ttk.Frame(editor_window)
-        button_frame.pack(padx=10, pady=(5, 10))
-        save_button = ttk.Button(button_frame, text="저장하고 닫기", command=save_and_close)
-        save_button.pack()
 
     # -------------------------------
 
