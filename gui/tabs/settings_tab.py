@@ -1061,8 +1061,8 @@ class SettingsTab(BaseTab):
 
         # 프리필 캐시된 히스토리 JSON 파싱
         prefill_cached_history_obj = []
-        if self.history_editor: # PrefillHistoryEditor에서 직접 데이터 가져오기
-            prefill_cached_history_obj = self.history_editor.history_data
+        if self.app_service:
+            prefill_cached_history_obj = self.app_service.config.get("prefill_cached_history", [])
 
         # Thinking Budget 유효성 검사
         thinking_budget_ui_val: Optional[int] = None
