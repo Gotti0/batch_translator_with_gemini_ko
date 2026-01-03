@@ -824,12 +824,24 @@ class SimpleGlossaryService:
                 """RPM 제한을 고려한 추출 함수"""
                 nonlocal last_request_time
                 
+                # 📍 취소 확인 1: API 호출 전
+                if stop_check and stop_check():
+                    raise asyncio.CancelledError("용어집 추출이 취소되었습니다 (작업 시작 전)")
+                
                 # 세마포어로 동시 실행 제한
                 async with semaphore:
+                    # 📍 취소 확인 2: 세마포어 획득 후
+                    if stop_check and stop_check():
+                        raise asyncio.CancelledError("용어집 추출이 취소되었습니다 (세마포어 획득 후)")
+                    
                     # RPM 속도 제한 적용
                     elapsed = asyncio.get_event_loop().time() - last_request_time
                     if elapsed < request_interval:
                         await asyncio.sleep(request_interval - elapsed)
+                    
+                    # 📍 취소 확인 3: RPM 대기 후
+                    if stop_check and stop_check():
+                        raise asyncio.CancelledError("용어집 추출이 취소되었습니다 (RPM 대기 후)")
                     
                     last_request_time = asyncio.get_event_loop().time()
                     
@@ -838,22 +850,19 @@ class SimpleGlossaryService:
                         user_override_glossary_extraction_prompt
                     )
 
-            # 비동기 작업 목록 생성
+            # 작업을 순차적으로 생성하고 처리 (동시성은 semaphore로 제어)
             tasks = []
-            for segment in sample_segments:
+            for segment_idx, segment in enumerate(sample_segments):
+                # 📍 취소 확인: 작업 생성 전
+                if stop_check and stop_check():
+                    logger.warning(f"사용자 요청으로 용어집 추출을 중단합니다. {segment_idx}/{num_sample_segments}개 세그먼트 처리 중 중단.")
+                    break
+                
                 task = asyncio.create_task(rate_limited_extract(segment))
                 tasks.append((task, segment))
-
-            # 작업을 순차적으로 완료 처리
+            
+            # 생성된 작업들을 완료 처리
             for task, segment in tasks:
-                if stop_check and stop_check():
-                    logger.warning("사용자 요청으로 용어집 추출을 중단합니다. 현재까지의 결과로 저장합니다.")
-                    # 나머지 작업 취소
-                    for remaining_task, _ in tasks:
-                        if not remaining_task.done():
-                            remaining_task.cancel()
-                    break
-
                 try:
                     extracted_entries_for_segment = await asyncio.wait_for(task, timeout=300)
                     if extracted_entries_for_segment:
@@ -862,14 +871,18 @@ class SimpleGlossaryService:
                     logger.error(f"용어집 추출 API 요청 시간 초과 (>300초). 해당 세그먼트를 건너뜁니다: {segment[:50]}...")
                 except asyncio.CancelledError:
                     logger.info("용어집 추출이 취소되었습니다.")
-                    raise
+                    # 나머지 진행 중인 작업들도 취소
+                    for remaining_task, _ in tasks:
+                        if not remaining_task.done():
+                            remaining_task.cancel()
+                    raise  # 상위로 전파하여 즉시 종료
                 except Exception as exc:
                     logger.error(f"표본 세그먼트 처리 중 예외 발생 (세그먼트: {segment[:50]}...): {exc}")
                 finally:
                     processed_segments_count += 1
                     if progress_callback:
-                        status_msg = f"표본 세그먼트 {processed_segments_count}/{num_sample_segments} 처리 완료"
-                        if processed_segments_count == num_sample_segments:
+                        status_msg = f"표본 세그먼트 {processed_segments_count}/{len(tasks)} 처리 완료"
+                        if processed_segments_count == len(tasks):
                             status_msg = "모든 표본 세그먼트 처리 완료, 충돌 해결 및 저장 중..."
                         progress_callback(GlossaryExtractionProgressDTO(
                             total_segments=effective_total_segments_for_progress,

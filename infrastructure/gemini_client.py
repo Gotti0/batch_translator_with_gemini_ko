@@ -1012,6 +1012,19 @@ class GeminiClient:
             current_retry_for_this_key = 0
             current_backoff = initial_backoff
             
+            if self.auth_mode == "API_KEY":
+                key_id = self._get_api_key_identifier(self.current_api_key)
+                logger.info(f"API {key_id}로 작업 시도.")
+            elif self.auth_mode == "VERTEX_AI":
+                logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")
+            
+            if not self.client:
+                logger.error("generate_text_async: self.client가 유효하지 않습니다.")
+                if self.auth_mode == "API_KEY":
+                    break
+                else:
+                    raise GeminiApiException("클라이언트가 유효하지 않으며 복구할 수 없습니다 (Vertex).")
+            
             while current_retry_for_this_key <= max_retries:
                 try:
                     # RPM 속도 제한 적용 (비동기 버전)
@@ -1025,6 +1038,8 @@ class GeminiClient:
                     if sleep_time > 0:
                         await asyncio.sleep(sleep_time)
                     
+                    logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
+                    
                     final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
                     if 'http_options' not in final_generation_config_params:
                         final_generation_config_params['http_options'] = self.http_options
@@ -1032,17 +1047,24 @@ class GeminiClient:
                     if system_instruction_text and system_instruction_text.strip():
                         final_generation_config_params['system_instruction'] = system_instruction_text
                     
+                    # 항상 OFF으로 안전 설정 강제 적용
+                    if safety_settings_list_of_dicts:
+                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
+                    
                     # Thinking config
                     thinking_config = None
                     if thinking_budget is not None:
                         thinking_config = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+                        logger.info(f"Thinking budget 설정됨 (인자): {thinking_budget}")
                     else:
                         check_name = effective_model_name.lower()
                         if "gemini-3" in check_name:
                             level = final_generation_config_params.pop("thinking_level", "high")
                             thinking_config = genai_types.ThinkingConfig(thinking_level=level)
+                            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용 (generation_config_dict에서 추출).")
                         elif "gemini-2.5" in check_name:
                             thinking_config = genai_types.ThinkingConfig(thinking_budget=-1)
+                            logger.info("Gemini 2.5 감지: Thinking Budget=-1(Dynamic) 자동 적용 (인자 부재).")
                     if thinking_config:
                         final_generation_config_params['thinking_config'] = thinking_config
                     
