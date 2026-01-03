@@ -451,17 +451,14 @@ class TranslationService:
 
         logger.info(f"📊 청크 분할 시도 #{current_attempt} (깊이: {current_attempt-1})")
         logger.info(f"   📏 원본 크기: {len(text_chunk)} 글자")
-        logger.info(f"   🎯 목표 크기: {len(text_chunk) // 2} 글자")
-        logger.info(f"   📝 내용 미리보기: {text_chunk[:100].replace(chr(10), ' ')}...")
+        logger.info(f"   🎯 목표: 정확히 2개 청크로 분할 (이진 분할)")
 
         
-        # 1단계: 크기 기반 분할
-        sub_chunks = self.chunk_service.split_chunk_recursively(
+        # Strict 이진 분할 (정확히 2개 청크)
+        sub_chunks = self.chunk_service.split_chunk_into_two_halves(
             text_chunk,
             target_size=len(text_chunk) // 2,
-            min_chunk_size=min_chunk_size,
-            max_split_depth=1,  # 1단계만 분할
-            current_depth=0
+            min_chunk_ratio=0.3  # 마지막 청크가 30% 미만이면 병합
         )
         
         # 분할이 안된 경우 문장 기반 분할 시도
@@ -484,6 +481,12 @@ class TranslationService:
         logger.info(f"🔄 분할 완료: {total_sub_chunks}개 서브 청크 생성")
         
         for i, sub_chunk in enumerate(sub_chunks):
+            # 빈 청크 스킵 (공백만 있는 경우 포함)
+            if not sub_chunk.strip():
+                logger.warning(f"   ⚠️ 서브 청크 {i+1}/{total_sub_chunks} 빈 청크 감지. 스킵.")
+                translated_parts.append("")  # 빈 문자열 유지
+                continue
+            
             sub_chunk_info = f"서브 청크 {i+1}/{total_sub_chunks}"
             sub_chunk_size = len(sub_chunk.strip())
             sub_chunk_preview = sub_chunk.strip()[:50].replace('\n', ' ') + '...'
@@ -1011,12 +1014,15 @@ if __name__ == '__main__':
             logger.warning(f"최소 청크 크기에 도달했지만 여전히 오류 발생: {text_chunk[:50]}...")
             return f"[번역 오류로 인한 실패: {text_chunk[:30]}...]"
 
-        sub_chunks = self.chunk_service.split_chunk_recursively(
+        logger.info(f"📊 청크 분할 시도 #{current_attempt} (깊이: {current_attempt-1})")
+        logger.info(f"   📏 원본 크기: {len(text_chunk)} 글자")
+        logger.info(f"   🎯 목표: 정확히 2개 청크로 분할 (이진 분할)")
+
+        # Strict 이진 분할 (정확히 2개 청크)
+        sub_chunks = self.chunk_service.split_chunk_into_two_halves(
             text_chunk,
             target_size=len(text_chunk) // 2,
-            min_chunk_size=min_chunk_size,
-            max_split_depth=1,
-            current_depth=0
+            min_chunk_ratio=0.3  # 마지막 청크가 30% 미만이면 병합
         )
         
         if len(sub_chunks) <= 1:
@@ -1031,6 +1037,12 @@ if __name__ == '__main__':
         translated_parts = []
         
         for i, sub_chunk in enumerate(sub_chunks):
+            # 빈 청크 스킵 (공백만 있는 경우 포함)
+            if not sub_chunk.strip():
+                logger.warning(f"   ⚠️ 서브 청크 {i+1}/{len(sub_chunks)} 빈 청크 감지. 스킵.")
+                translated_parts.append("")  # 빈 문자열 유지
+                continue
+            
             try:
                 if self.stop_check_callback and self.stop_check_callback():
                     logger.info(f"중단 요청 감지됨. 서브 청크 {i+1}/{len(sub_chunks)} 번역 중단.")

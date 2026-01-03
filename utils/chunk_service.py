@@ -138,6 +138,76 @@ class ChunkService:
         logger.info(f"청크가 {len(sub_chunks)}개로 분할되었습니다.")
         return sub_chunks
 
+    def split_chunk_into_two_halves(
+        self,
+        chunk_text: str,
+        target_size: Optional[int] = None,
+        min_chunk_ratio: float = 0.3
+    ) -> List[str]:
+        """
+        텍스트를 정확히 2개의 청크로 분할합니다 (strict 이진 분할).
+        마지막 청크가 너무 작으면 이전 청크와 병합하여 2개를 유지합니다.
+        
+        Args:
+            chunk_text: 분할할 텍스트
+            target_size: 목표 청크 크기 (None이면 현재 크기의 절반)
+            min_chunk_ratio: 마지막 청크의 최소 비율 (기본 30%)
+                           이보다 작으면 이전 청크와 병합
+        
+        Returns:
+            정확히 2개의 청크 리스트 (분할 불가능하면 1개)
+        """
+        text_length = len(chunk_text)
+        
+        # 목표 크기 설정
+        if target_size is None:
+            target_size = text_length // 2
+        
+        # 최소 청크 크기 계산
+        min_chunk_size = int(target_size * min_chunk_ratio)
+        
+        logger.info(f"이진 분할 시도: 전체 {text_length}자 → 목표 {target_size}자 (최소 {min_chunk_size}자)")
+        
+        # 기존 split_text_into_chunks로 분할 시도
+        initial_chunks = self.split_text_into_chunks(chunk_text, target_size)
+        
+        # 분할 안됨
+        if len(initial_chunks) <= 1:
+            logger.warning("이진 분할 실패: 청크를 나눌 수 없음")
+            return initial_chunks
+        
+        # 정확히 2개면 OK
+        if len(initial_chunks) == 2:
+            logger.info(f"✓ 이진 분할 성공: 2개 청크 ({len(initial_chunks[0])}자, {len(initial_chunks[1])}자)")
+            return initial_chunks
+        
+        # 3개 이상: 마지막 청크가 작으면 병합
+        if len(initial_chunks) >= 3:
+            last_chunk_size = len(initial_chunks[-1])
+            
+            # 마지막 청크가 충분히 큰 경우: 앞의 청크들을 병합
+            if last_chunk_size >= min_chunk_size:
+                first_half = "".join(initial_chunks[:-1])
+                second_half = initial_chunks[-1]
+                logger.info(f"✓ 이진 분할 조정: {len(initial_chunks)}개 → 2개 (앞 병합: {len(first_half)}자, 마지막: {len(second_half)}자)")
+                return [first_half, second_half]
+            
+            # 마지막 청크가 작은 경우: 마지막 2개를 병합
+            else:
+                if len(initial_chunks) == 2:
+                    # 이미 2개인데 둘째가 작으면 그냥 반환 (분할 의미 없음)
+                    logger.warning(f"⚠ 둘째 청크가 작음 ({last_chunk_size}자 < {min_chunk_size}자). 그대로 반환")
+                    return initial_chunks
+                else:
+                    # 3개 이상: 마지막 2개 병합
+                    first_half = "".join(initial_chunks[:-2])
+                    second_half = "".join(initial_chunks[-2:])
+                    logger.info(f"✓ 이진 분할 조정: {len(initial_chunks)}개 → 2개 (마지막 2개 병합: {len(first_half)}자, {len(second_half)}자)")
+                    return [first_half, second_half]
+        
+        # 안전 장치
+        return initial_chunks
+
     def split_chunk_by_sentences(self, chunk_text: str, max_sentences_per_chunk: int = 2) -> List[str]:
         """
         문장 단위로 청크를 분할합니다.
