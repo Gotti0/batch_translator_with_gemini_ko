@@ -3,6 +3,7 @@ import time
 import random
 import re
 import csv
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union, Callable
 import os
@@ -576,6 +577,121 @@ class TranslationService:
             callback: 중단 요청 여부를 반환하는 콜백 함수
         """
         self.stop_check_callback = callback
+
+    # ============================================================================
+    # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
+    # ============================================================================
+
+    async def translate_chunk_async(
+        self,
+        chunk_text: str,
+        stream: bool = False,
+        timeout: Optional[float] = None
+    ) -> str:
+        """
+        비동기 청크 번역 메서드 (translate_chunk의 비동기 버전)
+        
+        Args:
+            chunk_text: 번역할 텍스트
+            stream: 스트리밍 여부
+            timeout: 타임아웃 시간(초)
+            
+        Returns:
+            번역된 텍스트
+            
+        Raises:
+            asyncio.TimeoutError: 타임아웃 초과
+            BtgTranslationException: 번역 실패
+        """
+        if not chunk_text.strip():
+            logger.debug("translate_chunk_async: 입력 텍스트가 비어 있어 빈 문자열 반환.")
+            return ""
+        
+        # 소설 본문 미리보기 로깅
+        text_preview = chunk_text[:100].replace('\n', ' ')
+        logger.info(f"비동기 번역 요청: \"{text_preview}{'...' if len(chunk_text) > 100 else ''}\"")
+        
+        try:
+            # translate_text 메서드를 비동기로 실행
+            loop = asyncio.get_event_loop()
+            
+            def _sync_translate():
+                return self.translate_text(chunk_text, stream=stream)
+            
+            if timeout:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _sync_translate),
+                    timeout=timeout
+                )
+            else:
+                result = await loop.run_in_executor(None, _sync_translate)
+            
+            return result
+        except asyncio.TimeoutError:
+            logger.error(f"비동기 번역 타임아웃 ({timeout}초)")
+            raise
+        except asyncio.CancelledError:
+            logger.info("비동기 번역이 취소됨")
+            raise
+        except Exception as e:
+            logger.error(f"비동기 번역 중 오류: {type(e).__name__} - {e}", exc_info=True)
+            if isinstance(e, BtgTranslationException):
+                raise
+            raise BtgTranslationException(f"비동기 번역 중 오류: {e}", original_exception=e) from e
+
+    async def translate_text_with_content_safety_retry_async(
+        self,
+        chunk_text: str,
+        max_split_attempts: int = 3,
+        min_chunk_size: int = 100,
+        timeout: Optional[float] = None
+    ) -> str:
+        """
+        비동기 콘텐츠 안전성 재시도와 함께 청크 번역
+        
+        Args:
+            chunk_text: 번역할 텍스트
+            max_split_attempts: 최대 분할 시도 횟수
+            min_chunk_size: 최소 청크 크기
+            timeout: 타임아웃 시간(초)
+            
+        Returns:
+            번역된 텍스트
+            
+        Raises:
+            asyncio.TimeoutError: 타임아웃 초과
+            BtgTranslationException: 번역 실패
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            
+            def _sync_translate_with_retry():
+                return self.translate_text_with_content_safety_retry(
+                    chunk_text,
+                    max_split_attempts,
+                    min_chunk_size
+                )
+            
+            if timeout:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _sync_translate_with_retry),
+                    timeout=timeout
+                )
+            else:
+                result = await loop.run_in_executor(None, _sync_translate_with_retry)
+            
+            return result
+        except asyncio.TimeoutError:
+            logger.error(f"비동기 번역(재시도) 타임아웃 ({timeout}초)")
+            raise
+        except asyncio.CancelledError:
+            logger.info("비동기 번역(재시도)이 취소됨")
+            raise
+        except Exception as e:
+            logger.error(f"비동기 번역(재시도) 중 오류: {type(e).__name__} - {e}", exc_info=True)
+            if isinstance(e, BtgTranslationException):
+                raise
+            raise BtgTranslationException(f"비동기 번역(재시도) 중 오류: {e}", original_exception=e) from e
 
 if __name__ == '__main__':
     # MockGeminiClient에서 types를 사용하므로, 이 블록 내에서 임포트합니다.

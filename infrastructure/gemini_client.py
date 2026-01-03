@@ -5,6 +5,7 @@ import time
 import random
 import re
 import json
+import asyncio
 from pathlib import Path
 import threading # Added for thread safety
 from typing import Dict, Any, Iterable, Optional, Union, List
@@ -907,6 +908,102 @@ class GeminiClient:
         
         error_str = str(error_obj).lower()
         return any(re.search(pattern.lower(), error_str) for pattern in quota_patterns)
+
+    # ============================================================================
+    # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
+    # ============================================================================
+
+    async def generate_text_async(
+        self,
+        prompt: Union[str, List[genai_types.Content]],
+        model_name: str,
+        generation_config_dict: Optional[Dict[str, Any]] = None,
+        safety_settings_list_of_dicts: Optional[List[Dict[str, Any]]] = None,
+        thinking_budget: Optional[int] = None,
+        system_instruction_text: Optional[str] = None,
+        max_retries: int = 5,
+        initial_backoff: float = 2.0,
+        max_backoff: float = 60.0,
+        stream: bool = False,
+        timeout: Optional[float] = None
+    ) -> Optional[Union[str, Any]]:
+        """
+        비동기 텍스트 생성 메서드 (generate_text의 비동기 버전)
+        
+        Args:
+            prompt: 프롬프트 (문자열 또는 Content 리스트)
+            model_name: 모델명
+            generation_config_dict: 생성 설정
+            safety_settings_list_of_dicts: 안전성 설정 (무시됨)
+            thinking_budget: 사고 예산
+            system_instruction_text: 시스템 지시문
+            max_retries: 최대 재시도 횟수
+            initial_backoff: 초기 백오프 시간(초)
+            max_backoff: 최대 백오프 시간(초)
+            stream: 스트리밍 여부
+            timeout: 타임아웃 시간(초)
+            
+        Returns:
+            생성된 텍스트 또는 구조화된 출력
+            
+        Raises:
+            asyncio.CancelledError: 작업이 취소된 경우
+            asyncio.TimeoutError: 타임아웃 초과
+            GeminiApiException: API 관련 오류
+        """
+        try:
+            if timeout:
+                return await asyncio.wait_for(
+                    self._generate_text_async_impl(
+                        prompt, model_name, generation_config_dict,
+                        safety_settings_list_of_dicts, thinking_budget,
+                        system_instruction_text, max_retries,
+                        initial_backoff, max_backoff, stream
+                    ),
+                    timeout=timeout
+                )
+            else:
+                return await self._generate_text_async_impl(
+                    prompt, model_name, generation_config_dict,
+                    safety_settings_list_of_dicts, thinking_budget,
+                    system_instruction_text, max_retries,
+                    initial_backoff, max_backoff, stream
+                )
+        except asyncio.TimeoutError:
+            logger.error(f"API 호출 타임아웃 ({timeout}초): {model_name}")
+            raise
+        except asyncio.CancelledError:
+            logger.info(f"API 호출이 취소됨: {model_name}")
+            raise
+
+    async def _generate_text_async_impl(
+        self,
+        prompt: Union[str, List[genai_types.Content]],
+        model_name: str,
+        generation_config_dict: Optional[Dict[str, Any]],
+        safety_settings_list_of_dicts: Optional[List[Dict[str, Any]]],
+        thinking_budget: Optional[int],
+        system_instruction_text: Optional[str],
+        max_retries: int,
+        initial_backoff: float,
+        max_backoff: float,
+        stream: bool
+    ) -> Optional[Union[str, Any]]:
+        """generate_text의 실제 비동기 구현"""
+        # 동기 generate_text 메서드를 스레드 풀에서 실행
+        # 이는 google-genai SDK가 아직 완전한 비동기 지원이 없을 수 있기 때문
+        loop = asyncio.get_event_loop()
+        
+        def _sync_generate_text():
+            return self.generate_text(
+                prompt, model_name, generation_config_dict,
+                safety_settings_list_of_dicts, thinking_budget,
+                system_instruction_text, max_retries,
+                initial_backoff, max_backoff, stream
+            )
+        
+        return await loop.run_in_executor(None, _sync_generate_text)
+
 
 if __name__ == '__main__':
     # ... (테스트 코드는 이전과 유사하게 유지하되, Client 및 generate_content 호출 방식 변경에 맞춰 수정 필요) ...
