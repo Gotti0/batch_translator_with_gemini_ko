@@ -1,8 +1,18 @@
+# 핵심 의존성
 tqdm>=4.65.0
 python-dotenv>=0.21.0
-google-genai
-ttkbootstrap>=1.10.1
+google-genai>=1.0.0
 concurrent-log-handler>=0.9.25
 google-api-core
+
+# GUI 프레임워크 (신규 - PySide6 마이그레이션)
+PySide6>=6.6.0
+qasync>=0.24.0
+
+# 비동기 I/O (선택)
+aiofiles>=23.0.0
+
+# 레거시 (Phase 3까지 유지, 이후 제거)
+ttkbootstrap>=1.10.1
 customtkinter
 
