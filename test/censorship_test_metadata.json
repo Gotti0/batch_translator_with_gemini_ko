@@ -1,0 +1,9 @@
+{
+    "input_file": "C:\\Users\\Hyunwoo_Room\\Downloads\\Utility\\Neo_Batch_Translator\\test\\censorship_test.txt",
+    "total_chunks": 2,
+    "translated_chunks": {},
+    "config_hash": "bdc6b0b328babc6a0008c7a70414575b",
+    "creation_time": 1751012423.0942318,
+    "last_updated": 1751012425.6315634,
+    "status": "completed_with_errors"
+}

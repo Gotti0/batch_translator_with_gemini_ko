@@ -1,0 +1,24 @@
+{
+  "summaries": [],
+  "chunks": [],
+  "metadata": {
+    "total_translation_chunks": 0,
+    "source_language": "auto",
+    "target_language": "ko",
+    "translation_model": "gemini-2.0-flash"
+  },
+  "last_used_stats": {
+    "important_memory_used": 0,
+    "recent_memory_used": 0,
+    "similar_memory_used": 0,
+    "random_memory_used": 0
+  },
+  "created_at": "2025-07-14T11:22:10.135087",
+  "last_updated_at": "2025-07-14T11:22:10.135087",
+  "version": "1.0",
+  "_storage_info": {
+    "saved_at": "2025-07-14T11:22:11.706334",
+    "saved_by": "JsonTranslationMemoryStorage",
+    "format_version": "1.0"
+  }
+}

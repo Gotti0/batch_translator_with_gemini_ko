@@ -336,6 +336,80 @@ class AppService:
                 progress_callback(GlossaryExtractionProgressDTO(0,0,f"예상치 못한 오류: {e}",0)) # DTO Changed
             raise BtgServiceException(f"용어집 추출 중 오류: {e}", original_exception=e) from e # Message updated
 
+    async def extract_glossary_async(
+        self,
+        input_file_path: Union[str, Path],
+        progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None,
+        novel_language_code: Optional[str] = None,
+        seed_glossary_path: Optional[Union[str, Path]] = None,
+        user_override_glossary_extraction_prompt: Optional[str] = None,
+        stop_check: Optional[Callable[[], bool]] = None
+    ) -> Path:
+        """
+        용어집을 비동기적으로 추출합니다.
+        
+        Args:
+            input_file_path: 분석할 입력 파일 경로
+            progress_callback: 진행 상황 콜백
+            novel_language_code: 명시적 언어 코드
+            seed_glossary_path: 시드 용어집 경로
+            user_override_glossary_extraction_prompt: 사용자 정의 프롬프트
+            stop_check: 중지 확인 콜백
+            
+        Returns:
+            생성된 용어집 파일 경로
+            
+        Raises:
+            BtgServiceException: 서비스 초기화 안됨
+            BtgFileHandlerException: 파일 읽기 실패
+            asyncio.CancelledError: 작업 취소됨
+        """
+        if not self.glossary_service:
+            logger.error("용어집 추출 서비스 실패: 서비스가 초기화되지 않았습니다.")
+            raise BtgServiceException("용어집 추출 서비스가 초기화되지 않았습니다. 설정을 확인하세요.")
+        
+        logger.info(f"비동기 용어집 추출 서비스 시작: {input_file_path}, 시드 파일: {seed_glossary_path}")
+        try:
+            file_content = read_text_file(input_file_path)
+            if not file_content:
+                logger.warning(f"입력 파일이 비어있습니다: {input_file_path}")
+
+            lang_code_for_extraction = novel_language_code or self.config.get("novel_language")
+
+            prompt_to_use = user_override_glossary_extraction_prompt \
+                if user_override_glossary_extraction_prompt is not None \
+                else self.config.get("user_override_glossary_extraction_prompt")
+
+            result_path = await self.glossary_service.extract_and_save_glossary_async(
+                novel_text_content=file_content,
+                input_file_path_for_naming=input_file_path,
+                progress_callback=progress_callback,
+                seed_glossary_path=seed_glossary_path,
+                user_override_glossary_extraction_prompt=prompt_to_use,
+                stop_check=stop_check
+            )
+            logger.info(f"비동기 용어집 추출 완료. 결과 파일: {result_path}")
+        
+            return result_path
+        except asyncio.CancelledError:
+            logger.info("용어집 추출이 취소되었습니다.")
+            raise
+        except FileNotFoundError as e:
+            logger.error(f"용어집 추출을 위한 입력 파일을 찾을 수 없습니다: {input_file_path}")
+            if progress_callback:
+                progress_callback(GlossaryExtractionProgressDTO(0, 0, f"오류: 입력 파일 없음 - {e.filename}", 0))
+            raise BtgFileHandlerException(f"입력 파일 없음: {input_file_path}", original_exception=e) from e
+        except (BtgBusinessLogicException, BtgApiClientException) as e:
+            logger.error(f"용어집 추출 중 오류: {e}")
+            if progress_callback:
+                progress_callback(GlossaryExtractionProgressDTO(0, 0, f"오류: {e}", 0))
+            raise
+        except Exception as e: 
+            logger.error(f"용어집 추출 서비스 중 예상치 못한 오류: {e}", exc_info=True)
+            if progress_callback:
+                progress_callback(GlossaryExtractionProgressDTO(0, 0, f"예상치 못한 오류: {e}", 0))
+            raise BtgServiceException(f"용어집 추출 중 오류: {e}", original_exception=e) from e
+
 
     def _translate_and_save_chunk(self, chunk_index: int, chunk_text: str,
                             chunked_output_file: Path,

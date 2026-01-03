@@ -1,0 +1,4 @@
+##CHUNK_INDEX: 0##
+[API 오류로 번역 실패: 모든 API 키를 사용했으나 요청에 실패했습니다. API 키 설정을 확인하세요. (모든 API 키를 사용한 시도 후에도 텍스트 생성에 최종 실패했습니다.): GeminiAllApiKeysExhaustedException - 모든 API 키를 사용한 시도 후에도 텍스트 생성에 최종 실패했습니다.]
+##END_CHUNK##
+

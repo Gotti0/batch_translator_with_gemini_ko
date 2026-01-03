@@ -1,0 +1,8 @@
+##CHUNK_INDEX: 0##
+[알 수 없는 오류로 번역 실패: 'TranslationService' object has no attribute 'stop_check_callback']
+##END_CHUNK##
+
+##CHUNK_INDEX: 1##
+[알 수 없는 오류로 번역 실패: 'TranslationService' object has no attribute 'stop_check_callback']
+##END_CHUNK##
+

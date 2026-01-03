@@ -8,6 +8,7 @@ google-api-core
 # GUI 프레임워크 (신규 - PySide6 마이그레이션)
 PySide6>=6.6.0
 qasync>=0.24.0
+pyqtdarktheme==2.1.0
 
 # 비동기 I/O (선택)
 aiofiles>=23.0.0

@@ -1,0 +1,12 @@
+{
+    "api_keys": ["YOUR_API_KEY_HERE"],
+    "model_name": "gemini-1.5-flash-latest",
+    "prompts": "Translate the following text to Korean: {{slot}}",
+    "enable_dynamic_glossary_injection": true,
+    "glossary_json_path": "test_glossary.json",
+    "enable_translation_memory": true,
+    "translation_memory": {
+        "storage_path": "test_memory.json",
+        "max_chunks_per_summary": 2
+    }
+}

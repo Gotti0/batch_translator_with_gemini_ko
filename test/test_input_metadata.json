@@ -1,0 +1,9 @@
+{
+    "input_file": "test_input.txt",
+    "total_chunks": 1,
+    "translated_chunks": {},
+    "config_hash": "5fecac841df39ddbcc71bece84351506",
+    "creation_time": 1752459730.1400888,
+    "last_updated": 1752459731.7053342,
+    "status": "completed_with_errors"
+}

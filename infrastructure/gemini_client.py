@@ -989,20 +989,179 @@ class GeminiClient:
         max_backoff: float,
         stream: bool
     ) -> Optional[Union[str, Any]]:
-        """generate_text의 실제 비동기 구현"""
-        # 동기 generate_text 메서드를 스레드 풀에서 실행
-        # 이는 google-genai SDK가 아직 완전한 비동기 지원이 없을 수 있기 때문
-        loop = asyncio.get_event_loop()
+        """generate_text의 실제 비동기 구현 (client.aio 사용)"""
+        if not self.client:
+            raise GeminiApiException("Gemini 클라이언트가 초기화되지 않았습니다.")
+        if not model_name:
+            raise ValueError("모델 이름이 제공되지 않았습니다.")
         
-        def _sync_generate_text():
-            return self.generate_text(
-                prompt, model_name, generation_config_dict,
-                safety_settings_list_of_dicts, thinking_budget,
-                system_instruction_text, max_retries,
-                initial_backoff, max_backoff, stream
-            )
+        is_api_key_mode_for_norm = self.auth_mode == "API_KEY" and bool(self.current_api_key) and not os.environ.get("GOOGLE_API_KEY")
+        effective_model_name = self._normalize_model_name(model_name, for_api_key_mode=is_api_key_mode_for_norm)
         
-        return await loop.run_in_executor(None, _sync_generate_text)
+        if isinstance(prompt, str):
+            final_sdk_contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=prompt)])]
+        elif isinstance(prompt, list) and all(isinstance(item, genai_types.Content) for item in prompt):
+            final_sdk_contents = prompt
+        else:
+            raise ValueError("프롬프트는 문자열 또는 Content 객체의 리스트여야 합니다.")
+
+        total_keys = len(self.api_keys_list) if self.auth_mode == "API_KEY" and self.api_keys_list else 1
+        attempted_keys_count = 0
+
+        while attempted_keys_count < total_keys:
+            current_retry_for_this_key = 0
+            current_backoff = initial_backoff
+            
+            while current_retry_for_this_key <= max_retries:
+                try:
+                    await asyncio.sleep(self.delay_between_requests - (time.time() - self.last_request_timestamp) 
+                                       if (time.time() - self.last_request_timestamp) < self.delay_between_requests else 0)
+                    self.last_request_timestamp = time.time()
+                    
+                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
+                    if 'http_options' not in final_generation_config_params:
+                        final_generation_config_params['http_options'] = self.http_options
+                    
+                    if system_instruction_text and system_instruction_text.strip():
+                        final_generation_config_params['system_instruction'] = system_instruction_text
+                    
+                    # Thinking config
+                    thinking_config = None
+                    if thinking_budget is not None:
+                        thinking_config = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+                    else:
+                        check_name = effective_model_name.lower()
+                        if "gemini-3" in check_name:
+                            level = final_generation_config_params.pop("thinking_level", "high")
+                            thinking_config = genai_types.ThinkingConfig(thinking_level=level)
+                        elif "gemini-2.5" in check_name:
+                            thinking_config = genai_types.ThinkingConfig(thinking_budget=-1)
+                    if thinking_config:
+                        final_generation_config_params['thinking_config'] = thinking_config
+                    
+                    forced_safety_settings = [
+                        genai_types.SafetySetting(category=c, threshold=genai_types.HarmBlockThreshold.BLOCK_NONE)
+                        for c in [
+                            genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                        ]
+                    ]
+                    final_generation_config_params['safety_settings'] = forced_safety_settings
+                    
+                    sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
+                    
+                    text_content_from_api: Optional[str] = None
+                    if stream:
+                        response_stream = await self.client.aio.models.generate_content_stream(
+                            model=effective_model_name,
+                            contents=final_sdk_contents,
+                            config=sdk_generation_config
+                        )
+                        aggregated_parts = []
+                        async for chunk_response in response_stream:
+                            if hasattr(chunk_response, 'text') and chunk_response.text:
+                                aggregated_parts.append(chunk_response.text)
+                            if self._is_content_safety_error(response=chunk_response):
+                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림 응답 차단")
+                        text_content_from_api = "".join(aggregated_parts)
+                    else:
+                        response = await self.client.aio.models.generate_content(
+                            model=effective_model_name,
+                            contents=final_sdk_contents,
+                            config=sdk_generation_config,
+                        )
+                        
+                        if sdk_generation_config and sdk_generation_config.response_schema and \
+                           sdk_generation_config.response_mime_type == "application/json" and \
+                           hasattr(response, 'parsed') and response.parsed is not None:
+                            return response.parsed
+                        
+                        if self._is_content_safety_error(response=response):
+                            raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
+                        
+                        if hasattr(response, 'text') and response.text is not None:
+                            text_content_from_api = response.text
+                        elif hasattr(response, 'candidates') and response.candidates:
+                            for candidate in response.candidates:
+                                if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
+                                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts'):
+                                        text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
+                                        break
+                            if text_content_from_api is None:
+                                text_content_from_api = ""
+                    
+                    if text_content_from_api is not None:
+                        is_json_response_expected = generation_config_dict and \
+                                                    generation_config_dict.get("response_mime_type") == "application/json"
+                        if is_json_response_expected:
+                            try:
+                                cleaned_json_str = re.sub(r'^```json\s*', '', text_content_from_api.strip(), flags=re.IGNORECASE)
+                                cleaned_json_str = re.sub(r'\s*```$', '', cleaned_json_str, flags=re.IGNORECASE)
+                                return json.loads(cleaned_json_str.strip())
+                            except json.JSONDecodeError as e_parse:
+                                logger.warning(f"JSON 응답 파싱 실패: {e_parse}")
+                                return text_content_from_api
+                        else:
+                            if not text_content_from_api.strip():
+                                raise GeminiContentSafetyException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
+                            return text_content_from_api
+                    
+                    raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
+                
+                except GeminiContentSafetyException:
+                    raise
+                except asyncio.CancelledError:
+                    logger.info(f"비동기 API 호출이 취소됨: {effective_model_name}")
+                    raise
+                except Exception as e:
+                    error_message = str(e)
+                    logger.warning(f"API 관련 오류 발생: {type(e).__name__} - {error_message}")
+                    
+                    if self._is_invalid_request_error(e):
+                        if self.auth_mode == "API_KEY":
+                            break
+                        else:
+                            raise GeminiInvalidRequestException(f"복구 불가능한 요청 오류: {error_message}") from e
+                    elif self._is_rate_limit_error(e):
+                        if self._is_quota_exhausted_error(e):
+                            if self.current_api_key:
+                                self.key_quota_failure_times[self.current_api_key] = time.time()
+                            break
+                        if current_retry_for_this_key < max_retries:
+                            await asyncio.sleep(current_backoff + random.uniform(0,1))
+                            current_retry_for_this_key += 1
+                            current_backoff = min(current_backoff * 2, max_backoff)
+                            continue
+                        else:
+                            break
+                    elif "timeout" in error_message.lower() or "timed out" in error_message.lower():
+                        if current_retry_for_this_key < max_retries:
+                            await asyncio.sleep(current_backoff + random.uniform(0,1))
+                            current_retry_for_this_key += 1
+                            current_backoff = min(current_backoff * 2, max_backoff)
+                            continue
+                        else:
+                            break
+                    else:
+                        if current_retry_for_this_key < max_retries:
+                            await asyncio.sleep(current_backoff + random.uniform(0,1))
+                            current_retry_for_this_key += 1
+                            current_backoff = min(current_backoff * 2, max_backoff)
+                            continue
+                        else:
+                            break
+            
+            attempted_keys_count += 1
+            if attempted_keys_count < total_keys and self.auth_mode == "API_KEY":
+                if not self._rotate_api_key_and_reconfigure():
+                    raise GeminiAllApiKeysExhaustedException("유효한 다음 API 키로 전환할 수 없습니다.")
+            elif self.auth_mode == "VERTEX_AI":
+                raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.")
+
+        raise GeminiAllApiKeysExhaustedException("모든 API 키를 사용한 시도 후에도 텍스트 생성에 최종 실패했습니다.")
 
 
 if __name__ == '__main__':

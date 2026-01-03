@@ -589,7 +589,7 @@ class TranslationService:
         timeout: Optional[float] = None
     ) -> str:
         """
-        비동기 청크 번역 메서드 (translate_chunk의 비동기 버전)
+        비동기 청크 번역 메서드 (진정한 비동기 구현)
         
         Args:
             chunk_text: 번역할 텍스트
@@ -601,6 +601,7 @@ class TranslationService:
             
         Raises:
             asyncio.TimeoutError: 타임아웃 초과
+            asyncio.CancelledError: 작업 취소됨
             BtgTranslationException: 번역 실패
         """
         if not chunk_text.strip():
@@ -609,22 +610,17 @@ class TranslationService:
         
         # 소설 본문 미리보기 로깅
         text_preview = chunk_text[:100].replace('\n', ' ')
-        logger.info(f"비동기 번역 요청: \"{text_preview}{'...' if len(chunk_text) > 100 else ''}\"")
+        logger.info(f"비동기 청크 번역 요청: \"{text_preview}{'...' if len(chunk_text) > 100 else ''}\"")
         
         try:
-            # translate_text 메서드를 비동기로 실행
-            loop = asyncio.get_event_loop()
-            
-            def _sync_translate():
-                return self.translate_text(chunk_text, stream=stream)
-            
+            # 진정한 비동기 메서드 호출 (run_in_executor 제거)
             if timeout:
                 result = await asyncio.wait_for(
-                    loop.run_in_executor(None, _sync_translate),
+                    self.translate_text_with_content_safety_retry_async(chunk_text),
                     timeout=timeout
                 )
             else:
-                result = await loop.run_in_executor(None, _sync_translate)
+                result = await self.translate_text_with_content_safety_retry_async(chunk_text)
             
             return result
         except asyncio.TimeoutError:
@@ -843,3 +839,219 @@ if __name__ == '__main__':
         print(f"테스트 3 오류: {type(e).__name__} - {e}")
 
     print("\n--- TranslationService 테스트 종료 ---")
+
+    # ============================================================================
+    # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
+    # ============================================================================
+
+    async def translate_text_async(self, text_chunk: str, stream: bool = False) -> str:
+        """
+        비동기 텍스트 번역 메서드 (translate_text의 비동기 버전)
+        
+        Args:
+            text_chunk: 번역할 텍스트
+            stream: 스트리밍 여부
+            
+        Returns:
+            번역된 텍스트
+            
+        Raises:
+            asyncio.CancelledError: 작업이 취소된 경우
+            BtgTranslationException: 번역 실패
+        """
+        if not text_chunk.strip():
+            logger.debug("translate_text_async: 입력 텍스트가 비어 있어 빈 문자열 반환.")
+            return ""
+        
+        # 중단 체크
+        if self.stop_check_callback and self.stop_check_callback():
+            logger.info("translate_text_async: 중단 요청 감지됨")
+            raise BtgTranslationException("번역 중단 요청됨")
+        
+        text_preview = text_chunk[:100].replace('\n', ' ')
+        logger.info(f"비동기 번역 요청: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")
+        
+        # 용어집 및 프롬프트 준비 (동기 메서드와 동일)
+        glossary_context_str = "용어집 컨텍스트 없음"
+        
+        if self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
+            chunk_text_lower = text_chunk.lower()
+            final_target_lang = self.config.get("target_translation_language", "ko").lower()
+            relevant_entries = []
+            
+            for entry in self.glossary_entries_for_injection:
+                if entry.target_language.lower() == final_target_lang and entry.keyword.lower() in chunk_text_lower:
+                    relevant_entries.append(entry)
+            
+            max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3)
+            max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
+            glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
+        
+        replacements = {
+            "{{slot}}": text_chunk,
+            "{{glossary_context}}": glossary_context_str
+        }
+
+        api_prompt_for_gemini_client: List[genai_types.Content] = []
+        api_system_instruction: Optional[str] = None
+
+        if self.config.get("enable_prefill_translation", False):
+            api_system_instruction = self.config.get("prefill_system_instruction", "")
+            prefill_cached_history_raw = self.config.get("prefill_cached_history", [])
+            base_history: List[genai_types.Content] = []
+            
+            if isinstance(prefill_cached_history_raw, list):
+                for item in prefill_cached_history_raw:
+                    if isinstance(item, dict) and "role" in item and "parts" in item:
+                        sdk_parts = []
+                        for part_item in item.get("parts", []):
+                            if isinstance(part_item, str):
+                                sdk_parts.append(genai_types.Part.from_text(text=part_item))
+                        if sdk_parts:
+                            base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
+
+            injected_history, injected = _inject_slots_into_history(base_history, replacements)
+
+            if injected:
+                api_prompt_for_gemini_client = injected_history
+                if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "model":
+                    api_prompt_for_gemini_client.append(
+                        genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=" ")])
+                    )
+            else:
+                api_prompt_for_gemini_client = injected_history
+                user_prompt_str = self._construct_prompt(text_chunk)
+                api_prompt_for_gemini_client.append(
+                    genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+                )
+        else:
+            user_prompt_str = self._construct_prompt(text_chunk)
+            api_prompt_for_gemini_client = [
+                genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+            ]
+
+        try:
+            translated_text_from_api = await self.gemini_client.generate_text_async(
+                prompt=api_prompt_for_gemini_client,
+                model_name=self.config.get("model_name", "gemini-2.0-flash"),
+                generation_config_dict={
+                    "temperature": self.config.get("temperature", 0.7),
+                    "top_p": self.config.get("top_p", 0.9),
+                    "thinking_level": self.config.get("thinking_level", "high")
+                },
+                thinking_budget=self.config.get("thinking_budget", None),
+                system_instruction_text=api_system_instruction,
+                stream=stream
+            )
+
+            if translated_text_from_api is None:
+                raise GeminiContentSafetyException("API로부터 응답을 받지 못했습니다 (None 반환).")
+
+            if not translated_text_from_api.strip() and text_chunk.strip():
+                raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
+
+            return translated_text_from_api.strip()
+
+        except asyncio.CancelledError:
+            logger.info("비동기 번역이 취소되었습니다")
+            raise
+        except GeminiContentSafetyException as e_safety:
+            raise BtgTranslationException(f"콘텐츠 안전 문제로 번역할 수 없습니다. ({e_safety})", original_exception=e_safety) from e_safety
+        except GeminiAllApiKeysExhaustedException as e_keys:
+            raise BtgApiClientException(f"모든 API 키를 사용했으나 요청에 실패했습니다. ({e_keys})", original_exception=e_keys) from e_keys
+        except GeminiRateLimitException as e_rate:
+            raise BtgApiClientException(f"API 사용량 제한을 초과했습니다. ({e_rate})", original_exception=e_rate) from e_rate
+        except GeminiInvalidRequestException as e_invalid:
+            raise BtgApiClientException(f"잘못된 API 요청입니다: {e_invalid}", original_exception=e_invalid) from e_invalid
+        except GeminiApiException as e_api:
+            raise BtgApiClientException(f"API 호출 중 오류가 발생했습니다: {e_api}", original_exception=e_api) from e_api
+        except Exception as e:
+            raise BtgTranslationException(f"번역 중 알 수 없는 오류가 발생했습니다: {e}", original_exception=e) from e
+
+    async def translate_text_with_content_safety_retry_async(
+        self, 
+        text_chunk: str, 
+        max_split_attempts: int = 3,
+        min_chunk_size: int = 100
+    ) -> str:
+        """
+        비동기 버전: 콘텐츠 안전 오류 발생시 청크를 분할하여 재시도하는 번역 메서드
+        
+        Args:
+            text_chunk: 번역할 텍스트
+            max_split_attempts: 최대 분할 시도 횟수
+            min_chunk_size: 최소 청크 크기
+            
+        Returns:
+            번역된 텍스트 (실패한 부분은 오류 메시지로 대체)
+        """
+        try:
+            return await self.translate_text_async(text_chunk)
+        except BtgTranslationException as e:
+            if not ("콘텐츠 안전 문제" in str(e)):
+                raise e
+            
+            logger.warning(f"콘텐츠 안전 문제 감지. 비동기 청크 분할 재시도 시작: {str(e)}")
+            return await self._translate_with_recursive_splitting_async(
+                text_chunk, max_split_attempts, min_chunk_size, current_attempt=1
+            )
+
+    async def _translate_with_recursive_splitting_async(
+        self,
+        text_chunk: str,
+        max_split_attempts: int,
+        min_chunk_size: int,
+        current_attempt: int = 1
+    ) -> str:
+        if current_attempt > max_split_attempts:
+            logger.error(f"최대 분할 시도 횟수({max_split_attempts})에 도달. 번역 실패.")
+            return f"[번역 오류로 인한 실패: 최대 분할 시도 초과]"
+
+        if len(text_chunk.strip()) <= min_chunk_size:
+            logger.warning(f"최소 청크 크기에 도달했지만 여전히 오류 발생: {text_chunk[:50]}...")
+            return f"[번역 오류로 인한 실패: {text_chunk[:30]}...]"
+
+        sub_chunks = self.chunk_service.split_chunk_recursively(
+            text_chunk,
+            target_size=len(text_chunk) // 2,
+            min_chunk_size=min_chunk_size,
+            max_split_depth=1,
+            current_depth=0
+        )
+        
+        if len(sub_chunks) <= 1:
+            sub_chunks = self.chunk_service.split_chunk_by_sentences(
+                text_chunk, max_sentences_per_chunk=1
+            )
+        
+        if len(sub_chunks) <= 1:
+            logger.error("청크 분할 실패. 번역 포기.")
+            return f"[분할 불가능한 오류 발생 콘텐츠: {text_chunk[:30]}...]"
+        
+        translated_parts = []
+        
+        for i, sub_chunk in enumerate(sub_chunks):
+            try:
+                if self.stop_check_callback and self.stop_check_callback():
+                    logger.info(f"중단 요청 감지됨. 서브 청크 {i+1}/{len(sub_chunks)} 번역 중단.")
+                    raise BtgTranslationException("번역 중단 요청됨.")
+                
+                translated_sub = await self.translate_text_async(sub_chunk)
+                translated_parts.append(translated_sub)
+                
+            except BtgTranslationException as e_sub:
+                if "콘텐츠 안전 문제" in str(e_sub) and current_attempt < max_split_attempts:
+                    logger.warning(f"서브 청크 {i+1} 콘텐츠 안전 오류. 재귀 분할 시도.")
+                    recursive_result = await self._translate_with_recursive_splitting_async(
+                        sub_chunk, max_split_attempts, min_chunk_size, current_attempt + 1
+                    )
+                    translated_parts.append(recursive_result)
+                else:
+                    error_marker = f"[서브 청크 {i+1} 번역 실패: {str(e_sub)[:50]}]"
+                    translated_parts.append(error_marker)
+            except Exception as e_general:
+                logger.error(f"서브 청크 {i+1} 번역 중 예상치 못한 오류: {e_general}")
+                translated_parts.append(f"[서브 청크 {i+1} 번역 오류]")
+        
+        return "\n\n".join(translated_parts)
+
