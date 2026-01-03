@@ -499,16 +499,14 @@ class ReviewTab(BaseTab):
     # === 파일 경로 헬퍼 메서드 ===
     
     def _get_translated_chunked_file_path(self, input_file_path: str) -> Path:
-        """번역된 청크 파일 경로 반환 (_translated.chunked.txt)
+        """번역된 청크 파일 경로 반환 (_translated_chunked.txt)
         
         번역 시 output_file은 input_file에서 '_translated' 접미사가 붙어 생성됨.
-        예: input.txt → input_translated.txt → input_translated.chunked.txt
+        예: input.txt → input_translated.txt → input_translated_chunked.txt
         """
         p = Path(input_file_path)
-        # 출력 파일명: stem + '_translated' + suffix
-        output_stem = f"{p.stem}_translated"
-        # 청크 파일: output_stem + '.chunked.txt'
-        return p.parent / f"{output_stem}.chunked.txt"
+        # 청크 백업 파일명: stem + '_translated_chunked.txt'
+        return p.parent / f"{p.stem}_translated_chunked.txt"
     
     def _get_file_cache_key(self, file_path: str) -> tuple:
         """파일의 캐시 키 생성 (수정시간, 크기)"""

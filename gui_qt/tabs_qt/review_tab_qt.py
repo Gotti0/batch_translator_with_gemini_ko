@@ -7,6 +7,7 @@ PySide6 Review Tab
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,9 +17,36 @@ from qasync import asyncSlot
 
 from infrastructure import file_handler
 from infrastructure.file_handler import read_text_file, write_text_file
+from infrastructure.logger_config import setup_logger
 from utils.chunk_service import ChunkService
 from utils.quality_check_service import QualityCheckService
 from utils.post_processing_service import PostProcessingService
+
+# 로깅 설정 (커스텀 로거 사용)
+logger = setup_logger("review_tab", log_level=logging.DEBUG, log_to_console=True, log_to_file=True)
+
+
+class NumericSortProxyModel(QtCore.QSortFilterProxyModel):
+    """숫자 정렬을 지원하는 커스텀 프록시 모델"""
+    
+    def lessThan(self, left: QtCore.QModelIndex, right: QtCore.QModelIndex) -> bool:
+        """
+        두 아이템 비교 (정렬용)
+        
+        ID 컴럼(0번)은 UserRole에 저장된 정수값으로 비교하고,
+        나머지 컴럼은 기본 문자열 비교 사용
+        """
+        # ID 컴럼인 경우 정수 비교
+        if left.column() == 0:
+            left_data = left.data(QtCore.Qt.UserRole)
+            right_data = right.data(QtCore.Qt.UserRole)
+            
+            # UserRole에 정수값이 있으면 정수 비교
+            if left_data is not None and right_data is not None:
+                return left_data < right_data
+        
+        # 나머지는 기본 문자열 비교
+        return super().lessThan(left, right)
 
 
 class ReviewTabQt(QtWidgets.QWidget):
@@ -95,7 +123,7 @@ class ReviewTabQt(QtWidgets.QWidget):
 
         self.model = QtGui.QStandardItemModel(0, 6)
         self.model.setHorizontalHeaderLabels(["ID", "상태", "원문", "번역", "비율", "Z-Score"])
-        self.proxy = QtCore.QSortFilterProxyModel(self)
+        self.proxy = NumericSortProxyModel(self)  # 정수 정렬 지원 프록시 모델
         self.proxy.setSourceModel(self.model)
         self.proxy.setSortCaseSensitivity(QtCore.Qt.CaseInsensitive)
 
@@ -107,6 +135,8 @@ class ReviewTabQt(QtWidgets.QWidget):
         self.table.setSortingEnabled(True)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
+        # ID 컬럼 기본 정렬: 오름차순
+        self.table.sortByColumn(0, QtCore.Qt.AscendingOrder)
         left_layout.addWidget(self.table, 1)
 
         btns = QtWidgets.QVBoxLayout()
@@ -193,6 +223,46 @@ class ReviewTabQt(QtWidgets.QWidget):
                 sel_model.selectionChanged.connect(self._on_selection_changed)
 
     # ---------- helpers ----------
+    def _is_dark_theme(self) -> bool:
+        """시스템 테마가 다크 모드인지 감지"""
+        palette = QtWidgets.QApplication.palette()
+        bg_color = palette.color(QtGui.QPalette.Window)
+        # 배경색의 밝기로 다크 테마 판단 (밝기 < 128이면 다크)
+        return bg_color.lightness() < 128
+    
+    def _get_color_palette(self, status_type: str) -> Tuple[QtGui.QColor, QtGui.QColor]:
+        """
+        상태별 배경색과 텍스트 색상을 테마에 맞게 반환
+        
+        Args:
+            status_type: 'pending', 'success', 'warning_omission', 'warning_hallucination', 'failed'
+        
+        Returns:
+            (배경색, 텍스트색) 튜플
+        """
+        is_dark = self._is_dark_theme()
+        
+        if is_dark:
+            # 다크 테마용 색상 (어두운 배경 + 밝은 텍스트)
+            palettes = {
+                'pending': (QtGui.QColor("#3a3a3a"), QtGui.QColor("#b0b0b0")),      # 어두운 회색 + 밝은 회색
+                'success': (QtGui.QColor("#1e4620"), QtGui.QColor("#90ee90")),      # 어두운 초록 + 밝은 초록
+                'warning_omission': (QtGui.QColor("#4a3800"), QtGui.QColor("#ffd700")),  # 어두운 노랑 + 밝은 노랑
+                'warning_hallucination': (QtGui.QColor("#3d2a4d"), QtGui.QColor("#dda0dd")),  # 어두운 보라 + 밝은 보라
+                'failed': (QtGui.QColor("#4a1a1a"), QtGui.QColor("#ff6b6b")),       # 어두운 빨강 + 밝은 빨강
+            }
+        else:
+            # 라이트 테마용 색상 (밝은 배경 + 어두운 텍스트)
+            palettes = {
+                'pending': (QtGui.QColor("#e2e3e5"), QtGui.QColor("#212529")),      # 밝은 회색 + 어두운 텍스트
+                'success': (QtGui.QColor("#d4edda"), QtGui.QColor("#155724")),      # 밝은 초록 + 어두운 초록
+                'warning_omission': (QtGui.QColor("#fff3cd"), QtGui.QColor("#856404")),  # 밝은 노랑 + 어두운 노랑
+                'warning_hallucination': (QtGui.QColor("#e2d5f1"), QtGui.QColor("#5a2d82")),  # 밝은 보라 + 어두운 보라
+                'failed': (QtGui.QColor("#f8d7da"), QtGui.QColor("#721c24")),       # 밝은 빨강 + 어두운 빨강
+            }
+        
+        return palettes.get(status_type, (QtGui.QColor("#ffffff"), QtGui.QColor("#000000")))
+    
     def _set_status(self, msg: str) -> None:
         if self.status_label:
             self.status_label.setText(msg)
@@ -260,23 +330,40 @@ class ReviewTabQt(QtWidgets.QWidget):
         return result
 
     def _get_translated_chunked_file_path(self, input_file_path: str) -> Path:
+        """
+        청크 백업 파일 경로 반환
+        
+        - 입력: /path/to/file.txt
+        - 출력: /path/to/file_translated_chunked.txt
+        """
         p = Path(input_file_path)
-        return p.parent / f"{p.stem}_translated.chunked.txt"
+        return p.parent / f"{p.stem}_translated_chunked.txt"
 
     def _get_final_output_file_path(self, input_file_path: str) -> Path:
         p = Path(input_file_path)
         return p.parent / f"{p.stem}_translated{p.suffix}"
 
     def _load_metadata_sync(self, file_path: str) -> Tuple[Dict[str, Any], Dict[int, str], Dict[int, str], List[Dict[str, Any]]]:
+        """
+        메타데이터 및 청크 동기 로드
+        """
         metadata = file_handler.load_metadata(file_path)
         if not metadata:
             raise ValueError("메타데이터가 없습니다. 먼저 번역을 실행하세요.")
+        
         source_chunks = self._load_source_chunks(file_path)
+        
+        # 청크 백업 파일 로드
         translated_path = self._get_translated_chunked_file_path(file_path)
         translated_chunks: Dict[int, str] = {}
         if translated_path.exists():
-            translated_chunks = file_handler.load_chunks_from_file(translated_path)
+            try:
+                translated_chunks = file_handler.load_chunks_from_file(translated_path)
+            except Exception as e:
+                logger.error(f"청크 파일 로드 실패: {e}", exc_info=True)
+        
         suspicious = self.quality_service.analyze_translation_quality(metadata)
+        
         return metadata, source_chunks, translated_chunks, suspicious
 
     async def _load_metadata_from_path(self, file_path: str, silent: bool = False) -> None:
@@ -311,10 +398,21 @@ class ReviewTabQt(QtWidgets.QWidget):
         finally:
             self._set_busy(False)
 
-    def _make_item(self, text: str, align_right: bool = False) -> QtGui.QStandardItem:
+    def _make_item(self, text: str, align_right: bool = False, sort_value: Optional[int] = None) -> QtGui.QStandardItem:
+        """
+        테이블 아이템 생성
+        
+        Args:
+            text: 표시할 텍스트
+            align_right: 오른쪽 정렬 여부
+            sort_value: 정렬용 정수값 (설정 시 UserRole에 저장)
+        """
         item = QtGui.QStandardItem(text)
         align = QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter if align_right else QtCore.Qt.AlignCenter
         item.setTextAlignment(align)
+        # 정렬용 정수값 저장 (숫자 정렬을 위해)
+        if sort_value is not None:
+            item.setData(sort_value, QtCore.Qt.UserRole)
         return item
 
     def _populate_table(self) -> None:
@@ -336,7 +434,7 @@ class ReviewTabQt(QtWidgets.QWidget):
         for i in range(total):
             idx_str = str(i)
             status = "⏳"
-            color = QtGui.QColor("#e2e3e5")
+            status_type = 'pending'
             src_len = "-"
             trans_len = "-"
             ratio = "-"
@@ -358,22 +456,25 @@ class ReviewTabQt(QtWidgets.QWidget):
                     z_score = f"{z:.2f}"
                     if issue == "omission":
                         status = "⚠️ 누락"
-                        color = QtGui.QColor("#fff3cd")
+                        status_type = 'warning_omission'
                     elif issue == "hallucination":
                         status = "⚠️ 환각"
-                        color = QtGui.QColor("#e2d5f1")
+                        status_type = 'warning_hallucination'
                     else:
                         status = "✅"
-                        color = QtGui.QColor("#d4edda")
+                        status_type = 'success'
                 else:
                     status = "✅"
-                    color = QtGui.QColor("#d4edda")
+                    status_type = 'success'
             elif idx_str in failed_chunks:
                 status = "❌"
-                color = QtGui.QColor("#f8d7da")
+                status_type = 'failed'
+            
+            # 테마별 동적 색상 적용
+            bg_color, fg_color = self._get_color_palette(status_type)
 
             row_items = [
-                self._make_item(str(i)),
+                self._make_item(str(i), sort_value=i),  # ID: 정수값 저장하여 숫자 정렬
                 self._make_item(status),
                 self._make_item(src_len, True),
                 self._make_item(trans_len, True),
@@ -381,7 +482,8 @@ class ReviewTabQt(QtWidgets.QWidget):
                 self._make_item(z_score, True),
             ]
             for it in row_items:
-                it.setData(color, QtCore.Qt.BackgroundRole)
+                it.setData(bg_color, QtCore.Qt.BackgroundRole)
+                it.setData(fg_color, QtCore.Qt.ForegroundRole)
             self.model.appendRow(row_items)
 
         if self.table:
@@ -404,8 +506,14 @@ class ReviewTabQt(QtWidgets.QWidget):
         for idx in indexes:
             try:
                 source_row = self.proxy.mapToSource(idx)
-                val = int(self.model.item(source_row.row(), 0).text())
-                result.append(val)
+                item = self.model.item(source_row.row(), 0)
+                # UserRole에 저장된 정수값 직접 조회
+                val = item.data(QtCore.Qt.UserRole)
+                if val is not None:
+                    result.append(val)
+                else:
+                    # 폴백: 텍스트로 변환
+                    result.append(int(item.text()))
             except Exception:
                 pass
         return sorted(set(result))

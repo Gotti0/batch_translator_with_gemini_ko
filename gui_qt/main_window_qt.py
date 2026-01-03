@@ -167,6 +167,9 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         if LogTabQt:
             try:
                 log_tab = LogTabQt(self.app_service)
+                # Settings 탭에 TQDM 스트림 주입
+                if isinstance(settings_tab, SettingsTabQt):
+                    settings_tab.set_tqdm_stream(log_tab.get_tqdm_stream())
             except Exception as e:  # pragma: no cover - 방어적
                 logger.error(f"LogTabQt 생성 실패, 플레이스홀더로 대체: {e}")
                 log_tab = PlaceholderTab("실행 로그")

@@ -607,6 +607,11 @@ class TranslationService:
             asyncio.CancelledError: 작업 취소됨
             BtgTranslationException: 번역 실패
         """
+        # 📍 중단 체크: 작업 시작 전
+        if self.stop_check_callback and self.stop_check_callback():
+            logger.info("translate_chunk_async: 중단 요청 감지됨 (작업 시작 전)")
+            raise asyncio.CancelledError("번역 중단 요청됨")
+        
         if not chunk_text.strip():
             logger.debug("translate_chunk_async: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
@@ -624,6 +629,11 @@ class TranslationService:
                 )
             else:
                 result = await self.translate_text_with_content_safety_retry_async(chunk_text)
+            
+            # 📍 중단 체크: API 응답 후
+            if self.stop_check_callback and self.stop_check_callback():
+                logger.info("translate_chunk_async: 중단 요청 감지됨 (응답 후)")
+                raise asyncio.CancelledError("번역 중단 요청됨")
             
             return result
         except asyncio.TimeoutError:
@@ -866,10 +876,10 @@ if __name__ == '__main__':
             logger.debug("translate_text_async: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
         
-        # 중단 체크
+        # 📍 중단 체크: 작업 시작 전 (asyncio.CancelledError 발생)
         if self.stop_check_callback and self.stop_check_callback():
-            logger.info("translate_text_async: 중단 요청 감지됨")
-            raise BtgTranslationException("번역 중단 요청됨")
+            logger.info("translate_text_async: 중단 요청 감지됨 (작업 시작 전)")
+            raise asyncio.CancelledError("번역 중단 요청됨")
         
         text_preview = text_chunk[:100].replace('\n', ' ')
         logger.info(f"비동기 번역 요청: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")

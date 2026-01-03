@@ -580,7 +580,8 @@ class SimpleGlossaryService:
     async def _extract_glossary_entries_from_segment_via_api_async(
         self,
         segment_text: str,
-        user_override_glossary_prompt: Optional[str] = None
+        user_override_glossary_prompt: Optional[str] = None,
+        stop_check: Optional[Callable[[], bool]] = None
     ) -> List[GlossaryEntryDTO]:
         """
         단일 텍스트 세그먼트에서 Gemini API를 사용하여 용어집 항목들을 추출합니다. (비동기 버전)
@@ -589,6 +590,7 @@ class SimpleGlossaryService:
         Args:
             segment_text: 분석할 텍스트 세그먼트
             user_override_glossary_prompt: 사용자 정의 프롬프트 (옵션)
+            stop_check: 중단 요청 확인 콜백
             
         Returns:
             추출된 용어집 항목 리스트
@@ -598,6 +600,11 @@ class SimpleGlossaryService:
             BtgBusinessLogicException: 내부 오류 시
             asyncio.CancelledError: 작업 취소 시
         """
+        # 📍 중단 체크 1: 작업 시작 전
+        if stop_check and stop_check():
+            logger.info("용어집 추출이 중단되었습니다 (작업 시작 전)")
+            raise asyncio.CancelledError("용어집 추출 중단 요청됨")
+        
         model_name = self.config.get("model_name", "gemini-2.0-flash")
         generation_config_params = { 
             "temperature": self.config.get("glossary_extraction_temperature", 0.3),
@@ -658,6 +665,11 @@ class SimpleGlossaryService:
             # --- 표준 모드 ---
             api_prompt_for_gemini_client = self._get_glossary_extraction_prompt(segment_text, user_override_glossary_prompt)
 
+        # 📍 중단 체크 2: API 호출 직전
+        if stop_check and stop_check():
+            logger.info("용어집 추출이 중단되었습니다 (API 호출 직전)")
+            raise asyncio.CancelledError("용어집 추출 중단 요청됨")
+
         try:
             # 비동기 API 호출
             response_data = await self.gemini_client.generate_text_async(
@@ -666,6 +678,11 @@ class SimpleGlossaryService:
                 generation_config_dict=generation_config_params,
                 system_instruction_text=api_system_instruction
             )
+
+            # 📍 중단 체크 3: API 응답 후
+            if stop_check and stop_check():
+                logger.info("용어집 추출이 중단되었습니다 (API 응답 후)")
+                raise asyncio.CancelledError("용어집 추출 중단 요청됨")
 
             # --- 응답 처리 로직 (기존과 동일) ---
             if isinstance(response_data, list) and all(isinstance(item, ApiGlossaryTerm) for item in response_data):
@@ -847,7 +864,8 @@ class SimpleGlossaryService:
                     
                     return await self._extract_glossary_entries_from_segment_via_api_async(
                         segment_text,
-                        user_override_glossary_extraction_prompt
+                        user_override_glossary_extraction_prompt,
+                        stop_check  # stop_check 전달
                     )
 
             # 작업을 순차적으로 생성하고 처리 (동시성은 semaphore로 제어)

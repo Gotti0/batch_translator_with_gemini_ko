@@ -87,10 +87,17 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._loop = asyncio.get_event_loop()
         self.prefill_history = []
         self._model_cache: list[str] = []
+        self._tqdm_stream = None  # LogTab에서 주입받을 TQDM 스트림
+        self._translation_start_time = None  # ETA 계산용 시작 시간
+        self._translation_start_chunks = 0  # 번역 시작 시점의 이미 처리된 청크 수 (이어하기 대응)
 
         self._build_ui()
         self._wire_signals()
         self._load_config()
+
+    def set_tqdm_stream(self, tqdm_stream) -> None:
+        """LogTab에서 TQDM 스트림 주입"""
+        self._tqdm_stream = tqdm_stream
 
     def _build_ui(self) -> None:
         # 메인 레이아웃에 스크롤 영역 추가
@@ -365,7 +372,7 @@ class SettingsTabQt(QtWidgets.QWidget):
                 output_file_path=output_path,
                 progress_callback=self._progress_cb,
                 status_callback=self._status_cb,
-                tqdm_file_stream=None,
+                tqdm_file_stream=self._tqdm_stream,
                 retranslate_failed_only=False,
             )
             self.completion_signal.emit(True, "완료")
@@ -505,12 +512,19 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.cancel_btn.setEnabled(True)
         self.status_label.setText("번역 시작...")
         self.progress_bar.setValue(0)
+        
+        # ETA 계산을 위한 시작 시간 및 초기 청크 수 기록 (이어하기 대응)
+        import time
+        self._translation_start_time = time.time()
+        self._translation_start_chunks = 0  # 첫 진행률 콜백에서 업데이트됨
 
         # 이미 실행 중이면 예외 발생하도록 방지
         if self.app_service.current_translation_task and not self.app_service.current_translation_task.done():
             QtWidgets.QMessageBox.warning(self, "실행 중", "이미 번역이 실행 중입니다.")
             self.start_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
+            self._translation_start_time = None
+            self._translation_start_chunks = 0
             return
 
         # Task 실행
@@ -573,10 +587,57 @@ class SettingsTabQt(QtWidgets.QWidget):
     @QtCore.Slot(object)
     def _on_progress(self, dto: TranslationJobProgressDTO) -> None:
         try:
-            if dto.total_chunks:
+            if dto.total_chunks and dto.total_chunks > 0:
                 pct = int((dto.processed_chunks / dto.total_chunks) * 100)
                 self.progress_bar.setValue(pct)
-            self.status_label.setText(dto.current_status_message or "")
+                
+                # 이어하기 시작 시점의 청크 수 초기화 (첫 콜백에서만)
+                if self._translation_start_chunks == 0 and dto.processed_chunks > 0:
+                    self._translation_start_chunks = dto.processed_chunks
+                
+                # ETA 계산 (이어하기 robust 대응)
+                if self._translation_start_time and dto.processed_chunks > 0:
+                    import time
+                    elapsed = time.time() - self._translation_start_time
+                    
+                    # 실제로 처리한 청크 수 = 현재 - 시작 시점 (이어하기 대응)
+                    actual_processed = dto.processed_chunks - self._translation_start_chunks
+                    
+                    # 최소 1초 경과 후 ETA 계산 (초반 불안정성 방지)
+                    if elapsed >= 1.0 and actual_processed > 0:
+                        chunks_per_sec = actual_processed / elapsed
+                        remaining_chunks = dto.total_chunks - dto.processed_chunks
+                        
+                        if chunks_per_sec > 0:
+                            eta_seconds = remaining_chunks / chunks_per_sec
+                            
+                            # ETA 포맷팅
+                            if eta_seconds < 60:
+                                eta_str = f"{int(eta_seconds)}초"
+                            elif eta_seconds < 3600:
+                                minutes = int(eta_seconds / 60)
+                                seconds = int(eta_seconds % 60)
+                                eta_str = f"{minutes}분 {seconds}초"
+                            else:
+                                hours = int(eta_seconds / 3600)
+                                minutes = int((eta_seconds % 3600) / 60)
+                                eta_str = f"{hours}시간 {minutes}분"
+                            
+                            # 상태 메시지에 ETA 추가
+                            base_msg = dto.current_status_message or ""
+                            status_msg = f"{base_msg} | 진행: {dto.processed_chunks}/{dto.total_chunks} ({pct}%) | ETA: {eta_str}"
+                        else:
+                            # chunks_per_sec == 0 (이론적으로 불가능하지만 방어)
+                            status_msg = f"{dto.current_status_message or ''} | 진행: {dto.processed_chunks}/{dto.total_chunks} ({pct}%)"
+                    else:
+                        # 1초 미만 경과 시 ETA 계산 생략
+                        status_msg = f"{dto.current_status_message or ''} | 진행: {dto.processed_chunks}/{dto.total_chunks} ({pct}%)"
+                else:
+                    status_msg = dto.current_status_message or ""
+            else:
+                status_msg = dto.current_status_message or ""
+            
+            self.status_label.setText(status_msg)
         except Exception:
             # UI 갱신 실패는 무시
             pass
@@ -592,6 +653,10 @@ class SettingsTabQt(QtWidgets.QWidget):
         if success:
             self.progress_bar.setValue(100)
         self.status_label.setText(message)
+        
+        # 시작 시간 및 청크 카운터 초기화
+        self._translation_start_time = None
+        self._translation_start_chunks = 0
 
     @QtCore.Slot(int)
     def _on_vertex_toggle(self, state: int) -> None:

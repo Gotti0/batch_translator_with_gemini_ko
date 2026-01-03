@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Dict
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtWidgets, QtGui
 
 
 class _QtLogEmitter(QtCore.QObject):
@@ -61,6 +61,7 @@ class LogTabQt(QtWidgets.QWidget):
         self._emitter = _QtLogEmitter()
         self._handler: Optional[QtGuiLogHandler] = None
         self._tqdm_stream: Optional[TqdmToQt] = None
+        self._color_palette: Dict[str, str] = {}
 
         # 메인 레이아웃에 스크롤 영역 추가
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -84,6 +85,39 @@ class LogTabQt(QtWidgets.QWidget):
         main_layout.addWidget(scroll_area)
 
         self._setup_logging()
+        self._update_color_palette()
+
+    def _is_dark_theme(self) -> bool:
+        """시스템 테마가 다크 모드인지 확인"""
+        palette = self.palette()
+        bg_color = palette.color(QtGui.QPalette.Window)
+        # 배경색의 밝기가 128보다 작으면 다크 테마로 판단
+        return bg_color.lightness() < 128
+
+    def _update_color_palette(self) -> None:
+        """현재 테마에 맞는 로그 레벨별 색상 팔레트 생성"""
+        is_dark = self._is_dark_theme()
+        
+        if is_dark:
+            # 다크 테마: 밝은 색상 사용
+            self._color_palette = {
+                "DEBUG": "#808080",      # 중간 회색
+                "INFO": "#e0e0e0",       # 밝은 회색 (기존 black 대체)
+                "WARNING": "#FFB347",    # 밝은 주황색
+                "ERROR": "#ff6b6b",      # 밝은 빨강
+                "CRITICAL": "#ff3333",   # 더 밝은 빨강
+                "TQDM": "#90ee90",       # 밝은 녹색
+            }
+        else:
+            # 라이트 테마: 어두운 색상 사용
+            self._color_palette = {
+                "DEBUG": "#666666",      # 어두운 회색
+                "INFO": "#000000",       # 검정
+                "WARNING": "#FF8C00",    # 다크 오렌지
+                "ERROR": "#cc0000",      # 어두운 빨강
+                "CRITICAL": "#8b0000",   # 더 어두운 빨강
+                "TQDM": "#006400",       # 어두운 녹색
+            }
 
     def _setup_logging(self) -> None:
         self._emitter.message.connect(self._append_message)
@@ -101,14 +135,9 @@ class LogTabQt(QtWidgets.QWidget):
 
     @QtCore.Slot(str, str)
     def _append_message(self, msg: str, level: str) -> None:
-        color = {
-            "DEBUG": "gray",
-            "INFO": "black",
-            "WARNING": "#FF8C00",
-            "ERROR": "red",
-            "CRITICAL": "red",
-            "TQDM": "green",
-        }.get(level, "black")
+        # 동적 색상 팔레트 사용 (다크 테마 지원)
+        color = self._color_palette.get(level, "#e0e0e0" if self._is_dark_theme() else "#000000")
+        
         cursor = self.text_widget.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
         fmt = cursor.charFormat()
@@ -138,6 +167,12 @@ class LogTabQt(QtWidgets.QWidget):
             pass
         super().closeEvent(event)
 
+    def changeEvent(self, event: QtCore.QEvent) -> None:
+        """테마 변경 감지 및 색상 팔레트 업데이트"""
+        if event.type() == QtCore.QEvent.PaletteChange:
+            self._update_color_palette()
+        super().changeEvent(event)
+
 
 # Late import for QColor/QTextCursor after QtGui is available
-from PySide6 import QtGui  # noqa: E402  # isort:skip
+# QtGui는 이제 상단에서 import됨
