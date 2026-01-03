@@ -958,9 +958,17 @@ class AppService:
                 raise
             
             # 메타데이터 최종 업데이트
-            loaded_metadata["status"] = "completed"
-            loaded_metadata["last_updated"] = time.time()
-            save_metadata(metadata_file_path, loaded_metadata)
+            # ⚠️ 중요: 각 청크 처리 중 update_metadata_for_chunk_completion이 파일을 업데이트했으므로,
+            # 메모리의 loaded_metadata가 아닌 최신 파일 내용을 로드하여 status만 업데이트
+            try:
+                current_metadata = load_metadata(metadata_file_path)
+                current_metadata["status"] = "completed"
+                current_metadata["last_updated"] = time.time()
+                save_metadata(metadata_file_path, current_metadata)
+                logger.info(f"메타데이터 최종 업데이트 완료: {len(current_metadata.get('translated_chunks', {}))}개 청크 정보 보존")
+            except Exception as meta_save_err:
+                logger.error(f"메타데이터 최종 저장 중 오류: {meta_save_err}", exc_info=True)
+                # 실패해도 번역 파일은 정상이므로 계속 진행
             
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소되었습니다")
