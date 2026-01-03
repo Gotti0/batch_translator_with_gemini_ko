@@ -362,7 +362,8 @@ class TranslationService:
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict={
                     "temperature": self.config.get("temperature", 0.7),
-                    "top_p": self.config.get("top_p", 0.9)
+                    "top_p": self.config.get("top_p", 0.9),
+                    "thinking_level": self.config.get("thinking_level", "high")
                 },
                 thinking_budget=self.config.get("thinking_budget", None),
                 system_instruction_text=api_system_instruction,
