@@ -10,6 +10,7 @@ import asyncio
 from typing import Optional
 
 from PySide6 import QtCore, QtWidgets
+import qdarktheme
 from app.app_service import AppService
 from core.exceptions import BtgConfigException
 from infrastructure.logger_config import setup_logger
@@ -58,6 +59,7 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         super().__init__(parent)
         self._loop = loop or asyncio.get_event_loop()
         self.app_service: Optional[AppService] = None
+        self._current_theme: str = "dark"  # 기본 테마
 
         self.setWindowTitle("BTG - Batch Translator (PySide6)")
         self.resize(1100, 800)
@@ -72,6 +74,36 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
 
         # 탭 위젯 구성 (플레이스홀더 + 점진 이식 탭)
         self._setup_tabs()
+        
+        # 상태바 설정 (테마 토글 버튼 포함)
+        self._setup_statusbar()
+
+    def _setup_statusbar(self) -> None:
+        """상태바 생성 및 테마 토글 버튼 추가"""
+        statusbar = QtWidgets.QStatusBar()
+        self.setStatusBar(statusbar)
+        
+        # 테마 토글 버튼 (상태바 오른쪽에 고정)
+        self.theme_toggle_btn = QtWidgets.QPushButton("☀️ 라이트")
+        self.theme_toggle_btn.setToolTip("라이트/다크 테마 전환")
+        self.theme_toggle_btn.clicked.connect(self._toggle_theme)
+        self.theme_toggle_btn.setFixedSize(80, 22)
+        self.theme_toggle_btn.setStyleSheet("QPushButton { padding: 2px 8px; }")
+        statusbar.addPermanentWidget(self.theme_toggle_btn)
+        
+        # 기본 상태 메시지
+        statusbar.showMessage("준비됨")
+
+    def _toggle_theme(self) -> None:
+        """라이트/다크 테마 전환"""
+        if self._current_theme == "dark":
+            self._current_theme = "light"
+            qdarktheme.setup_theme(theme="light", custom_colors={"primary": "#1976D2"})
+            self.theme_toggle_btn.setText("🌙 다크")
+        else:
+            self._current_theme = "dark"
+            qdarktheme.setup_theme(theme="dark", custom_colors={"primary": "#29B6F6"})
+            self.theme_toggle_btn.setText("☀️ 라이트")
 
     def _init_app_service(self) -> None:
         try:
