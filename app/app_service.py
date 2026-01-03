@@ -380,13 +380,18 @@ class AppService:
                 if user_override_glossary_extraction_prompt is not None \
                 else self.config.get("user_override_glossary_extraction_prompt")
 
+            max_workers = self.config.get("max_workers", 4)
+            rpm = self.config.get("requests_per_minute", 60)
+            
             result_path = await self.glossary_service.extract_and_save_glossary_async(
                 novel_text_content=file_content,
                 input_file_path_for_naming=input_file_path,
                 progress_callback=progress_callback,
                 seed_glossary_path=seed_glossary_path,
                 user_override_glossary_extraction_prompt=prompt_to_use,
-                stop_check=stop_check
+                stop_check=stop_check,
+                max_workers=max_workers,
+                rpm=rpm
             )
             logger.info(f"비동기 용어집 추출 완료. 결과 파일: {result_path}")
         
@@ -757,17 +762,6 @@ class AppService:
             else:
                 logger.info(f"기존 메타데이터 파일을 찾을 수 없습니다. 새로 시작합니다.")
             
-            # 설정 해시 확인 (이어하기 가능 여부 판단)
-            current_config_hash = _hash_config_for_metadata(self.config)
-            previous_config_hash = loaded_metadata.get("config_hash")
-            
-            if previous_config_hash and previous_config_hash == current_config_hash:
-                resume_translation = True
-                logger.info("이전 번역을 계속 진행합니다 (설정 동일)")
-            else:
-                logger.info("새로운 번역을 시작합니다 (설정 변경 또는 새 파일)")
-                loaded_metadata = create_new_metadata(input_file_path_obj, self.config)
-            
             # 파일 읽기 (비동기 아님, 로컬 I/O이므로 동기 유지)
             try:
                 file_content = read_text_file(input_file_path_obj)
@@ -784,6 +778,17 @@ class AppService:
             )
             total_chunks = len(all_chunks)
             logger.info(f"파일이 {total_chunks}개 청크로 분할됨")
+            
+            # 설정 해시 확인 (이어하기 가능 여부 판단)
+            current_config_hash = _hash_config_for_metadata(self.config)
+            previous_config_hash = loaded_metadata.get("config_hash")
+            
+            if previous_config_hash and previous_config_hash == current_config_hash:
+                resume_translation = True
+                logger.info("이전 번역을 계속 진행합니다 (설정 동일)")
+            else:
+                logger.info("새로운 번역을 시작합니다 (설정 변경 또는 새 파일)")
+                loaded_metadata = create_new_metadata(input_file_path_obj, total_chunks, self.config)
             
             # 이어하기 또는 새로 시작
             if resume_translation:
@@ -840,6 +845,48 @@ class AppService:
             try:
                 save_merged_chunks_to_file(final_output_file_path_obj, final_merged_chunks)
                 logger.info(f"최종 번역 결과가 저장되었습니다: {final_output_file_path_obj}")
+                
+                # ✅ 후처리 실행 (설정에서 활성화된 경우)
+                if self.config.get("enable_post_processing", True):
+                    logger.info("번역 완료 후 후처리를 시작합니다...")
+                    try:
+                        # 1. 먼저 청크 인덱스가 포함된 백업 파일 저장 (후처리 전 원본 보존)
+                        chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
+                        save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
+                        logger.info(f"이어하기용 청크 백업 파일 저장 완료: {chunked_backup_path}")
+                        
+                        # 2. 청크 단위 후처리 (헤더 제거, HTML 정리 등)
+                        processed_chunks = self.post_processing_service.post_process_merged_chunks(final_merged_chunks, self.config)
+                        
+                        # 3. 후처리된 내용을 임시로 저장 (청크 인덱스는 여전히 포함)
+                        save_merged_chunks_to_file(final_output_file_path_obj, processed_chunks)
+                        logger.info("청크 단위 후처리 완료 및 임시 저장됨.")
+                        
+                        # 4. 최종적으로 청크 인덱스 마커 제거 (사용자가 보는 최종 파일)
+                        if self.post_processing_service.remove_chunk_indexes_from_final_file(final_output_file_path_obj):
+                            logger.info("최종 출력 파일에서 청크 인덱스 마커 제거 완료.")
+                        else:
+                            logger.warning("청크 인덱스 마커 제거에 실패했습니다.")
+                            
+                    except Exception as post_proc_e:
+                        logger.error(f"후처리 중 오류 발생: {post_proc_e}. 후처리를 건너뜁니다.", exc_info=True)
+                        # 후처리 실패 시에도 청크 백업 파일은 보장
+                        try:
+                            chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
+                            save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
+                            logger.info(f"후처리 실패 시 원본 청크 백업 파일 저장: {chunked_backup_path}")
+                        except Exception as backup_fallback_e:
+                            logger.error(f"원본 청크 백업 파일 저장 중 오류: {backup_fallback_e}", exc_info=True)
+                else:
+                    logger.info("후처리가 설정에서 비활성화되어 건너뜁니다.")
+                    # 후처리가 비활성화된 경우에도 청크 백업 파일은 저장 (이어하기용)
+                    chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
+                    try:
+                        save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
+                        logger.info(f"청크 백업 파일 저장 완료: {chunked_backup_path}")
+                    except Exception as backup_e:
+                        logger.error(f"청크 백업 파일 저장 중 오류: {backup_e}", exc_info=True)
+                
                 if status_callback:
                     status_callback("완료!")
             except Exception as merge_err:
@@ -876,21 +923,41 @@ class AppService:
         """
         청크들을 비동기로 병렬 처리
         
-        - asyncio.gather() 사용 (ThreadPoolExecutor 제거)
+        - 세마포어로 동시 실행 수 제한 (max_workers 적용)
+        - RPM 속도 제한 적용
         - Task.cancel()로 즉시 취소 가능
-        - 모든 Task가 동시에 실행됨
         """
         if not chunks:
             logger.info("처리할 청크가 없습니다")
             return
         
-        logger.info(f"비동기 청크 병렬 처리 시작: {len(chunks)} 청크")
+        max_workers = self.config.get("max_workers", 4)
+        rpm = self.config.get("requests_per_minute", 60)
         
-        # Task 리스트 생성
-        tasks = []
-        for chunk_index, chunk_text in chunks:
-            task = asyncio.create_task(
-                self._translate_and_save_chunk_async(
+        logger.info(f"비동기 청크 병렬 처리 시작: {len(chunks)} 청크 (동시 작업: {max_workers}, RPM: {rpm})")
+        
+        # 세마포어: 동시 실행 수 제한
+        semaphore = asyncio.Semaphore(max_workers)
+        
+        # RPM 속도 제한
+        request_interval = 60.0 / rpm if rpm > 0 else 0
+        last_request_time = 0
+        
+        async def rate_limited_translate(chunk_index: int, chunk_text: str) -> bool:
+            """RPM 제한을 고려한 번역 함수"""
+            nonlocal last_request_time
+            
+            # 세마포어로 동시 실행 제한
+            async with semaphore:
+                # RPM 속도 제한 적용
+                current_time = asyncio.get_event_loop().time()
+                elapsed = current_time - last_request_time
+                if elapsed < request_interval:
+                    await asyncio.sleep(request_interval - elapsed)
+                
+                last_request_time = asyncio.get_event_loop().time()
+                
+                return await self._translate_and_save_chunk_async(
                     chunk_index,
                     chunk_text,
                     output_file,
@@ -899,7 +966,11 @@ class AppService:
                     input_file_path,
                     progress_callback
                 )
-            )
+        
+        # Task 리스트 생성
+        tasks = []
+        for chunk_index, chunk_text in chunks:
+            task = asyncio.create_task(rate_limited_translate(chunk_index, chunk_text))
             tasks.append(task)
         
         # 모든 Task 완료 대기 (예외 무시)

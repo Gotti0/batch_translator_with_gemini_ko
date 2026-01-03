@@ -223,7 +223,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         out_row.addWidget(browse_out)
 
         self.chunk_size_spin = NoWheelSpinBox()
-        self.chunk_size_spin.setRange(500, 20000)
+        self.chunk_size_spin.setRange(500, 30000)
         self.chunk_size_spin.setSingleStep(500)
         self.max_workers_spin = NoWheelSpinBox()
         self.max_workers_spin.setRange(1, 64)
@@ -377,6 +377,12 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     def _load_config(self) -> None:
         cfg = getattr(self.app_service, "config", {}) or {}
+        
+        # 입력/출력 파일 경로 로드
+        input_files = cfg.get("input_files", []) or []
+        self.input_edit.setText(input_files[0] if input_files else "")
+        self.output_edit.setText(str(cfg.get("output_file", "") or ""))
+        
         api_keys = cfg.get("api_keys") or []
         if isinstance(api_keys, list):
             self.api_keys_edit.setPlainText("\n".join(api_keys))
@@ -445,6 +451,13 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     def _save_config_to_service(self) -> None:
         cfg = getattr(self.app_service, "config", {}) or {}
+        
+        # 입력/출력 파일 경로 저장
+        input_path = self.input_edit.text().strip()
+        output_path = self.output_edit.text().strip()
+        cfg["input_files"] = [input_path] if input_path else []
+        cfg["output_file"] = output_path or None
+        
         api_keys = [line.strip() for line in self.api_keys_edit.toPlainText().splitlines() if line.strip()]
         if api_keys:
             cfg["api_keys"] = api_keys

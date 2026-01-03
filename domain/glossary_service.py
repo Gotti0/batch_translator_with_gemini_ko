@@ -709,7 +709,9 @@ class SimpleGlossaryService:
         progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None,
         seed_glossary_path: Optional[Union[str, Path]] = None,
         user_override_glossary_extraction_prompt: Optional[str] = None,
-        stop_check: Optional[Callable[[], bool]] = None
+        stop_check: Optional[Callable[[], bool]] = None,
+        max_workers: int = 4,
+        rpm: int = 60
     ) -> Path:
         """
         주어진 텍스트 내용에서 로어북을 추출하고 JSON 파일에 저장합니다. (비동기 버전)
@@ -800,6 +802,7 @@ class SimpleGlossaryService:
                 ))
         elif sample_segments:
             logger.info(f"총 {len(all_text_segments)}개 세그먼트 중 {num_sample_segments}개의 표본 세그먼트로 용어집 추출 시작...")
+            logger.info(f"동시 작업 수: {max_workers}, RPM 제한: {rpm}/분")
         
             processed_segments_count = 0
             if progress_callback:
@@ -810,15 +813,35 @@ class SimpleGlossaryService:
                     extracted_entries_count=len(seed_entries)
                 ))
 
+            # 세마포어로 동시 실행 수 제한
+            semaphore = asyncio.Semaphore(max_workers)
+            
+            # RPM 제한을 위한 속도 제한 장치 (시간 간격 계산)
+            request_interval = 60.0 / rpm if rpm > 0 else 0
+            last_request_time = 0
+            
+            async def rate_limited_extract(segment_text: str) -> List[GlossaryEntryDTO]:
+                """RPM 제한을 고려한 추출 함수"""
+                nonlocal last_request_time
+                
+                # 세마포어로 동시 실행 제한
+                async with semaphore:
+                    # RPM 속도 제한 적용
+                    elapsed = asyncio.get_event_loop().time() - last_request_time
+                    if elapsed < request_interval:
+                        await asyncio.sleep(request_interval - elapsed)
+                    
+                    last_request_time = asyncio.get_event_loop().time()
+                    
+                    return await self._extract_glossary_entries_from_segment_via_api_async(
+                        segment_text,
+                        user_override_glossary_extraction_prompt
+                    )
+
             # 비동기 작업 목록 생성
             tasks = []
             for segment in sample_segments:
-                task = asyncio.create_task(
-                    self._extract_glossary_entries_from_segment_via_api_async(
-                        segment,
-                        user_override_glossary_extraction_prompt
-                    )
-                )
+                task = asyncio.create_task(rate_limited_extract(segment))
                 tasks.append((task, segment))
 
             # 작업을 순차적으로 완료 처리

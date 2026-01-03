@@ -1014,9 +1014,16 @@ class GeminiClient:
             
             while current_retry_for_this_key <= max_retries:
                 try:
-                    await asyncio.sleep(self.delay_between_requests - (time.time() - self.last_request_timestamp) 
-                                       if (time.time() - self.last_request_timestamp) < self.delay_between_requests else 0)
-                    self.last_request_timestamp = time.time()
+                    # RPM 속도 제한 적용 (비동기 버전)
+                    sleep_time = 0
+                    with self._rpm_lock:
+                        current_time = time.time()
+                        next_slot = max(self.last_request_timestamp + self.delay_between_requests, current_time)
+                        sleep_time = next_slot - current_time
+                        self.last_request_timestamp = next_slot
+                    
+                    if sleep_time > 0:
+                        await asyncio.sleep(sleep_time)
                     
                     final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
                     if 'http_options' not in final_generation_config_params:
