@@ -257,10 +257,6 @@ class TranslationService:
             logger.debug("Translate_text: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
         
-        # 소설 본문 미리보기 로깅
-        text_preview = text_chunk[:100].replace('\n', ' ')
-        logger.info(f"번역 요청 텍스트: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")
-        
         # 1. 용어집 및 프롬프트 준비
         # 기존 _construct_prompt 로직 중 용어집 생성 부분만 가져옵니다.
         # (단, Slot Injection 모드에서는 프롬프트 템플릿 전체를 가져오는게 아니라 용어집 문자열만 필요함)
