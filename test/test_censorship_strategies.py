@@ -24,7 +24,7 @@ class MockStructuredTranslation(BaseModel):
 
 class MockGeminiClient(MagicMock):
     """테스트용 Mock GeminiClient"""
-    def generate_text(
+    async def generate_text_async(
         self,
         prompt: Union[str, List[Any]],
         model_name: str,
@@ -95,15 +95,19 @@ def test_structured_output_succeeds_with_sensitive_text(mock_construct_prompt, t
         "response_schema": MockStructuredTranslation
     }
     
-    # TranslationService의 gemini_client.generate_text를 직접 호출하여 테스트
+    # TranslationService의 gemini_client.generate_text_async를 직접 호출하여 테스트
     # 실제로는 TranslationService 내부에 이 로직을 호출하는 새로운 메서드가 필요함
     # 여기서는 개념 증명을 위해 직접 호출
+    import asyncio
     try:
-        result = translation_service.gemini_client.generate_text(
-            prompt="dummy prompt",
-            model_name="gemini-test-model",
-            generation_config_dict=generation_config
-        )
+        async def run_test():
+            return await translation_service.gemini_client.generate_text_async(
+                prompt="dummy prompt",
+                model_name="gemini-test-model",
+                generation_config_dict=generation_config
+            )
+        
+        result = asyncio.run(run_test())
         
         assert isinstance(result, MockStructuredTranslation)
         assert result.status == "success"

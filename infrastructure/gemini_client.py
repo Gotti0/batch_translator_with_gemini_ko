@@ -7,7 +7,6 @@ import re
 import json
 import asyncio
 from pathlib import Path
-import threading # Added for thread safety
 from typing import Dict, Any, Iterable, Optional, Union, List
 
 # Google 관련 imports
@@ -176,7 +175,7 @@ class GeminiClient:
         self.current_api_key_index: int = 0
         self.current_api_key: Optional[str] = None
         self.client_pool: Dict[str, genai.Client] = {}
-        self._key_rotation_lock = threading.Lock()
+        self._key_rotation_lock = asyncio.Lock()
         self.key_quota_failure_times: Dict[str, float] = {}
         
         # Vertex AI related attributes
@@ -194,7 +193,7 @@ class GeminiClient:
         self.requests_per_minute = requests_per_minute or 140.0
         self.delay_between_requests = 60.0 / self.requests_per_minute  # 요청 간 지연 시간 계산
         self.last_request_timestamp = 0.0
-        self._rpm_lock = threading.Lock()
+        self._rpm_lock = asyncio.Lock()
 
         # Determine authentication mode and process credentials
         service_account_info: Optional[Dict[str, Any]] = None
@@ -370,13 +369,13 @@ class GeminiClient:
         logger.info(f"Vertex AI용 Client 초기화 시도: {client_options}")
 
 
-    def _apply_rpm_delay(self):
-        """요청 속도 제어를 위한 지연 적용 (동시성 개선)"""
+    async def _apply_rpm_delay(self):
+        """요청 속도 제어를 위한 지연 적용 (동시성 개선) - Async"""
         if self.delay_between_requests <= 0:
             return
 
         sleep_time = 0
-        with self._rpm_lock:
+        async with self._rpm_lock:
             current_time = time.time()
             
             # 다음 요청이 가능한 가장 빠른 시간을 계산합니다.
@@ -397,7 +396,7 @@ class GeminiClient:
             scheduled_start_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.last_request_timestamp))
             
             logger.log(log_level, f"RPM({self.requests_per_minute}) 제어: 다음 요청까지 {sleep_time:.3f}초 대기합니다. (예약된 시작: {scheduled_start_time_str})")
-            time.sleep(sleep_time)
+            await asyncio.sleep(sleep_time)
 
     def _is_rate_limit_error(self, error_obj: Any) -> bool:
         from google.api_core import exceptions as gapi_exceptions
@@ -448,335 +447,13 @@ class GeminiClient:
 
 
 
-    def generate_text(
-        self,
-        prompt: Union[str, List[genai_types.Content]], # 변경: List[Content] 지원
-        model_name: str,
-        generation_config_dict: Optional[Dict[str, Any]] = None,
-        safety_settings_list_of_dicts: Optional[List[Dict[str, Any]]] = None,
-        thinking_budget: Optional[int] = None, # 사고 예산 파라미터 추가
-        system_instruction_text: Optional[str] = None, 
-        max_retries: int = 5, 
-        initial_backoff: float = 2.0,
-        max_backoff: float = 60.0,
-        stream: bool = False
-    ) -> Optional[Union[str, Any]]: 
-        if not self.client:
-            # 클라이언트가 초기화되지 않은 경우, 여기서 API 키 회전을 시도하는 것은 의미가 없을 수 있음.
-            # 초기화 실패는 더 근본적인 문제일 가능성이 높음.
-             raise GeminiApiException("Gemini 클라이언트가 초기화되지 않았습니다.")
-        if not model_name:
-            raise ValueError("모델 이름이 제공되지 않았습니다.")
-        
-        # API 키 모드이고, 현재 키가 설정되어 있으며, 환경 변수 GOOGLE_API_KEY가 없는 경우에만 모델 이름에 키 추가
-        # 환경 변수가 설정되어 있다면 Client가 이를 사용할 것으로 기대.
-        is_api_key_mode_for_norm = self.auth_mode == "API_KEY" and bool(self.current_api_key) and not os.environ.get("GOOGLE_API_KEY")
-        effective_model_name = self._normalize_model_name(model_name, for_api_key_mode=is_api_key_mode_for_norm)
-        
-        final_sdk_contents: Iterable[genai_types.Content]
-        if system_instruction_text:
-            logger.debug(f"System instruction 제공됨: {system_instruction_text[:100]}...")
-        
-        if isinstance(prompt, str):
-            # 단일 문자열 프롬프트는 사용자 역할의 단일 Content 객체로 변환
-            final_sdk_contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=prompt)])] # 명시적으로 text= 사용
-        elif isinstance(prompt, list) and all(isinstance(item, genai_types.Content) for item in prompt):
-            final_sdk_contents = prompt # 이미 List[Content] 형태이면 그대로 사용
-        else:
-            raise ValueError("프롬프트는 문자열 또는 Content 객체의 리스트여야 합니다.")
-
-        total_keys = len(self.api_keys_list) if self.auth_mode == "API_KEY" and self.api_keys_list else 1
-        attempted_keys_count = 0
-
-        while attempted_keys_count < total_keys:
-            current_retry_for_this_key = 0
-            current_backoff = initial_backoff
-            
-            if self.auth_mode == "API_KEY":
-                key_id = self._get_api_key_identifier(self.current_api_key)
-                logger.info(f"API {key_id}로 작업 시도.")
-                # _normalize_model_name에서 API 키가 모델명에 포함되도록 수정했으므로, 여기서 추가 작업 불필요
-            elif self.auth_mode == "VERTEX_AI":
-                 logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")
-            
-            if not self.client: 
-                logger.error("generate_text: self.client가 유효하지 않습니다.")
-                if self.auth_mode == "API_KEY": break 
-                else: raise GeminiApiException("클라이언트가 유효하지 않으며 복구할 수 없습니다 (Vertex).")
-
-            last_error_was_quota = False
-            while current_retry_for_this_key <= max_retries:
-                try:
-                    self._apply_rpm_delay() # RPM 지연 적용
-                    logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
-
-                    # generation_config 및 safety_settings 준비
-                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {} # type: ignore
-                    
-
-                    # 명시적 로깅을 위해 클라이언트의 http_options를 요청 설정에 포함
-                    if 'http_options' not in final_generation_config_params:
-                        final_generation_config_params['http_options'] = self.http_options
-
-                    # 항상 OFF으로 안전 설정 강제 적용
-                    # 사용자가 safety_settings_list_of_dicts를 제공하더라도 무시됩니다.
-                    
-                    if safety_settings_list_of_dicts:
-                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
-
-                    # system_instruction을 GenerateContentConfig에 포함
-                    if system_instruction_text and system_instruction_text.strip():
-                        final_generation_config_params['system_instruction'] = system_instruction_text
-                    elif 'system_instruction' in final_generation_config_params and not (system_instruction_text and system_instruction_text.strip()):
-                         # generation_config_dict에 system_instruction이 있었는데, system_instruction_text가 비어있으면 제거
-                         del final_generation_config_params['system_instruction']
-                    
-                    # thinking_budget이 제공되면 thinking_config를 설정합니다.
-                    # [수정 시작] 모델 버전에 따른 Thinking Config 스마트 설정 로직 적용 (thinking_parameter.md 가이드 반영)
-                    thinking_config = None
-                    
-                    # 1. generate_text 인자로 thinking_budget이 명시적으로 제공된 경우 (주로 Gemini 2.5용)
-                    if thinking_budget is not None:
-                         thinking_config = genai_types.ThinkingConfig(
-                            thinking_budget=thinking_budget
-                        )
-                         logger.info(f"Thinking budget 설정됨 (인자): {thinking_budget}")
-                    else:
-                        # 2. 명시적 thinking_budget 인자가 없을 때, 모델명 기반 자동 설정 또는 generation_config_dict에서 추출
-                        check_name = effective_model_name.lower()
-                        
-                        if "gemini-3" in check_name:
-                            # generation_config_dict에서 thinking_level 추출 시도
-                            level = "high" # 기본값
-                            if "thinking_level" in final_generation_config_params:
-                                level = final_generation_config_params.pop("thinking_level") # 사용 후 제거
-                            
-                            thinking_config = genai_types.ThinkingConfig(
-                                thinking_level=level
-                            )
-                            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용 (generation_config_dict에서 추출).")
-                            
-                        elif "gemini-2.5" in check_name:
-                            # Gemini 2.5인데 예산 설정 인자가 없으면 Dynamic(-1) 적용
-                            thinking_config = genai_types.ThinkingConfig(
-                                thinking_budget=-1
-                            )
-                            logger.info("Gemini 2.5 감지: Thinking Budget=-1(Dynamic) 자동 적용 (인자 부재).")
-
-                    if thinking_config:
-                        final_generation_config_params['thinking_config'] = thinking_config
-                    # [수정 끝]
+    # NOTE: Synchronous generate_text removed as part of async migration.
+    # Use generate_text_async instead.
 
 
-                    forced_safety_settings = [
-                        genai_types.SafetySetting(
-                            category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        genai_types.SafetySetting(
-                            category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        genai_types.SafetySetting(
-                            category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        genai_types.SafetySetting(
-                            category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        genai_types.SafetySetting(
-                            category=genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                            threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                        ),                    ]
-                    final_generation_config_params['safety_settings'] = forced_safety_settings
-                    
-                    # response_schema 디버깅 로깅 (조건부)
-                    if logger.isEnabledFor(logging.DEBUG) and 'response_schema' in final_generation_config_params:
-                        logger.debug(f"response_schema: {type(final_generation_config_params['response_schema']).__name__}")
-                    sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
-
-                    # [[디버깅]] API 요청 정보 로깅 (조건부 - DEBUG 레벨에서만)
-                    if logger.isEnabledFor(logging.DEBUG):
-                        # 요약된 단일 로그로 API 요청 정보 출력
-                        contents_count = len(final_sdk_contents)
-                        total_text_len = sum(
-                            len(part.text) for content in final_sdk_contents 
-                            for part in content.parts if hasattr(part, 'text') and part.text
-                        )
-                        safety_count = len(forced_safety_settings) if forced_safety_settings else 0
-                        logger.debug(f"API요청: 모델={effective_model_name}, 스트림={stream}, 컨텐츠={contents_count}개, 텍스트={total_text_len}자, 안전설정={safety_count}개")
-                    
-                    text_content_from_api: Optional[str] = None
-                    if stream:
-                        response = self.client.models.generate_content_stream(
-                            model=effective_model_name,
-                            contents=final_sdk_contents,
-                            config=sdk_generation_config
-                            # system_instruction 파라미터 제거
-                        )
-                        aggregated_parts = []
-                        for chunk_response in response:
-                            if hasattr(chunk_response, 'text') and chunk_response.text:
-                                aggregated_parts.append(chunk_response.text)
-                            elif hasattr(chunk_response, 'candidates') and chunk_response.candidates:
-                                for candidate in chunk_response.candidates:
-                                    # Streaming candidates might not always have finish_reason == STOP for intermediate parts
-                                    # We primarily care about the content parts..
-                                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
-                                        aggregated_parts.append("".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text))
-                            if self._is_content_safety_error(response=chunk_response): # 스트림의 각 청크 응답에 대해 안전성 검사
-                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림의 일부 응답 차단")                    
-                        text_content_from_api = "".join(aggregated_parts)
-                    else:
-                        response = self.client.models.generate_content(
-                            model=effective_model_name,
-                            contents=final_sdk_contents,
-                            config=sdk_generation_config,
-                            # system_instruction 파라미터 제거
-                        )
-
-                        # 응답 객체 요약 로깅 (조건부 - 루프 대신 단일 요약)
-                        if logger.isEnabledFor(logging.DEBUG):
-                            has_text = hasattr(response, 'text') and response.text
-                            has_candidates = hasattr(response, 'candidates') and response.candidates
-                            text_len = len(response.text) if has_text else 0
-                            logger.debug(f"API응답: text={text_len}자, candidates={'있음' if has_candidates else '없음'}")
-                        
-                        # 구조화된 출력 (스키마 사용 시) 처리
-                        if sdk_generation_config and sdk_generation_config.response_schema and \
-                           sdk_generation_config.response_mime_type == "application/json" and \
-                           hasattr(response, 'parsed') and response.parsed is not None:
-                            logger.debug("GeminiClient: response.parsed를 구조화된 출력으로 반환합니다.")
-                            return response.parsed
-
-                        if self._is_content_safety_error(response=response):
-                            raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
-                        if hasattr(response, 'text') and response.text is not None:
-                            text_content_from_api = response.text
-                        elif hasattr(response, 'candidates') and response.candidates:
-                            for candidate in response.candidates:
-                                if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
-                                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
-                                        text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
-                                        break 
-                            if text_content_from_api is None:
-                                text_content_from_api = ""
-
-                    if text_content_from_api is not None:
-                        # generation_config_dict가 None일 수 있으므로 확인
-                        is_json_response_expected = generation_config_dict and \
-                                                    generation_config_dict.get("response_mime_type") == "application/json"
-
-                        if is_json_response_expected:
-                            try:
-                                logger.debug("GeminiClient에서 JSON 응답 파싱 시도 중.")
-                                # 간단한 Markdown 코드 블록 제거
-                                cleaned_json_str = re.sub(r'^```json\s*', '', text_content_from_api.strip(), flags=re.IGNORECASE)
-                                cleaned_json_str = re.sub(r'\s*```$', '', cleaned_json_str, flags=re.IGNORECASE)
-                                return json.loads(cleaned_json_str.strip()) # 파싱된 Python 객체 반환
-                            except json.JSONDecodeError as e_parse:
-                                logger.warning(f"GeminiClient에서 JSON 응답 파싱 실패 (mime type이 application/json임에도 불구하고): {e_parse}. 원본 문자열 반환. 원본: {text_content_from_api[:200]}...")
-                                return text_content_from_api # 파싱 실패 시 원본 문자열 반환
-                        else:
-                            # [수정] 일반 텍스트 모드에서도 빈 문자열인지 확인
-                            if not text_content_from_api.strip():
-                                logger.warning(f"모델 응답이 비어 있습니다 (공백 포함). (시도: {current_retry_for_this_key + 1})")
-                                raise GeminiContentSafetyException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
-                            return text_content_from_api # JSON이 아니면 그냥 텍스트 반환
-                    
-                    raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
-
-                except GeminiContentSafetyException:
-                # 콘텐츠 안전 예외는 즉시 상위로 전파
-                    raise
-                except GoogleAuthError as auth_e:
-                    logger.warning(f"인증 오류 발생: {auth_e}")
-                    if self._is_invalid_request_error(auth_e):
-                        logger.error(f"복구 불가능한 인증 오류: {auth_e}")
-                        if self.auth_mode == "API_KEY":
-                            break
-                        else:
-                            raise GeminiInvalidRequestException(f"복구 불가능한 인증 오류: {auth_e}") from auth_e
-                    # 인증 오류도 재시도 로직 적용
-                    elif current_retry_for_this_key < max_retries:
-                        time.sleep(current_backoff + random.uniform(0,1))
-                        current_retry_for_this_key += 1
-                        current_backoff = min(current_backoff * 2, max_backoff)
-                        continue
-                    else:
-                        break
-                except Exception as e:
-                    error_message = str(e)
-                    logger.warning(f"API 관련 오류 발생: {type(e).__name__} - {error_message}")
-                    
-                    if self._is_invalid_request_error(e):
-                        logger.error(f"복구 불가능한 요청 오류 (현재 키/설정): {error_message}")
-                        if self.auth_mode == "API_KEY":
-                            break
-                        else:
-                            raise GeminiInvalidRequestException(f"복구 불가능한 요청 오류: {error_message}") from e
-                    elif self._is_rate_limit_error(e):
-                        logger.warning(f"API 사용량 제한/리소스 부족 감지: {error_message}")
-                        
-                        # RESOURCE_EXHAUSTED (할당량 초과) 또는 QUOTA_EXCEEDED인 경우 즉시 키 회전
-                        if self._is_quota_exhausted_error(e):
-                            if self.current_api_key:
-                                self.key_quota_failure_times[self.current_api_key] = time.time()
-                                current_key_id = self._get_api_key_identifier(self.current_api_key)
-                                logger.warning(f"할당량 소진 감지 ({current_key_id}). 쿨다운을 설정하고 다음 키로 회전을 시도합니다.")
-                            else:
-                                logger.warning("할당량 소진 감지 (현재 키 정보 없음). 다음 키로 회전을 시도합니다.")
-                            break  # 현재 키에 대한 재시도 루프 탈출하여 키 회전 실행
-                        
-                        # 일반적인 rate limit의 경우 재시도 수행
-                        if current_retry_for_this_key < max_retries:
-                            time.sleep(current_backoff + random.uniform(0,1))
-                            current_retry_for_this_key += 1
-                            current_backoff = min(current_backoff * 2, max_backoff)
-                            continue
-                        else:
-                            break
-                    elif self._is_content_safety_error(error_obj=e):
-                        logger.warning(f"콘텐츠 안전 관련 오류 감지(예외 기반): {error_message}")
-                        raise GeminiContentSafetyException(f"콘텐츠 안전 문제로 요청이 차단되었습니다(예외 기반): {error_message}") from e
-                    elif "timeout" in error_message.lower() or "timed out" in error_message.lower():
-                        logger.warning(f"네트워크 타임아웃 또는 응답 지연 발생: {error_message}")
-                        if current_retry_for_this_key < max_retries:
-                            time.sleep(current_backoff + random.uniform(0,1))
-                            current_retry_for_this_key += 1
-                            current_backoff = min(current_backoff * 2, max_backoff)
-                            continue
-                        else:
-                            logger.error(f"최대 재시도 횟수 초과 (타임아웃): {error_message}")
-                            break
-                    else:
-                        if current_retry_for_this_key < max_retries:
-                            time.sleep(current_backoff + random.uniform(0,1))
-                            current_retry_for_this_key += 1
-                            current_backoff = min(current_backoff * 2, max_backoff)
-                            continue
-                        else:
-                            break
-            
-            attempted_keys_count += 1
-            if attempted_keys_count < total_keys and self.auth_mode == "API_KEY":
-                if not self._rotate_api_key_and_reconfigure():
-                    logger.error("다음 API 키로 전환하거나 클라이언트를 재설정하는 데 실패했습니다.")
-                    raise GeminiAllApiKeysExhaustedException("유효한 다음 API 키로 전환할 수 없습니다.")
-                if not self.client: # Check if rotation resulted in a valid client
-                    logger.error("API 키 회전 후 유효한 클라이언트가 없습니다. 모든 키가 소진된 것으로 간주합니다.")
-                    raise GeminiAllApiKeysExhaustedException("API 키 회전 후 유효한 클라이언트를 찾지 못했습니다.")
-            elif self.auth_mode == "VERTEX_AI": 
-                logger.error("Vertex AI 모드에서 복구 불가능한 오류 발생 또는 최대 재시도 도달.")
-                raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.")
-
-        raise GeminiAllApiKeysExhaustedException("모든 API 키를 사용한 시도 후에도 텍스트 생성에 최종 실패했습니다.")
-
-
-    def _rotate_api_key_and_reconfigure(self) -> bool:
+    async def _rotate_api_key_and_reconfigure(self) -> bool:
         logger.debug("API 키 회전: 락 획득 대기 중...")
-        with self._key_rotation_lock:
+        async with self._key_rotation_lock:
             logger.debug("API 키 회전: 락 획득.")
             if not self.api_keys_list or len(self.api_keys_list) <= 1: # No keys or only one successful key
                 logger.warning("API 키 목록이 비어있거나 단일 유효 키만 있어 회전할 수 없습니다.")
@@ -815,35 +492,31 @@ class GeminiClient:
             logger.debug("API 키 회전: 락 해제.")
             return False
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models_async(self) -> List[Dict[str, Any]]:
+        """비동기 모델 목록 조회"""
         if not self.client: 
-             logger.error("list_models: self.client가 초기화되지 않았습니다.")
+             logger.error("list_models_async: self.client가 초기화되지 않았습니다.")
              raise GeminiApiException("모델 목록 조회 실패: 클라이언트가 유효하지 않습니다.")
-
-        # API 키 모드에서 list_models가 API 키를 어떻게 사용하는지 확인 필요.
-        # genai.Client()가 환경 변수를 사용한다면, _rotate_api_key_and_reconfigure에서
-        # 환경 변수를 설정하거나, 여기서 list_models 호출 시점에 임시로 설정할 수 있음.
-        # 또는, list_models가 API 키를 인자로 받는다면 전달해야 함.
-        # 현재는 Client가 환경 변수를 통해 API 키를 인지한다고 가정.
 
         total_keys_for_list = len(self.api_keys_list) if self.auth_mode == "API_KEY" and self.api_keys_list else 1
         attempted_keys_for_list_models = 0
 
         while attempted_keys_for_list_models < total_keys_for_list:
             try:
-                self._apply_rpm_delay() # RPM 지연 적용
+                await self._apply_rpm_delay() 
                 logger.info(f"사용 가능한 모델 목록 조회 중 (현재 API 키 인덱스: {self.current_api_key_index if self.auth_mode == 'API_KEY' else 'N/A'})...")
                 models_info = []
                 if not self.client: 
-                    raise GeminiApiException("list_models: 루프 내에서 Client가 유효하지 않음.")
+                    raise GeminiApiException("list_models_async: 루프 내에서 Client가 유효하지 않음.")
 
-                for m in self.client.models.list(): 
+                # client.aio.models.list() returns an async iterator
+                async for m in await self.client.aio.models.list(): 
                     full_model_name = m.name
                     short_model_name = ""
                     if isinstance(full_model_name, str):
                         short_model_name = full_model_name.split('/')[-1] if '/' in full_model_name else full_model_name
-                    else: # Should not happen based on type hints from SDK
-                        short_model_name = str(full_model_name) # Fallback, log warning if necessary
+                    else: 
+                        short_model_name = str(full_model_name)
                     
                     models_info.append({
                         "name": full_model_name,
@@ -872,12 +545,12 @@ class GeminiClient:
                         raise GeminiAllApiKeysExhaustedException("모든 API 키로 모델 목록 조회에 실패했습니다.") from e
                     
                     logger.info("다음 API 키로 회전하여 모델 목록 조회 재시도...")
-                    if not self._rotate_api_key_and_reconfigure():
-                        logger.error("API 키 회전 또는 클라이언트 재설정 실패 (list_models).")
-                        raise GeminiAllApiKeysExhaustedException("API 키 회전 중 문제 발생 또는 모든 키 시도됨 (list_models).") from e
-                    if not self.client: # Check if rotation resulted in a valid client
-                        logger.error("API 키 회전 후 유효한 클라이언트가 없습니다 (list_models).")
-                        raise GeminiAllApiKeysExhaustedException("API 키 회전 후 유효한 클라이언트를 찾지 못했습니다 (list_models).")
+                    if not await self._rotate_api_key_and_reconfigure():
+                        logger.error("API 키 회전 또는 클라이언트 재설정 실패 (list_models_async).")
+                        raise GeminiAllApiKeysExhaustedException("API 키 회전 중 문제 발생 또는 모든 키 시도됨 (list_models_async).") from e
+                    if not self.client: 
+                        logger.error("API 키 회전 후 유효한 클라이언트가 없습니다 (list_models_async).")
+                        raise GeminiAllApiKeysExhaustedException("API 키 회전 후 유효한 클라이언트를 찾지 못했습니다 (list_models_async).")
                 else: 
                     logger.error(f"모델 목록 조회 실패 (키 회전 불가 또는 Vertex 모드): {error_message}")
                     raise GeminiApiException(f"모델 목록 조회 실패: {error_message}") from e
@@ -1028,15 +701,7 @@ class GeminiClient:
             while current_retry_for_this_key <= max_retries:
                 try:
                     # RPM 속도 제한 적용 (비동기 버전)
-                    sleep_time = 0
-                    with self._rpm_lock:
-                        current_time = time.time()
-                        next_slot = max(self.last_request_timestamp + self.delay_between_requests, current_time)
-                        sleep_time = next_slot - current_time
-                        self.last_request_timestamp = next_slot
-                    
-                    if sleep_time > 0:
-                        await asyncio.sleep(sleep_time)
+                    await self._apply_rpm_delay()
                     
                     logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
                     
@@ -1185,7 +850,7 @@ class GeminiClient:
             
             attempted_keys_count += 1
             if attempted_keys_count < total_keys and self.auth_mode == "API_KEY":
-                if not self._rotate_api_key_and_reconfigure():
+                if not await self._rotate_api_key_and_reconfigure():
                     raise GeminiAllApiKeysExhaustedException("유효한 다음 API 키로 전환할 수 없습니다.")
             elif self.auth_mode == "VERTEX_AI":
                 raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.")
@@ -1194,77 +859,82 @@ class GeminiClient:
 
 
 if __name__ == '__main__':
-    # ... (테스트 코드는 이전과 유사하게 유지하되, Client 및 generate_content 호출 방식 변경에 맞춰 수정 필요) ...
-    print("Gemini 클라이언트 (신 SDK 패턴) 테스트 시작...")
-    logging.basicConfig(level=logging.INFO)  # type: ignore
+    import asyncio
+    
+    async def main_test():
+        # ... (테스트 코드는 이전과 유사하게 유지하되, Client 및 generate_content 호출 방식 변경에 맞춰 수정 필요) ...
+        print("Gemini 클라이언트 (신 SDK 패턴) 테스트 시작...")
+        logging.basicConfig(level=logging.INFO)  # type: ignore
 
-    api_key_single_valid = os.environ.get("TEST_GEMINI_API_KEY_SINGLE_VALID")
-    sa_json_string_valid = os.environ.get("TEST_VERTEX_SA_JSON_STRING_VALID")
-    gcp_project_for_vertex = os.environ.get("TEST_GCP_PROJECT_FOR_VERTEX") 
-    gcp_location_for_vertex_from_env = os.environ.get("TEST_GCP_LOCATION_FOR_VERTEX", "asia-northeast3")
+        api_key_single_valid = os.environ.get("TEST_GEMINI_API_KEY_SINGLE_VALID")
+        sa_json_string_valid = os.environ.get("TEST_VERTEX_SA_JSON_STRING_VALID")
+        gcp_project_for_vertex = os.environ.get("TEST_GCP_PROJECT_FOR_VERTEX") 
+        gcp_location_for_vertex_from_env = os.environ.get("TEST_GCP_LOCATION_FOR_VERTEX", "asia-northeast3")
 
-    print("\n--- 시나리오 1: Gemini Developer API (유효한 단일 API 키 - 환경 변수 사용) ---")
-    if api_key_single_valid:
-        original_env_key = os.environ.get("GOOGLE_API_KEY")
-        os.environ["GOOGLE_API_KEY"] = api_key_single_valid
-        try:
-            client_dev_single = GeminiClient() # auth_credentials 없이 환경 변수 사용
-            print(f"  [성공] Gemini Developer API 클라이언트 생성 (환경변수 GOOGLE_API_KEY 사용)")
-            
-            models_dev = client_dev_single.list_models() # type: ignore
-            if models_dev:
-                print(f"  [정보] DEV API 모델 수: {len(models_dev)}. 첫 모델: {models_dev[0].get('display_name', models_dev[0].get('short_name'))}")
-                test_model_name = "gemini-2.0-flash" # 신 SDK에서는 'models/' 접두사 없이 사용 가능할 수 있음
+        print("\n--- 시나리오 1: Gemini Developer API (유효한 단일 API 키 - 환경 변수 사용) ---")
+        if api_key_single_valid:
+            original_env_key = os.environ.get("GOOGLE_API_KEY")
+            os.environ["GOOGLE_API_KEY"] = api_key_single_valid
+            try:
+                client_dev_single = GeminiClient() # auth_credentials 없이 환경 변수 사용
+                print(f"  [성공] Gemini Developer API 클라이언트 생성 (환경변수 GOOGLE_API_KEY 사용)")
                 
-                print(f"  [테스트] 텍스트 생성 (모델: {test_model_name})...")
-                # API 키는 Client가 환경 변수에서 가져오거나, 모델 이름에 포함시켜야 함.
-                # 여기서는 Client가 환경 변수를 사용한다고 가정.
-                response = client_dev_single.generate_text("Hello Gemini with new SDK!", model_name=test_model_name)
-                print(f"  [응답] {response[:100] if response else '없음'}...")
-            else:
-                print("  [경고] DEV API에서 모델 목록을 가져오지 못했습니다.")
-        except Exception as e:
-            print(f"  [오류] 시나리오 1: {type(e).__name__} - {e}")
-            logger.error("시나리오 1 상세 오류:", exc_info=True)
-        finally:
-            if original_env_key is not None: os.environ["GOOGLE_API_KEY"] = original_env_key
-            else: os.environ.pop("GOOGLE_API_KEY", None)
-    else:
-        print("  [건너뜀] TEST_GEMINI_API_KEY_SINGLE_VALID 환경 변수 없음.")
-
-    print("\n--- 시나리오 2: Vertex AI API (유효한 서비스 계정 JSON 문자열) ---")
-    if sa_json_string_valid and gcp_project_for_vertex: 
-        try:
-            client_vertex_json_str = GeminiClient(
-                auth_credentials=sa_json_string_valid,
-                project=gcp_project_for_vertex, 
-                location=gcp_location_for_vertex_from_env 
-            )
-            print(f"  [성공] Vertex AI API 클라이언트 생성 (SA JSON, project='{client_vertex_json_str.vertex_project}', location='{client_vertex_json_str.vertex_location}')")
-            
-            models_vertex_json = client_vertex_json_str.list_models()
-            if models_vertex_json:
-                print(f"  [정보] Vertex AI 모델 수: {len(models_vertex_json)}. 첫 모델: {models_vertex_json[0].get('display_name', models_vertex_json[0].get('short_name')) if models_vertex_json else '없음'}")
-                
-                test_vertex_model_name_short = "gemini-1.5-flash-001" # 예시
-                found_vertex_model_info = next((m for m in models_vertex_json if m.get('short_name') == test_vertex_model_name_short), None)
-                
-                if not found_vertex_model_info and models_vertex_json: 
-                    found_vertex_model_info = next((m for m in models_vertex_json if "text" in m.get("name","").lower() and "vision" not in m.get("name","").lower()), models_vertex_json[0])
-
-                if found_vertex_model_info:
-                    actual_vertex_model_to_test = found_vertex_model_info['short_name'] or found_vertex_model_info['name']
-                    print(f"  [테스트] 텍스트 생성 (모델: {actual_vertex_model_to_test})...")
-                    response = client_vertex_json_str.generate_text("Hello Vertex AI with new SDK!", model_name=actual_vertex_model_to_test)
+                models_dev = await client_dev_single.list_models_async() # type: ignore
+                if models_dev:
+                    print(f"  [정보] DEV API 모델 수: {len(models_dev)}. 첫 모델: {models_dev[0].get('display_name', models_dev[0].get('short_name'))}")
+                    test_model_name = "gemini-2.0-flash" # 신 SDK에서는 'models/' 접두사 없이 사용 가능할 수 있음
+                    
+                    print(f"  [테스트] 텍스트 생성 (모델: {test_model_name})...")
+                    # API 키는 Client가 환경 변수에서 가져오거나, 모델 이름에 포함시켜야 함.
+                    # 여기서는 Client가 환경 변수를 사용한다고 가정.
+                    response = await client_dev_single.generate_text_async("Hello Gemini with new SDK!", model_name=test_model_name)
                     print(f"  [응답] {response[:100] if response else '없음'}...")
                 else:
-                     print(f"  [경고] 텍스트 생성을 위한 적절한 Vertex 모델을 찾지 못했습니다.")
-            else:
-                print("  [경고] Vertex AI에서 모델을 가져오지 못했습니다.")
-        except Exception as e:
-            print(f"  [오류] 시나리오 2: {type(e).__name__} - {e}")
-            logger.error("시나리오 2 상세 오류:", exc_info=True)
-    else:
-        print("  [건너뜀] TEST_VERTEX_SA_JSON_STRING_VALID 또는 TEST_GCP_PROJECT_FOR_VERTEX 환경 변수 없음.")
-    
-    print("\nGemini 클라이언트 (신 SDK 패턴) 테스트 종료.")
+                    print("  [경고] DEV API에서 모델 목록을 가져오지 못했습니다.")
+            except Exception as e:
+                print(f"  [오류] 시나리오 1: {type(e).__name__} - {e}")
+                logger.error("시나리오 1 상세 오류:", exc_info=True)
+            finally:
+                if original_env_key is not None: os.environ["GOOGLE_API_KEY"] = original_env_key
+                else: os.environ.pop("GOOGLE_API_KEY", None)
+        else:
+            print("  [건너뜀] TEST_GEMINI_API_KEY_SINGLE_VALID 환경 변수 없음.")
+
+        print("\n--- 시나리오 2: Vertex AI API (유효한 서비스 계정 JSON 문자열) ---")
+        if sa_json_string_valid and gcp_project_for_vertex: 
+            try:
+                client_vertex_json_str = GeminiClient(
+                    auth_credentials=sa_json_string_valid,
+                    project=gcp_project_for_vertex, 
+                    location=gcp_location_for_vertex_from_env 
+                )
+                print(f"  [성공] Vertex AI API 클라이언트 생성 (SA JSON, project='{client_vertex_json_str.vertex_project}', location='{client_vertex_json_str.vertex_location}')")
+                
+                models_vertex_json = await client_vertex_json_str.list_models_async()
+                if models_vertex_json:
+                    print(f"  [정보] Vertex AI 모델 수: {len(models_vertex_json)}. 첫 모델: {models_vertex_json[0].get('display_name', models_vertex_json[0].get('short_name')) if models_vertex_json else '없음'}")
+                    
+                    test_vertex_model_name_short = "gemini-1.5-flash-001" # 예시
+                    found_vertex_model_info = next((m for m in models_vertex_json if m.get('short_name') == test_vertex_model_name_short), None)
+                    
+                    if not found_vertex_model_info and models_vertex_json: 
+                        found_vertex_model_info = next((m for m in models_vertex_json if "text" in m.get("name","").lower() and "vision" not in m.get("name","").lower()), models_vertex_json[0])
+
+                    if found_vertex_model_info:
+                        actual_vertex_model_to_test = found_vertex_model_info['short_name'] or found_vertex_model_info['name']
+                        print(f"  [테스트] 텍스트 생성 (모델: {actual_vertex_model_to_test})...")
+                        response = await client_vertex_json_str.generate_text_async("Hello Vertex AI with new SDK!", model_name=actual_vertex_model_to_test)
+                        print(f"  [응답] {response[:100] if response else '없음'}...")
+                    else:
+                        print(f"  [경고] 텍스트 생성을 위한 적절한 Vertex 모델을 찾지 못했습니다.")
+                else:
+                    print("  [경고] Vertex AI에서 모델을 가져오지 못했습니다.")
+            except Exception as e:
+                print(f"  [오류] 시나리오 2: {type(e).__name__} - {e}")
+                logger.error("시나리오 2 상세 오류:", exc_info=True)
+        else:
+            print("  [건너뜀] TEST_VERTEX_SA_JSON_STRING_VALID 또는 TEST_GCP_PROJECT_FOR_VERTEX 환경 변수 없음.")
+        
+        print("\nGemini 클라이언트 (신 SDK 패턴) 테스트 종료.")
+
+    asyncio.run(main_test())

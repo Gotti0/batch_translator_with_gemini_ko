@@ -251,13 +251,13 @@ class AppService:
             logger.error(f"설정 저장 중 오류 발생: {e}")
             raise BtgConfigException(f"설정 저장 오류: {e}", original_exception=e) from e
 
-    def get_available_models(self) -> List[Dict[str, Any]]:
+    async def get_available_models(self) -> List[Dict[str, Any]]:
         if not self.gemini_client:
             logger.error("모델 목록 조회 실패: Gemini 클라이언트가 초기화되지 않았습니다.")
             raise BtgServiceException("Gemini 클라이언트가 초기화되지 않았습니다. API 키 또는 Vertex AI 설정을 확인하세요.")
         logger.info("사용 가능한 모델 목록 조회 서비스 호출됨.")
         try:
-            all_models = self.gemini_client.list_models()
+            all_models = await self.gemini_client.list_models_async()
             # 모델 필터링 로직 제거됨
             logger.info(f"총 {len(all_models)}개의 모델을 API로부터 직접 반환합니다.")
             return all_models
@@ -272,62 +272,30 @@ class AppService:
     def extract_glossary(
         self,
         input_file_path: Union[str, Path],
-        progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None, # DTO Changed
-        novel_language_code: Optional[str] = None, # 명시적 언어 코드 전달
-        seed_glossary_path: Optional[Union[str, Path]] = None, # CLI에서 전달된 시드 용어집 경로
-        user_override_glossary_extraction_prompt: Optional[str] = None, # 사용자 재정의 프롬프트 추가
+        progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None,
+        novel_language_code: Optional[str] = None,
+        seed_glossary_path: Optional[Union[str, Path]] = None,
+        user_override_glossary_extraction_prompt: Optional[str] = None,
         stop_check: Optional[Callable[[], bool]] = None
     ) -> Path:
-        if not self.glossary_service: # Changed from pronoun_service
-            logger.error("용어집 추출 서비스 실패: 서비스가 초기화되지 않았습니다.") # Message updated
-            raise BtgServiceException("용어집 추출 서비스가 초기화되지 않았습니다. 설정을 확인하세요.") # Message updated
+        """
+        용어집을 추출합니다 (동기 래퍼).
+        내부적으로 asyncio.run()을 사용하여 비동기 버전을 호출합니다.
         
-        logger.info(f"용어집 추출 서비스 시작: {input_file_path}, 시드 파일: {seed_glossary_path}")  
-        try:
-            file_content = read_text_file(input_file_path)
-            if not file_content:
-                logger.warning(f"입력 파일이 비어있습니다: {input_file_path}")
-                # For lorebook, an empty input means an empty lorebook, unless a seed is provided.
-                # SimpleGlossaryService.extract_and_save_lorebook handles empty content.
-        
-            # 로어북 추출 시 사용할 언어 코드 결정
-            # 1. 명시적으로 전달된 novel_language_code
-            # 2. 설정 파일의 novel_language (통합됨)
-            # 3. None (SimpleGlossaryService에서 자체적으로 처리하거나 언어 특정 기능 비활성화)
-            lang_code_for_extraction = novel_language_code or self.config.get("novel_language") # 통합된 설정 사용
-
-            # 사용할 프롬프트 결정: 메서드 인자로 전달된 것이 있으면 그것을 사용, 없으면 설정 파일 값 사용
-            prompt_to_use = user_override_glossary_extraction_prompt \
-                if user_override_glossary_extraction_prompt is not None \
-                else self.config.get("user_override_glossary_extraction_prompt")
-
-            # lang_code_for_extraction은 SimpleGlossaryService.extract_and_save_glossary에서 직접 사용되지 않음.
-            result_path = self.glossary_service.extract_and_save_glossary( # type: ignore
-                novel_text_content=file_content,
-                input_file_path_for_naming=input_file_path,
+        Note: CLI 및 테스트 호환성을 위한 동기 래퍼입니다.
+        새로운 코드에서는 extract_glossary_async()를 직접 사용하세요.
+        """
+        logger.info("[동기 래퍼] extract_glossary 호출 -> extract_glossary_async로 전환")
+        return asyncio.run(
+            self.extract_glossary_async(
+                input_file_path=input_file_path,
                 progress_callback=progress_callback,
-                seed_glossary_path=seed_glossary_path, # 시드 용어집 경로 전달
-                user_override_glossary_extraction_prompt=prompt_to_use, # 결정된 프롬프트 전달
+                novel_language_code=novel_language_code,
+                seed_glossary_path=seed_glossary_path,
+                user_override_glossary_extraction_prompt=user_override_glossary_extraction_prompt,
                 stop_check=stop_check
             )
-            logger.info(f"용어집 추출 완료. 결과 파일: {result_path}") # Message updated
-        
-            return result_path
-        except FileNotFoundError as e:
-            logger.error(f"용어집 추출을 위한 입력 파일을 찾을 수 없습니다: {input_file_path}") # Message updated
-            if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(0,0,f"오류: 입력 파일 없음 - {e.filename}",0)) # DTO Changed
-            raise BtgFileHandlerException(f"입력 파일 없음: {input_file_path}", original_exception=e) from e
-        except (BtgBusinessLogicException, BtgApiClientException) as e: # BtgPronounException replaced with BtgBusinessLogicException
-            logger.error(f"용어집 추출 중 오류: {e}") # Message updated
-            if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(0,0,f"오류: {e}",0)) # DTO Changed
-            raise
-        except Exception as e: 
-            logger.error(f"용어집 추출 서비스 중 예상치 못한 오류: {e}", exc_info=True)  # Message updated
-            if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(0,0,f"예상치 못한 오류: {e}",0)) # DTO Changed
-            raise BtgServiceException(f"용어집 추출 중 오류: {e}", original_exception=e) from e # Message updated
+        )
 
     async def extract_glossary_async(
         self,
@@ -406,195 +374,8 @@ class AppService:
             logger.error(f"용어집 추출 서비스 중 예상치 못한 오류: {e}", exc_info=True)
             if progress_callback:
                 progress_callback(GlossaryExtractionProgressDTO(0, 0, f"예상치 못한 오류: {e}", 0))
-            raise BtgServiceException(f"용어집 추출 중 오류: {e}", original_exception=e) from e
-
-
-    def _translate_and_save_chunk(self, chunk_index: int, chunk_text: str,
-                            chunked_output_file: Path,
-                            total_chunks: int,
-                            input_file_path_for_metadata: Path,
-                            progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None) -> bool:
-        current_chunk_info_msg = f"청크 {chunk_index}/{total_chunks}"
-        
-        # 청크 분석 (로깅 최적화: 통계는 DEBUG 레벨에서만 상세 출력)
-        chunk_chars = len(chunk_text)
-        start_time = time.time()
-        
-        # 통합 로그: 시작 정보와 기본 통계를 한 줄로
-        logger.info(f"{current_chunk_info_msg} 처리 시작 (길이: {chunk_chars}자)")
-        
-        # 상세 정보는 DEBUG 레벨에서만 출력
-        if logger.isEnabledFor(logging.DEBUG):
-            chunk_lines = chunk_text.count('\n') + 1
-            chunk_words = len(chunk_text.split())
-            chunk_preview = chunk_text[:100].replace('\n', ' ') + '...' if len(chunk_text) > 100 else chunk_text
-            logger.debug(f"  📝 미리보기: {chunk_preview}")
-            logger.debug(f"  📊 통계: 글자={chunk_chars}, 단어={chunk_words}, 줄={chunk_lines}")
-        last_error = None
-        success = False
-
-        
-
-        try:
-            if self.stop_requested:
-                logger.info(f"{current_chunk_info_msg} ⏸️ 처리 중지됨 (사용자 요청)")
-                return False
-
-            if not self.translation_service:
-                raise BtgServiceException("TranslationService가 초기화되지 않았습니다.")
-
-            # 번역 설정 로드
-            use_content_safety_retry = self.config.get("use_content_safety_retry", True)
-            max_split_attempts = self.config.get("max_content_safety_split_attempts", 3)
-            min_chunk_size = self.config.get("min_content_safety_chunk_size", 100)
-            model_name = self.config.get("model_name", "gemini-2.0-flash")
-            
-            # 번역 설정 상세는 DEBUG에서만 출력
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"  ⚙️ 설정: 모델={model_name}, 안전재시도={use_content_safety_retry}, 최대시도={max_split_attempts}")
-            
-            translation_start_time = time.time()
-                
-            if use_content_safety_retry:
-                translated_chunk = self.translation_service.translate_text_with_content_safety_retry(
-                    chunk_text, max_split_attempts, min_chunk_size
-                )
-            else:
-                translated_chunk = self.translation_service.translate_text(chunk_text)
-            
-            translation_time = time.time() - translation_start_time
-            translated_length = len(translated_chunk) if translated_chunk else 0
-            
-            if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg} 번역 완료되었으나 중지됨 - 결과 폐기")
-                return False
-
-            # 스레드 세이프하게 청크 파일에 직접 기록
-            save_chunk_with_index_to_file(chunked_output_file, chunk_index, translated_chunk)
-            
-            # 번역 성능 상세는 DEBUG에서만
-            if logger.isEnabledFor(logging.DEBUG):
-                speed = chunk_chars / translation_time if translation_time > 0 else 0
-                logger.debug(f"  ✅ 번역완료: {translated_length}자, {translation_time:.2f}초, {speed:.0f}자/초")
-            
-            success = True
-            
-            ratio = len(translated_chunk) / len(chunk_text) if len(chunk_text) > 0 else 0.0
-            total_processing_time = time.time() - start_time
-            logger.info(f"  🎯 {current_chunk_info_msg} 전체 처리 완료 (총 소요: {total_processing_time:.2f}초, 길이비율: {ratio:.2f})")
-
-        except BtgTranslationException as e_trans:
-            if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg} 중지됨 - 번역 예외 무시")
-                return False
-            processing_time = time.time() - start_time
-            error_type = "콘텐츠 검열" if "콘텐츠 안전 문제" in str(e_trans) else "번역 서비스"
-            logger.error(f"  ❌ {current_chunk_info_msg} 실패: {error_type} - {e_trans} ({processing_time:.2f}초)")
-            
-            save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[번역 실패: {e_trans}]\n\n--- 원문 내용 ---\n{chunk_text}")
-            last_error = str(e_trans)
-            success = False
-
-        except BtgApiClientException as e_api:
-            if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg} 중지됨 - API 예외 무시")
-                return False
-            processing_time = time.time() - start_time
-            # API 오류 유형 판별
-            error_detail = ""
-            if "사용량 제한" in str(e_api) or "429" in str(e_api):
-                error_detail = " [사용량 제한]"
-            elif "키" in str(e_api).lower() or "인증" in str(e_api):
-                error_detail = " [인증 오류]"
-            logger.error(f"  ❌ {current_chunk_info_msg} API 오류{error_detail}: {e_api} ({processing_time:.2f}초)")
-            
-            save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]\n\n--- 원문 내용 ---\n{chunk_text}")
-            last_error = str(e_api)
-            success = False
-
-        except Exception as e_gen:
-            if self.stop_requested:
-                logger.warning(f"  ⚠️ {current_chunk_info_msg} 중지됨 - 예외 무시")
-                return False
-            processing_time = time.time() - start_time
-            logger.error(f"  ❌ {current_chunk_info_msg} 예상치 못한 오류: {type(e_gen).__name__} - {e_gen} ({processing_time:.2f}초)", exc_info=True)
-            
-            save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]\n\n--- 원문 내용 ---\n{chunk_text}")
-            last_error = str(e_gen)
-            success = False
-                    
-
-        
-        finally:
-            total_time = time.time() - start_time
-            # 시스템이 중지 상태가 아니라면, 진행 상황을 업데이트합니다.
-            # 이 검사를 _progress_lock 안에서 수행하여, 플래그 확인과 카운터 업데이트 사이의
-            # 경쟁 조건을 완벽하게 방지합니다. 이것이 데이터 정합성을 보장하는 최종 방어선입니다.
-            if not self.stop_requested:
-                # 1단계: 먼저 processed_chunks_count 증가
-                self.processed_chunks_count += 1
-                # 2단계: 결과에 따라 성공/실패 카운트 업데이트
-                if success:
-                    self.successful_chunks_count += 1
-                    # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
-                    try:
-                        metadata_updated = update_metadata_for_chunk_completion(
-                            input_file_path_for_metadata, 
-                            chunk_index,
-                            source_length=len(chunk_text),
-                            translated_length=len(translated_chunk)
-                        )
-                        if metadata_updated:
-                            logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
-                        else:
-                            logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
-                    except Exception as meta_e:
-                        logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
-                else: # 'success'가 False인 경우, 실패 카운터를 증가시킵니다.
-                    self.failed_chunks_count += 1
-                    #  실패한 청크 정보 기록
-                    if last_error:
-                        try:
-                            update_metadata_for_chunk_failure(input_file_path_for_metadata, chunk_index, last_error)
-                            logger.debug(f"  💾 {current_chunk_info_msg} 실패 정보 메타데이터에 기록 완료")
-                        except Exception as meta_fail_e:
-                            logger.error(f"  ❌ {current_chunk_info_msg} 실패 정보 메타데이터 기록 중 오류: {meta_fail_e}")
-                    
-                # 3단계: 진행률 계산 및 통합 로깅 (2개 로그 → 1개)
-                progress_percentage = (self.processed_chunks_count / total_chunks) * 100
-                success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100 if self.processed_chunks_count > 0 else 0
-                    
-                # 매 10% 또는 마지막 청크에서만 상세 로그 출력 (로그 빈도 최적화)
-                should_log_progress = (self.processed_chunks_count % max(1, total_chunks // 10) == 0) or (self.processed_chunks_count == total_chunks)
-                if should_log_progress:
-                    logger.info(f"  📈 진행률: {progress_percentage:.0f}% ({self.processed_chunks_count}/{total_chunks}) | 성공률: {success_rate:.0f}% (✅{self.successful_chunks_count} ❌{self.failed_chunks_count})")
-
-
-                if progress_callback:
-                    if success:
-                        status_msg_for_dto = f"✅ 청크 {chunk_index + 1}/{total_chunks} 완료 ({total_time:.1f}초)"
-                    else:
-                        status_msg_for_dto = f"❌ 청크 {chunk_index + 1}/{total_chunks} 실패 ({total_time:.1f}초)"
-                        if last_error:
-                            status_msg_for_dto += f" - {last_error[:50]}..."
-
-                    progress_dto = TranslationJobProgressDTO(
-                        total_chunks=total_chunks,
-                        processed_chunks=self.processed_chunks_count,
-                        successful_chunks=self.successful_chunks_count,
-                        failed_chunks=self.failed_chunks_count,
-                        current_status_message=status_msg_for_dto,
-                        current_chunk_processing=chunk_index + 1,
-                        last_error_message=last_error
-                    )
-                    progress_callback(progress_dto)
-            else:
-                # stop_requested가 True이면, 아무 작업도 수행하지 않고 조용히 종료합니다.
-                # 이 좀비 스레드의 결과는 버려지며, 어떤 공유 상태도 오염시키지 않습니다.
-                logger.warning(f"  ⚠️ {current_chunk_info_msg}의 최종 처리(진행률, 메타데이터)를 건너뜁니다 (시스템 중지됨).")
-            
-            logger.debug(f"  {current_chunk_info_msg} 처리 완료 반환: {success}")
-            return success
+    # _translate_and_save_chunk() 동기 메서드 제거됨
+    # 비동기 버전 _translate_and_save_chunk_async()를 사용하세요
 
     # ===== 비동기 메서드 (PySide6 마이그레이션) =====
     
@@ -1389,15 +1170,20 @@ class AppService:
             except Exception as e_glossary:
                 logger.warning(f"용어집 로딩 중 오류 (무시하고 계속): {e_glossary}")
             
-            # 4. 번역 수행
+            # 4. 번역 수행 (비동기 버전 사용)
             start_time = time.time()
             
+            # asyncio.run()을 사용하여 비동기 메서드 호출
             if use_content_safety_retry:
-                translated_text = self.translation_service.translate_text_with_content_safety_retry(
-                    chunk_text, max_split_attempts, min_chunk_size
+                translated_text = asyncio.run(
+                    self.translation_service.translate_text_with_content_safety_retry_async(
+                        chunk_text, max_split_attempts, min_chunk_size
+                    )
                 )
             else:
-                translated_text = self.translation_service.translate_text(chunk_text)
+                translated_text = asyncio.run(
+                    self.translation_service.translate_text_async(chunk_text)
+                )
             
             translation_time = time.time() - start_time
             

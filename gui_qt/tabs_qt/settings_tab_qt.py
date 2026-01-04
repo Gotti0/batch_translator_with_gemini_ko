@@ -756,8 +756,7 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         self._set_model_progress(True)
         try:
-            loop = asyncio.get_event_loop()
-            models = await loop.run_in_executor(None, self.app_service.get_available_models)
+            models = await self.app_service.get_available_models()
         except Exception as e:  # pragma: no cover - UI alert path
             self._set_model_progress(False)
             retry = QtWidgets.QMessageBox.question(
