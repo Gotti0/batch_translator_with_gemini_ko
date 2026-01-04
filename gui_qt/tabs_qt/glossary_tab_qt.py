@@ -274,6 +274,7 @@ class GlossaryTabQt(QtWidgets.QWidget):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "용어집 JSON 파일 선택", filter="JSON Files (*.json);;All Files (*)")
         if file_path:
             self.glossary_path_edit.setText(file_path)
+            self._save_config()
 
     def _progress_cb(self, dto: GlossaryExtractionProgressDTO) -> None:
         self.progress_signal.emit(dto)
@@ -371,6 +372,7 @@ class GlossaryTabQt(QtWidgets.QWidget):
             with open(file_path, "r", encoding="utf-8") as f:
                 self._display_glossary_content(f.read())
             self.glossary_path_edit.setText(file_path)
+            self._save_config()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "로드 실패", f"용어집 파일 로드 실패: {e}")
 
