@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field as PydanticField # Field 이름 충돌 방
 from typing import Dict, Any, Optional, List, Union, Tuple, Callable
 
 try:
-    from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException
+    from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException, GeminiAllApiKeysExhaustedException
     from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file
     from infrastructure.logger_config import setup_logger
     from utils.chunk_service import ChunkService
@@ -21,7 +21,7 @@ try:
     from google.genai import types as genai_types
 except ImportError:
     # 단독 실행 또는 다른 경로에서의 import를 위한 fallback
-    from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException # type: ignore
+    from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException, GeminiAllApiKeysExhaustedException # type: ignore
     from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file # type: ignore
     from utils.chunk_service import ChunkService # type: ignore
     from infrastructure.logger_config import setup_logger # type: ignore
@@ -399,6 +399,9 @@ class SimpleGlossaryService:
         except asyncio.CancelledError:
             logger.info("용어집 추출이 취소되었습니다.")
             raise
+        except GeminiAllApiKeysExhaustedException as e_keys:
+            logger.critical(f"모든 API 키 소진으로 용어집 추출 중단: {e_keys}")
+            raise BtgApiClientException(f"모든 API 키 소진: {e_keys}", original_exception=e_keys) from e_keys
         except GeminiApiException as e_api:
             logger.error(f"용어집 추출 API 호출 최종 실패: {e_api}. 세그먼트: {segment_text[:50]}...")
             raise BtgApiClientException(f"용어집 추출 API 호출 최종 실패: {e_api}", original_exception=e_api) from e_api       
@@ -581,6 +584,14 @@ class SimpleGlossaryService:
                         if not remaining_task.done():
                             remaining_task.cancel()
                     raise  # 상위로 전파하여 즉시 종료
+                except BtgApiClientException as e_api:
+                    if isinstance(e_api.original_exception, GeminiAllApiKeysExhaustedException):
+                        logger.critical("모든 API 키가 소진되어 용어집 추출 작업을 중단합니다.")
+                        for remaining_task, _ in tasks:
+                            if not remaining_task.done():
+                                remaining_task.cancel()
+                        raise e_api
+                    logger.error(f"표본 세그먼트 처리 중 API 오류 발생 (세그먼트: {segment[:50]}...): {e_api}")
                 except Exception as exc:
                     logger.error(f"표본 세그먼트 처리 중 예외 발생 (세그먼트: {segment[:50]}...): {exc}")
                 finally:

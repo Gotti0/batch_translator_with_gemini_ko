@@ -318,6 +318,13 @@ class TranslationService:
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소됨")
             raise
+        except BtgApiClientException as e_api:
+            if isinstance(e_api.original_exception, GeminiAllApiKeysExhaustedException):
+                logger.critical(f"모든 API 키 소진으로 번역 중단: {e_api}")
+                raise # Re-raise BtgApiClientException to stop the process
+            
+            logger.error(f"비동기 번역 중 API 오류: {type(e_api).__name__} - {e_api}", exc_info=True)
+            raise BtgTranslationException(f"비동기 번역 중 API 오류: {e_api}", original_exception=e_api) from e_api
         except Exception as e:
             logger.error(f"비동기 번역 중 오류: {type(e).__name__} - {e}", exc_info=True)
             if isinstance(e, BtgTranslationException):
