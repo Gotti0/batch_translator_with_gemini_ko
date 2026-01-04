@@ -382,8 +382,7 @@ class SettingsTabQt(QtWidgets.QWidget):
             # 출력 기본값: 입력과 동일한 폴더/확장자 처리
             p = Path(file_path)
             candidate = str(p.parent / f"{p.stem}_translated{p.suffix}")
-            if not self.output_edit.text():
-                self.output_edit.setText(candidate)
+            self.output_edit.setText(candidate)
 
     def _browse_output(self) -> None:
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "출력 파일 선택")
