@@ -11,6 +11,8 @@ import copy
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from gui_qt.components_qt.tooltip_qt import TooltipQt
+
 
 class PrefillHistoryEditorDialogQt(QtWidgets.QDialog):
     """Simple dialog to edit prefill history and system instruction."""
@@ -40,6 +42,7 @@ class PrefillHistoryEditorDialogQt(QtWidgets.QDialog):
             sys_layout = QtWidgets.QVBoxLayout(sys_group)
             self.sys_edit = QtWidgets.QPlainTextEdit()
             self.sys_edit.setPlainText(self._system_instruction)
+            TooltipQt(self.sys_edit, "프리필 모드에서 사용할 시스템 지침을 입력하세요.\n모델의 전체 동작 방식과 역할을 정의합니다.")
             sys_layout.addWidget(self.sys_edit)
             layout.addWidget(sys_group)
         else:
@@ -51,13 +54,17 @@ class PrefillHistoryEditorDialogQt(QtWidgets.QDialog):
         left_widget = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_widget)
         self.list_widget = QtWidgets.QListWidget()
+        TooltipQt(self.list_widget, "프리필 대화 턴 목록입니다.\n위에서 아래로 순서대로 실행됩니다.")
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         left_layout.addWidget(self.list_widget)
 
         btn_row = QtWidgets.QHBoxLayout()
         add_user = QtWidgets.QPushButton("+ User 추가")
+        TooltipQt(add_user, "사용자(User) 턴을 추가합니다.\n일반적으로 질문이나 요청을 입력합니다.")
         add_model = QtWidgets.QPushButton("+ Model 추가")
+        TooltipQt(add_model, "모델(Model) 턴을 추가합니다.\n모델의 예시 응답을 입력합니다.")
         delete_btn = QtWidgets.QPushButton("선택 삭제")
+        TooltipQt(delete_btn, "선택한 대화 턴을 삭제합니다.")
         add_user.clicked.connect(lambda: self._add_item("user"))
         add_model.clicked.connect(lambda: self._add_item("model"))
         delete_btn.clicked.connect(self._delete_selected)
@@ -71,8 +78,10 @@ class PrefillHistoryEditorDialogQt(QtWidgets.QDialog):
         right_layout = QtWidgets.QFormLayout(right_widget)
         self.role_combo = QtWidgets.QComboBox()
         self.role_combo.addItems(["user", "model"])
+        TooltipQt(self.role_combo, "현재 턴의 역할을 선택합니다.\nuser: 사용자 대화\nmodel: AI 모델 응답")
         self.role_combo.currentTextChanged.connect(self._on_role_changed)
         self.content_edit = QtWidgets.QPlainTextEdit()
+        TooltipQt(self.content_edit, "해당 턴의 대화 내용을 입력하세요.\nFew-shot 학습을 위한 예시로 사용됩니다.")
         self.content_edit.textChanged.connect(self._on_content_changed)
         right_layout.addRow("Role", self.role_combo)
         right_layout.addRow("내용", self.content_edit)

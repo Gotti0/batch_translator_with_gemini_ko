@@ -13,6 +13,8 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
+from gui_qt.components_qt.tooltip_qt import TooltipQt
+
 
 class GlossaryEditorDialogQt(QtWidgets.QDialog):
     """PySide6 glossary editor dialog with replace helpers."""
@@ -50,12 +52,15 @@ class GlossaryEditorDialogQt(QtWidgets.QDialog):
         left_widget = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_widget)
         self.list_widget = QtWidgets.QListWidget()
+        TooltipQt(self.list_widget, "편집할 용어집 항목을 선택하세요.\n클릭하면 우측에 상세 내용이 표시됩니다.")
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         left_layout.addWidget(self.list_widget)
 
         list_btn_row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton("+ 추가")
+        TooltipQt(add_btn, "새 용어집 항목을 추가합니다.")
         del_btn = QtWidgets.QPushButton("삭제")
+        TooltipQt(del_btn, "선택한 용어집 항목을 삭제합니다.")
         add_btn.clicked.connect(self._add_entry)
         del_btn.clicked.connect(self._delete_entry)
         list_btn_row.addWidget(add_btn)
@@ -69,10 +74,14 @@ class GlossaryEditorDialogQt(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout(right_widget)
 
         self.keyword_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.keyword_edit, "원문 키워드를 입력하세요 (필수).\n이 단어가 번역된 키워드로 치환됩니다.")
         self.translated_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.translated_edit, "번역된 키워드를 입력하세요 (필수).\n원문 키워드를 대체할 단어입니다.")
         self.target_lang_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.target_lang_edit, "도착 언어 코드를 입력하세요 (필수).\nBCP-47 형시 (ex: ko-KR, ja-JP, en-US).")
         self.occurrence_spin = QtWidgets.QSpinBox()
         self.occurrence_spin.setRange(0, 999999)
+        TooltipQt(self.occurrence_spin, "이 키워드가 원문에 등장하는 횟수입니다.\n자동 추출 시 설정되며, 수동 수정 가능합니다.")
 
         for widget in [
             self.keyword_edit,
@@ -89,7 +98,9 @@ class GlossaryEditorDialogQt(QtWidgets.QDialog):
 
         replace_row = QtWidgets.QHBoxLayout()
         replace_selected_btn = QtWidgets.QPushButton("선택 용어 치환")
+        TooltipQt(replace_selected_btn, "현재 선택한 용어만 입력 파일에서 치환합니다.\n원본 파일이 수정되므로 주의하세요!")
         replace_all_btn = QtWidgets.QPushButton("모든 용어 치환")
+        TooltipQt(replace_all_btn, "모든 용어집 항목을 입력 파일에서 치환합니다.\n원본 파일이 수정되므로 매우 주의하세요!\n백업을 권장합니다.")
         replace_selected_btn.clicked.connect(self._replace_selected)
         replace_all_btn.clicked.connect(self._replace_all)
         replace_row.addWidget(replace_selected_btn)
@@ -102,8 +113,11 @@ class GlossaryEditorDialogQt(QtWidgets.QDialog):
         # bottom buttons
         btn_row = QtWidgets.QHBoxLayout()
         self.save_current_btn = QtWidgets.QPushButton("현재 항목 저장")
+        TooltipQt(self.save_current_btn, "현재 편집 중인 항목을 저장합니다.\n다이얼로그는 닫히지 않습니다.")
         self.save_close_btn = QtWidgets.QPushButton("저장 후 닫기")
+        TooltipQt(self.save_close_btn, "모든 항목의 유효성을 검사한 후 저장하고 닫습니다.")
         cancel_btn = QtWidgets.QPushButton("취소")
+        TooltipQt(cancel_btn, "변경 사항을 저장하지 않고 닫습니다.")
         self.save_current_btn.clicked.connect(self._save_current_entry)
         self.save_close_btn.clicked.connect(self._on_save_and_close)
         cancel_btn.clicked.connect(self.reject)
