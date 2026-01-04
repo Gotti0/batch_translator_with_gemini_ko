@@ -90,6 +90,23 @@ class LogTabQt(QtWidgets.QWidget):
         self._setup_logging()
         self._update_color_palette()
 
+    def update_theme(self, theme: str) -> None:
+        """
+        테마 변경 시 호출되는 메서드
+        
+        Args:
+            theme: "dark" 또는 "light"
+        """
+        # 색상 팔레트 업데이트
+        self._update_color_palette()
+        
+        # 기존 로그를 새 색상으로 다시 렌더링
+        # (단, 성능상 이유로 새로 추가되는 로그만 새 색상 적용하도록 함)
+        # 필요시 여기서 전체 텍스트를 다시 그릴 수 있음
+        
+        logger = logging.getLogger(__name__)
+        logger.debug(f"LogTab 테마 업데이트됨: {theme}")
+
     def _is_dark_theme(self) -> bool:
         """시스템 테마가 다크 모드인지 확인"""
         palette = self.palette()

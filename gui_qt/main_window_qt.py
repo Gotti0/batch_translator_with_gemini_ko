@@ -55,15 +55,27 @@ class PlaceholderTab(QtWidgets.QWidget):
 
 class BatchTranslatorWindow(QtWidgets.QMainWindow):
     """PySide6 메인 윈도우 골격"""
+    
+    # 테마 변경 시그널 (str: "dark" | "light")
+    theme_changed = QtCore.Signal(str)
 
     def __init__(self, loop: Optional[asyncio.AbstractEventLoop] = None, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._loop = loop or asyncio.get_event_loop()
         self.app_service: Optional[AppService] = None
         self._current_theme: str = "dark"  # 기본 테마
+        
+        # 탭 참조 저장 (테마 변경 시그널 연결용)
+        self.settings_tab = None
+        self.glossary_tab = None
+        self.review_tab = None
+        self.log_tab = None
 
         self.setWindowTitle("BTG - Batch Translator (PySide6)")
         self.resize(1100, 800)
+
+        # 초기 테마 설정 (dark)
+        self._apply_theme("dark")
 
         # AppService 초기화
         self._init_app_service()
@@ -73,21 +85,27 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self.close)
             return
 
-        # 전역 툴팁 스타일 적용
-        self._apply_tooltip_style()
-
         # 탭 위젯 구성 (플레이스홀더 + 점진 이식 탭)
         self._setup_tabs()
         
         # 상태바 설정 (테마 토글 버튼 포함)
         self._setup_statusbar()
 
-    def _apply_tooltip_style(self) -> None:
-        """전역 툴팁 스타일 적용"""
+    def _apply_theme(self, theme: str) -> None:
+        """테마 적용 (qdarktheme + 툴팁 스타일)"""
+        self._current_theme = theme
+        
+        # qdarktheme 설정
+        if theme == "dark":
+            qdarktheme.setup_theme(theme="dark", custom_colors={"primary": "#29B6F6"})
+        else:
+            qdarktheme.setup_theme(theme="light", custom_colors={"primary": "#1976D2"})
+        
+        # 전역 툴팁 스타일 적용
         app = QtWidgets.QApplication.instance()
         if app:
-            TooltipQt.apply_global_style(app, theme=self._current_theme)
-            logger.debug(f"전역 툴팁 스타일 적용됨 (테마: {self._current_theme})")
+            TooltipQt.apply_global_style(app, theme=theme)
+            logger.debug(f"테마 적용 완료: {theme}")
 
     def _setup_statusbar(self) -> None:
         """상태바 생성 및 테마 토글 버튼 추가"""
@@ -95,8 +113,9 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         self.setStatusBar(statusbar)
         
         # 테마 토글 버튼 (상태바 오른쪽에 고정)
-        self.theme_toggle_btn = QtWidgets.QPushButton("☀️ 라이트")
-        self.theme_toggle_btn.setToolTip("라이트/다크 테마 전환")
+        # 버튼 텍스트: 현재 적용된 테마를 표시 (클릭 시 반대 테마로 전환)
+        self.theme_toggle_btn = QtWidgets.QPushButton("🌙 다크")
+        self.theme_toggle_btn.setToolTip("클릭하여 라이트 테마로 전환")
         self.theme_toggle_btn.clicked.connect(self._toggle_theme)
         self.theme_toggle_btn.setFixedSize(80, 22)
         self.theme_toggle_btn.setStyleSheet("QPushButton { padding: 2px 8px; }")
@@ -107,20 +126,22 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
 
     def _toggle_theme(self) -> None:
         """라이트/다크 테마 전환"""
-        if self._current_theme == "dark":
-            self._current_theme = "light"
-            qdarktheme.setup_theme(theme="light", custom_colors={"primary": "#1976D2"})
-            self.theme_toggle_btn.setText("🌙 다크")
-        else:
-            self._current_theme = "dark"
-            qdarktheme.setup_theme(theme="dark", custom_colors={"primary": "#29B6F6"})
-            self.theme_toggle_btn.setText("☀️ 라이트")
+        new_theme = "light" if self._current_theme == "dark" else "dark"
         
-        # 테마 변경 시 툴팁 스타일도 업데이트
-        app = QtWidgets.QApplication.instance()
-        if app:
-            TooltipQt.update_global_theme(app, theme=self._current_theme)
-            logger.debug(f"툴팁 테마 업데이트됨: {self._current_theme}")
+        # 테마 적용
+        self._apply_theme(new_theme)
+        
+        # 버튼 텍스트 업데이트
+        if new_theme == "dark":
+            self.theme_toggle_btn.setText("🌙 다크")
+            self.theme_toggle_btn.setToolTip("클릭하여 라이트 테마로 전환")
+        else:
+            self.theme_toggle_btn.setText("☀️ 라이트")
+            self.theme_toggle_btn.setToolTip("클릭하여 다크 테마로 전환")
+        
+        # 테마 변경 시그널 emit (모든 탭에 알림)
+        self.theme_changed.emit(new_theme)
+        logger.info(f"테마 변경됨: {new_theme}")
 
     def _init_app_service(self) -> None:
         try:
@@ -149,51 +170,55 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         # Settings 탭: 실제 Qt 구현이 존재하면 사용, 아니면 플레이스홀더
         if SettingsTabQt and self.app_service:
             try:
-                settings_tab = SettingsTabQt(self.app_service)
+                self.settings_tab = SettingsTabQt(self.app_service)
             except Exception as e:  # pragma: no cover - 방어적
                 logger.error(f"SettingsTabQt 생성 실패, 플레이스홀더로 대체: {e}")
-                settings_tab = PlaceholderTab("설정 및 번역")
+                self.settings_tab = PlaceholderTab("설정 및 번역")
         else:
-            settings_tab = PlaceholderTab("설정 및 번역")
+            self.settings_tab = PlaceholderTab("설정 및 번역")
 
         # Glossary 탭
         if GlossaryTabQt and self.app_service:
             try:
-                glossary_tab = GlossaryTabQt(self.app_service)
+                self.glossary_tab = GlossaryTabQt(self.app_service)
             except Exception as e:  # pragma: no cover - 방어적
                 logger.error(f"GlossaryTabQt 생성 실패, 플레이스홀더로 대체: {e}")
-                glossary_tab = PlaceholderTab("용어집 관리")
+                self.glossary_tab = PlaceholderTab("용어집 관리")
         else:
-            glossary_tab = PlaceholderTab("용어집 관리")
+            self.glossary_tab = PlaceholderTab("용어집 관리")
 
         # Review 탭
         if ReviewTabQt and self.app_service:
             try:
-                review_tab = ReviewTabQt(self.app_service)
+                self.review_tab = ReviewTabQt(self.app_service)
+                # 테마 변경 시그널 연결
+                self.theme_changed.connect(self.review_tab.update_theme)
             except Exception as e:  # pragma: no cover - 방어적
                 logger.error(f"ReviewTabQt 생성 실패, 플레이스홀더로 대체: {e}")
-                review_tab = PlaceholderTab("검토 및 수정")
+                self.review_tab = PlaceholderTab("검토 및 수정")
         else:
-            review_tab = PlaceholderTab("검토 및 수정")
+            self.review_tab = PlaceholderTab("검토 및 수정")
 
-        tab_widget.addTab(settings_tab, "설정 및 번역")
-        tab_widget.addTab(glossary_tab, "용어집 관리")
-        tab_widget.addTab(review_tab, "검토 및 수정")
+        tab_widget.addTab(self.settings_tab, "설정 및 번역")
+        tab_widget.addTab(self.glossary_tab, "용어집 관리")
+        tab_widget.addTab(self.review_tab, "검토 및 수정")
 
         # Log 탭
         if LogTabQt:
             try:
-                log_tab = LogTabQt(self.app_service)
+                self.log_tab = LogTabQt(self.app_service)
+                # 테마 변경 시그널 연결
+                self.theme_changed.connect(self.log_tab.update_theme)
                 # Settings 탭에 TQDM 스트림 주입
-                if isinstance(settings_tab, SettingsTabQt):
-                    settings_tab.set_tqdm_stream(log_tab.get_tqdm_stream())
+                if isinstance(self.settings_tab, SettingsTabQt):
+                    self.settings_tab.set_tqdm_stream(self.log_tab.get_tqdm_stream())
             except Exception as e:  # pragma: no cover - 방어적
                 logger.error(f"LogTabQt 생성 실패, 플레이스홀더로 대체: {e}")
-                log_tab = PlaceholderTab("실행 로그")
+                self.log_tab = PlaceholderTab("실행 로그")
         else:
-            log_tab = PlaceholderTab("실행 로그")
+            self.log_tab = PlaceholderTab("실행 로그")
 
-        tab_widget.addTab(log_tab, "실행 로그")
+        tab_widget.addTab(self.log_tab, "실행 로그")
         self.setCentralWidget(tab_widget)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[name-defined]

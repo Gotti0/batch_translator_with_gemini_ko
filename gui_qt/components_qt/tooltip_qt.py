@@ -142,25 +142,15 @@ class TooltipQt:
             app: QApplication 인스턴스
             theme: "light" 또는 "dark"
         """
+        import re
+        
         # 기존 QToolTip 스타일 제거 후 새로 적용
         current = app.styleSheet()
         
-        # QToolTip 섹션 제거 (간단한 방식)
-        lines = current.split('\n')
-        filtered_lines = []
-        skip = False
-        
-        for line in lines:
-            if 'QToolTip' in line and '{' in line:
-                skip = True
-            elif skip and '}' in line:
-                skip = False
-                continue
-            
-            if not skip:
-                filtered_lines.append(line)
-        
-        new_stylesheet = '\n'.join(filtered_lines)
+        # 정규표현식으로 QToolTip 블록 제거 (더 안전)
+        # QToolTip { ... } 패턴을 찾아서 제거
+        pattern = r'QToolTip\s*\{[^}]*\}'
+        new_stylesheet = re.sub(pattern, '', current, flags=re.DOTALL)
         
         # 새 테마 스타일 추가
         style = cls.DARK_THEME_STYLE if theme == "dark" else cls.LIGHT_THEME_STYLE

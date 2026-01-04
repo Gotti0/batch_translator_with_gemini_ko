@@ -242,6 +242,35 @@ class ReviewTabQt(QtWidgets.QWidget):
                 sel_model.selectionChanged.connect(self._on_selection_changed)
 
     # ---------- helpers ----------
+    def update_theme(self, theme: str) -> None:
+        """
+        테마 변경 시 호출되는 메서드
+        
+        Args:
+            theme: "dark" 또는 "light"
+        """
+        # 현재 로드된 데이터가 있으면 테이블 다시 렌더링
+        if self.current_metadata and self.model:
+            # 현재 선택 상태 저장
+            selected_rows = self._selected_indices()
+            
+            # 테이블 다시 그리기
+            self._populate_table()
+            
+            # 선택 상태 복원
+            if selected_rows and self.table:
+                selection_model = self.table.selectionModel()
+                for row_idx in selected_rows:
+                    # proxy 모델에서 해당 ID를 찾아 선택
+                    for i in range(self.proxy.rowCount()):
+                        source_idx = self.proxy.mapToSource(self.proxy.index(i, 0))
+                        item = self.model.item(source_idx.row(), 0)
+                        if item and item.data(QtCore.Qt.UserRole) == row_idx:
+                            self.table.selectRow(i)
+                            break
+            
+            logger.debug(f"ReviewTab 테마 업데이트됨: {theme}")
+    
     def _is_dark_theme(self) -> bool:
         """시스템 테마가 다크 모드인지 감지"""
         palette = QtWidgets.QApplication.palette()
