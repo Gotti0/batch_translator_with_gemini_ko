@@ -6,9 +6,7 @@ import os
 import json
 import csv
 import logging
-import threading
 import asyncio  # asyncio 임포트 추가
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait # ThreadPoolExecutor를 사용하여 병렬 처리
 import time
 from tqdm import tqdm # tqdm 임포트 확인
 import sys # sys 임포트 확인 (tqdm_file_stream=sys.stdout 에 사용될 수 있음)
@@ -84,11 +82,6 @@ class AppService:
         self.current_translation_task: Optional[asyncio.Task] = None
         
         # 카운터 (asyncio 단일 스레드이므로 Lock 불필요)
-        # asyncio.Lock 제거 (이미 단일 스레드이므로 동기화 불필요)
-        # self._translation_lock = None  # 제거됨
-        # self._progress_lock = None     # 제거됨
-        # self._file_write_lock = None   # 제거됨
-        
         self.processed_chunks_count = 0
         self.successful_chunks_count = 0
         self.failed_chunks_count = 0
@@ -477,8 +470,7 @@ class AppService:
                 return False
 
             # 스레드 세이프하게 청크 파일에 직접 기록
-            with self._file_write_lock:
-                save_chunk_with_index_to_file(chunked_output_file, chunk_index, translated_chunk)
+            save_chunk_with_index_to_file(chunked_output_file, chunk_index, translated_chunk)
             
             # 번역 성능 상세는 DEBUG에서만
             if logger.isEnabledFor(logging.DEBUG):
@@ -499,8 +491,7 @@ class AppService:
             error_type = "콘텐츠 검열" if "콘텐츠 안전 문제" in str(e_trans) else "번역 서비스"
             logger.error(f"  ❌ {current_chunk_info_msg} 실패: {error_type} - {e_trans} ({processing_time:.2f}초)")
             
-            with self._file_write_lock:
-                save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[번역 실패: {e_trans}]\n\n--- 원문 내용 ---\n{chunk_text}")
+            save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[번역 실패: {e_trans}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_trans)
             success = False
 
@@ -517,8 +508,7 @@ class AppService:
                 error_detail = " [인증 오류]"
             logger.error(f"  ❌ {current_chunk_info_msg} API 오류{error_detail}: {e_api} ({processing_time:.2f}초)")
             
-            with self._file_write_lock:
-                save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]\n\n--- 원문 내용 ---\n{chunk_text}")
+            save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[API 오류로 번역 실패: {e_api}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_api)
             success = False
 
@@ -529,8 +519,7 @@ class AppService:
             processing_time = time.time() - start_time
             logger.error(f"  ❌ {current_chunk_info_msg} 예상치 못한 오류: {type(e_gen).__name__} - {e_gen} ({processing_time:.2f}초)", exc_info=True)
             
-            with self._file_write_lock:
-                save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]\n\n--- 원문 내용 ---\n{chunk_text}")
+            save_chunk_with_index_to_file(chunked_output_file, chunk_index, f"[알 수 없는 오류로 번역 실패: {e_gen}]\n\n--- 원문 내용 ---\n{chunk_text}")
             last_error = str(e_gen)
             success = False
                     
@@ -538,72 +527,71 @@ class AppService:
         
         finally:
             total_time = time.time() - start_time
-            with self._progress_lock:
-                # 시스템이 중지 상태가 아니라면, 진행 상황을 업데이트합니다.
-                # 이 검사를 _progress_lock 안에서 수행하여, 플래그 확인과 카운터 업데이트 사이의
-                # 경쟁 조건을 완벽하게 방지합니다. 이것이 데이터 정합성을 보장하는 최종 방어선입니다.
-                if not self.stop_requested:
-                    # 1단계: 먼저 processed_chunks_count 증가
-                    self.processed_chunks_count += 1
-                    # 2단계: 결과에 따라 성공/실패 카운트 업데이트
-                    if success:
-                        self.successful_chunks_count += 1
-                        # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
-                        try:
-                            metadata_updated = update_metadata_for_chunk_completion(
-                                input_file_path_for_metadata, 
-                                chunk_index,
-                                source_length=len(chunk_text),
-                                translated_length=len(translated_chunk)
-                            )
-                            if metadata_updated:
-                                logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
-                            else:
-                                logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
-                        except Exception as meta_e:
-                            logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
-                    else: # 'success'가 False인 경우, 실패 카운터를 증가시킵니다.
-                        self.failed_chunks_count += 1
-                        #  실패한 청크 정보 기록
-                        if last_error:
-                            try:
-                                update_metadata_for_chunk_failure(input_file_path_for_metadata, chunk_index, last_error)
-                                logger.debug(f"  💾 {current_chunk_info_msg} 실패 정보 메타데이터에 기록 완료")
-                            except Exception as meta_fail_e:
-                                logger.error(f"  ❌ {current_chunk_info_msg} 실패 정보 메타데이터 기록 중 오류: {meta_fail_e}")
-                    
-                    # 3단계: 진행률 계산 및 통합 로깅 (2개 로그 → 1개)
-                    progress_percentage = (self.processed_chunks_count / total_chunks) * 100
-                    success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100 if self.processed_chunks_count > 0 else 0
-                    
-                    # 매 10% 또는 마지막 청크에서만 상세 로그 출력 (로그 빈도 최적화)
-                    should_log_progress = (self.processed_chunks_count % max(1, total_chunks // 10) == 0) or (self.processed_chunks_count == total_chunks)
-                    if should_log_progress:
-                        logger.info(f"  📈 진행률: {progress_percentage:.0f}% ({self.processed_chunks_count}/{total_chunks}) | 성공률: {success_rate:.0f}% (✅{self.successful_chunks_count} ❌{self.failed_chunks_count})")
-
-
-                    if progress_callback:
-                        if success:
-                            status_msg_for_dto = f"✅ 청크 {chunk_index + 1}/{total_chunks} 완료 ({total_time:.1f}초)"
-                        else:
-                            status_msg_for_dto = f"❌ 청크 {chunk_index + 1}/{total_chunks} 실패 ({total_time:.1f}초)"
-                            if last_error:
-                                status_msg_for_dto += f" - {last_error[:50]}..."
-
-                        progress_dto = TranslationJobProgressDTO(
-                            total_chunks=total_chunks,
-                            processed_chunks=self.processed_chunks_count,
-                            successful_chunks=self.successful_chunks_count,
-                            failed_chunks=self.failed_chunks_count,
-                            current_status_message=status_msg_for_dto,
-                            current_chunk_processing=chunk_index + 1,
-                            last_error_message=last_error
+            # 시스템이 중지 상태가 아니라면, 진행 상황을 업데이트합니다.
+            # 이 검사를 _progress_lock 안에서 수행하여, 플래그 확인과 카운터 업데이트 사이의
+            # 경쟁 조건을 완벽하게 방지합니다. 이것이 데이터 정합성을 보장하는 최종 방어선입니다.
+            if not self.stop_requested:
+                # 1단계: 먼저 processed_chunks_count 증가
+                self.processed_chunks_count += 1
+                # 2단계: 결과에 따라 성공/실패 카운트 업데이트
+                if success:
+                    self.successful_chunks_count += 1
+                    # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
+                    try:
+                        metadata_updated = update_metadata_for_chunk_completion(
+                            input_file_path_for_metadata, 
+                            chunk_index,
+                            source_length=len(chunk_text),
+                            translated_length=len(translated_chunk)
                         )
-                        progress_callback(progress_dto)
-                else:
-                    # stop_requested가 True이면, 아무 작업도 수행하지 않고 조용히 종료합니다.
-                    # 이 좀비 스레드의 결과는 버려지며, 어떤 공유 상태도 오염시키지 않습니다.
-                    logger.warning(f"  ⚠️ {current_chunk_info_msg}의 최종 처리(진행률, 메타데이터)를 건너뜁니다 (시스템 중지됨).")
+                        if metadata_updated:
+                            logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
+                        else:
+                            logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
+                    except Exception as meta_e:
+                        logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
+                else: # 'success'가 False인 경우, 실패 카운터를 증가시킵니다.
+                    self.failed_chunks_count += 1
+                    #  실패한 청크 정보 기록
+                    if last_error:
+                        try:
+                            update_metadata_for_chunk_failure(input_file_path_for_metadata, chunk_index, last_error)
+                            logger.debug(f"  💾 {current_chunk_info_msg} 실패 정보 메타데이터에 기록 완료")
+                        except Exception as meta_fail_e:
+                            logger.error(f"  ❌ {current_chunk_info_msg} 실패 정보 메타데이터 기록 중 오류: {meta_fail_e}")
+                    
+                # 3단계: 진행률 계산 및 통합 로깅 (2개 로그 → 1개)
+                progress_percentage = (self.processed_chunks_count / total_chunks) * 100
+                success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100 if self.processed_chunks_count > 0 else 0
+                    
+                # 매 10% 또는 마지막 청크에서만 상세 로그 출력 (로그 빈도 최적화)
+                should_log_progress = (self.processed_chunks_count % max(1, total_chunks // 10) == 0) or (self.processed_chunks_count == total_chunks)
+                if should_log_progress:
+                    logger.info(f"  📈 진행률: {progress_percentage:.0f}% ({self.processed_chunks_count}/{total_chunks}) | 성공률: {success_rate:.0f}% (✅{self.successful_chunks_count} ❌{self.failed_chunks_count})")
+
+
+                if progress_callback:
+                    if success:
+                        status_msg_for_dto = f"✅ 청크 {chunk_index + 1}/{total_chunks} 완료 ({total_time:.1f}초)"
+                    else:
+                        status_msg_for_dto = f"❌ 청크 {chunk_index + 1}/{total_chunks} 실패 ({total_time:.1f}초)"
+                        if last_error:
+                            status_msg_for_dto += f" - {last_error[:50]}..."
+
+                    progress_dto = TranslationJobProgressDTO(
+                        total_chunks=total_chunks,
+                        processed_chunks=self.processed_chunks_count,
+                        successful_chunks=self.successful_chunks_count,
+                        failed_chunks=self.failed_chunks_count,
+                        current_status_message=status_msg_for_dto,
+                        current_chunk_processing=chunk_index + 1,
+                        last_error_message=last_error
+                    )
+                    progress_callback(progress_dto)
+            else:
+                # stop_requested가 True이면, 아무 작업도 수행하지 않고 조용히 종료합니다.
+                # 이 좀비 스레드의 결과는 버려지며, 어떤 공유 상태도 오염시키지 않습니다.
+                logger.warning(f"  ⚠️ {current_chunk_info_msg}의 최종 처리(진행률, 메타데이터)를 건너뜁니다 (시스템 중지됨).")
             
             logger.debug(f"  {current_chunk_info_msg} 처리 완료 반환: {success}")
             return success
@@ -1300,486 +1288,33 @@ class AppService:
 
     # ===== 끝: 비동기 메서드 =====
 
-
-    def start_translation(
-        self,
-        input_file_path: Union[str, Path],
-        output_file_path: Union[str, Path],
-        progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
-        status_callback: Optional[Callable[[str], None]] = None,
-        tqdm_file_stream: Optional[Any] = None,
-        blocking: bool = False, # blocking 매개변수 추가
-        retranslate_failed_only: bool = False # 실패 청크 재번역 모드
-    ) -> None:
-        # === 용어집 동적 로딩 로직 추가 ===
-        try:
-            input_p = Path(input_file_path)
-            # 설정에서 용어집 파일 접미사를 가져옵니다.
-            glossary_suffix = self.config.get("glossary_output_json_filename_suffix", "_simple_glossary.json")
-            # 현재 입력 파일에 해당하는 용어집 파일 경로를 추정합니다.
-            assumed_glossary_path = input_p.parent / f"{input_p.stem}{glossary_suffix}"
-
-            # config에 설정된 경로와 추정된 경로를 확인합니다.
-            # 1. 추정된 경로에 파일이 존재하면, 해당 경로를 사용하도록 설정을 덮어씁니다.
-            # 2. 그렇지 않으면, config에 명시된 경로(사용자가 수동으로 지정한 경로)를 그대로 사용합니다.
-            
-            glossary_to_use = None
-            if assumed_glossary_path.exists():
-                glossary_to_use = str(assumed_glossary_path)
-                logger.info(f"'{input_p.name}'에 대한 용어집 '{assumed_glossary_path.name}'을(를) 자동으로 발견하여 사용합니다.")
-            else:
-                # 수동으로 설정된 경로가 있다면 그것을 사용합니다.
-                manual_path = self.config.get("glossary_json_path")
-                if manual_path and Path(manual_path).exists():
-                    glossary_to_use = manual_path
-                    logger.info(f"자동으로 발견된 용어집이 없어, 설정된 경로 '{manual_path}'의 용어집을 사용합니다.")
-                else:
-                    logger.info(f"'{input_p.name}'에 대한 용어집을 찾을 수 없어, 용어집 없이 번역을 진행합니다.")
-
-            # 찾은 용어집 경로를 런타임 설정에 반영하여 TranslationService가 로드하도록 합니다.
-            if self.translation_service:
-                # TranslationService가 새로운 설정을 기반으로 용어집을 다시 로드하도록 합니다.
-                self.config['glossary_json_path'] = glossary_to_use
-                self.translation_service.config = self.config
-                self.translation_service._load_glossary_data() # TranslationService 내부의 용어집 데이터를 갱신합니다.
-
-        except Exception as e:
-            logger.error(f"용어집 동적 로딩 중 오류 발생: {e}", exc_info=True)
-            # 용어집 로딩에 실패해도 번역은 계속 진행하도록 합니다.
-        # === 용어집 동적 로딩 로직 끝 ===
-        
-        # 스레드 생성 및 시작 부분 수정
-        thread = threading.Thread(
-            target=self._translation_task, # 실제 번역 로직을 별도 메서드로 분리
-            args=(input_file_path, output_file_path, progress_callback, status_callback, tqdm_file_stream, retranslate_failed_only),
-            daemon=not blocking # blocking 모드가 아닐 때만 데몬 스레드로 설정
-        )
-        thread.start()
-
-        if blocking:
-            thread.join() # blocking 모드일 경우 스레드가 끝날 때까지 대기
+    # === LEGACY SYNC METHODS REMOVED ===
+    # 다음 메서드들은 비동기 마이그레이션으로 인해 제거되었습니다:
+    # - start_translation() (구 L1304-L1360)
+    # - _translation_task() (구 L1363-L1756)
+    # - stop_translation() (구 L1757-L1775)
+    # 대신 start_translation_async()를 사용하세요.
+    # CLI: asyncio.run(app_service.start_translation_async(...))
+    # GUI (PySide6): await app_service.start_translation_async(...) with @asyncSlot
 
 
-    def _translation_task( # start_translation의 스레드 실행 로직을 이 메서드로 이동
-        self,
-        input_file_path: Union[str, Path],
-        output_file_path: Union[str, Path],
-        progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
-        status_callback: Optional[Callable[[str], None]] = None,
-        tqdm_file_stream: Optional[Any] = None,
-        retranslate_failed_only: bool = False
-    ):
-        if not self.translation_service or not self.chunk_service:
-            logger.error("번역 서비스 실패: 서비스가 초기화되지 않았습니다.")
-            if status_callback: status_callback("오류: 서비스 초기화 실패")
-            raise BtgServiceException("번역 서비스가 초기화되지 않았습니다. 설정을 확인하세요.")
-
-        with self._translation_lock:
-            if self.is_translation_running:
-                logger.warning("번역 작업이 이미 실행 중입니다.")
-                if status_callback: status_callback("경고: 번역 작업 이미 실행 중")
-                return
-            self.is_translation_running = True
-            self.stop_requested = False
-            self.processed_chunks_count = 0
-            self.successful_chunks_count = 0
-            self.failed_chunks_count = 0
-
-        logger.info(f"번역 서비스 시작: 입력={input_file_path}, 최종 출력={output_file_path}")
-        if status_callback: status_callback("번역 시작됨...")
-
-        # TranslationService에 중단 확인 콜백 설정
-        if self.translation_service:
-            self.translation_service.set_stop_check_callback(lambda: self.stop_requested)
-            logger.debug("TranslationService에 중단 확인 콜백이 설정되었습니다.")
-
-        input_file_path_obj = Path(input_file_path)
-        final_output_file_path_obj = Path(output_file_path)
-        metadata_file_path = get_metadata_file_path(input_file_path_obj)
-        loaded_metadata: Dict[str, Any] = {}
-        resume_translation = False
-        total_chunks = 0 
-
-        try:
-            with self._progress_lock: 
-                if metadata_file_path.exists():
-                    try:
-                        loaded_metadata = load_metadata(metadata_file_path)
-                        if loaded_metadata: logger.info(f"기존 메타데이터 로드 성공: {metadata_file_path}")
-                        else: logger.warning(f"메타데이터 파일 '{metadata_file_path}'이 비어있거나 유효하지 않습니다. 새로 시작합니다.")
-                    except json.JSONDecodeError as json_err:
-                        logger.error(f"메타데이터 파일 '{metadata_file_path}' 손상 (JSONDecodeError): {json_err}. 새로 번역을 시작합니다.")
-                        delete_file(metadata_file_path) 
-                    except Exception as e: 
-                        logger.error(f"메타데이터 파일 '{metadata_file_path}' 로드 중 오류: {e}. 새로 번역을 시작합니다.", exc_info=True)
-                        delete_file(metadata_file_path) 
-                else:
-                    logger.info(f"기존 메타데이터 파일을 찾을 수 없습니다: {metadata_file_path}. 새로 시작합니다.")
-
-            current_config_hash = _hash_config_for_metadata(self.config)
-            previous_config_hash = loaded_metadata.get("config_hash")
-
-            if previous_config_hash and previous_config_hash == current_config_hash:
-                resume_translation = True
-                logger.info("설정 해시가 일치하여 이어하기 모드로 설정합니다.")
-            elif previous_config_hash: 
-                logger.warning("현재 설정이 이전 메타데이터의 설정과 다릅니다. 새로 번역을 시작합니다.")
-                loaded_metadata = {} 
-                resume_translation = False
-            
-            file_content = read_text_file(input_file_path_obj)
-            if not file_content:
-                logger.warning(f"입력 파일이 비어있습니다: {input_file_path_obj}")
-                if status_callback: status_callback("완료: 입력 파일 비어있음")
-                with self._progress_lock:
-                    if not loaded_metadata.get("config_hash"): 
-                         loaded_metadata = create_new_metadata(input_file_path_obj, 0, self.config)
-                    loaded_metadata["status"] = "completed"; loaded_metadata["total_chunks"] = 0
-                    loaded_metadata["last_updated"] = time.time()
-                    save_metadata(metadata_file_path, loaded_metadata)
-                if progress_callback: progress_callback(TranslationJobProgressDTO(0,0,0,0,"입력 파일 비어있음"))
-                with self._translation_lock: self.is_translation_running = False
-                return
-
-            all_chunks: List[str] = self.chunk_service.create_chunks_from_file_content(file_content, self.config.get("chunk_size", 6000))
-            total_chunks = len(all_chunks) 
-            logger.info(f"총 {total_chunks}개의 청크로 분할됨.")
-
-            # 청크 백업 파일 경로 생성 (입력 파일 기준)
-            # input.txt → input_translated_chunked.txt
-            chunked_output_file_path = input_file_path_obj.parent / f"{input_file_path_obj.stem}_translated_chunked.txt"
-            with self._progress_lock: 
-
-                if not resume_translation or not loaded_metadata.get("config_hash"): 
-                    logger.info("새로운 메타데이터를 생성하거나 덮어씁니다 (새로 시작 또는 설정 변경).")
-                    loaded_metadata = create_new_metadata(input_file_path_obj, total_chunks, self.config)
-                    logger.info(f"새로 번역을 시작하므로 최종 출력 파일 '{final_output_file_path_obj}'을 삭제하고 새로 생성합니다.")
-                    delete_file(final_output_file_path_obj) 
-                    final_output_file_path_obj.touch() 
-                    # 청크 백업 파일도 초기화
-                    delete_file(chunked_output_file_path)
-                    chunked_output_file_path.touch()
-                else: 
-                    if loaded_metadata.get("total_chunks") != total_chunks:
-                        logger.warning(f"입력 파일의 청크 수가 변경되었습니다 ({loaded_metadata.get('total_chunks')} -> {total_chunks}). 메타데이터를 새로 생성합니다.")
-                        loaded_metadata = create_new_metadata(input_file_path_obj, total_chunks, self.config)
-                        resume_translation = False 
-                        logger.info(f"청크 수 변경으로 인해 새로 번역을 시작합니다. 최종 출력 파일 '{final_output_file_path_obj}'을 다시 초기화합니다.")
-                        delete_file(final_output_file_path_obj); final_output_file_path_obj.touch()
-                        # 청크 백업 파일도 초기화
-                        delete_file(chunked_output_file_path); chunked_output_file_path.touch()
-                    else:
-                        logger.info(f"이어하기 모드: 메타데이터 상태를 'in_progress'로 업데이트합니다.")
-                    loaded_metadata["status"] = "in_progress" 
-                
-                loaded_metadata["last_updated"] = time.time()
-                save_metadata(metadata_file_path, loaded_metadata)
-
-            # 이어하기 시나리오에서, 혹시 마지막에 불완전한 청크가 있다면 정리(정규식 매칭 가능한 완전 청크만 보존)
-            try:
-                if chunked_output_file_path.exists():
-                    existing_chunks = load_chunks_from_file(chunked_output_file_path)
-                    save_merged_chunks_to_file(chunked_output_file_path, existing_chunks)
-                    logger.info("청크 파일을 스캔하여 완전한 청크만 유지하도록 정리했습니다.")
-            except Exception as sanitize_e:
-                logger.warning(f"청크 파일 정리 중 경고: {sanitize_e}")
-
-            chunks_to_process_with_indices: List[Tuple[int, str]] = []
-            if retranslate_failed_only:
-                if "failed_chunks" in loaded_metadata and loaded_metadata["failed_chunks"]:
-                    failed_indices = {int(k) for k in loaded_metadata["failed_chunks"].keys()}
-                    for i, chunk_text in enumerate(all_chunks):
-                        if i in failed_indices:
-                            chunks_to_process_with_indices.append((i, chunk_text))
-                    logger.info(f"실패 청크 재번역 모드: {len(chunks_to_process_with_indices)}개 대상.")
-                else:
-                    logger.info("실패한 청크가 없어 재번역을 건너뜁니다.")
-            elif resume_translation and "translated_chunks" in loaded_metadata:
-                with self._progress_lock:
-                    previously_translated_indices = {int(k) for k in loaded_metadata.get("translated_chunks", {}).keys()}
-                    self.successful_chunks_count = len(previously_translated_indices)
-                    self.processed_chunks_count = self.successful_chunks_count 
-                    self.failed_chunks_count = 0 
-                for i, chunk_text in enumerate(all_chunks):
-                    if i not in previously_translated_indices:
-                        chunks_to_process_with_indices.append((i, chunk_text))
-                logger.info(f"이어하기: {self.successful_chunks_count}개 이미 완료, {len(chunks_to_process_with_indices)}개 추가 번역 대상.")
-            else: 
-                chunks_to_process_with_indices = list(enumerate(all_chunks))
-                logger.info(f"새로 번역: {len(chunks_to_process_with_indices)}개 번역 대상.")
-                
-            if not chunks_to_process_with_indices and total_chunks > 0 : 
-                logger.info("번역할 새로운 청크가 없습니다 (모든 청크가 이미 번역됨).")
-                if status_callback: status_callback("완료: 모든 청크 이미 번역됨")
-                with self._progress_lock:
-                    loaded_metadata["status"] = "completed"
-                    loaded_metadata["last_updated"] = time.time()
-                    save_metadata(metadata_file_path, loaded_metadata)
-                if progress_callback:
-                    progress_callback(TranslationJobProgressDTO(
-                        total_chunks, self.processed_chunks_count, self.successful_chunks_count,
-                        self.failed_chunks_count, "모든 청크 이미 번역됨"
-                    ))
-                if status_callback: status_callback("완료: 모든 청크 이미 번역됨")
-                with self._translation_lock: self.is_translation_running = False
-                # current_run.tmp는 더 이상 사용하지 않음
-                return
-
-            initial_status_msg = "번역 준비 중..."
-            if resume_translation: initial_status_msg = f"이어하기 준비 (남은 청크: {len(chunks_to_process_with_indices)})"
-            if progress_callback:
-                with self._progress_lock:
-                    progress_callback(TranslationJobProgressDTO(
-                        total_chunks, self.processed_chunks_count, self.successful_chunks_count,
-                        self.failed_chunks_count, initial_status_msg,
-                        (chunks_to_process_with_indices[0][0] + 1 if chunks_to_process_with_indices else None) 
-                    ))
-            
-            max_workers = self.config.get("max_workers", os.cpu_count() or 1)
-            if not isinstance(max_workers, int) or max_workers <= 0:
-                logger.warning(f"잘못된 max_workers 값 ({max_workers}), 기본값 (CPU 코어 수 또는 1)으로 설정합니다.")
-                max_workers = os.cpu_count() or 1
-            
-            logger.info(f"최대 {max_workers} 스레드로 병렬 번역 (대상: {len(chunks_to_process_with_indices)} 청크)...")
-
-            pbar = None
-            if tqdm_file_stream and chunks_to_process_with_indices: 
-                pbar = tqdm(total=len(chunks_to_process_with_indices), 
-                            desc="청크 번역", 
-                            unit="청크", 
-                            file=tqdm_file_stream, 
-                            initial=0, 
-                            leave=False,
-                            smoothing=0.1)
 
 
-            self.executor = ThreadPoolExecutor(max_workers=max_workers)
-            try:
-                future_to_chunk_index: Dict[Any, int] = {}
-                for i, chunk_text in chunks_to_process_with_indices:
-                    if self.stop_requested:
-                        logger.info("새 작업 제출 중단됨 (사용자 요청).")
-                        break
-                    future = self.executor.submit(self._translate_and_save_chunk, i, chunk_text,
-                                            chunked_output_file_path,
-                                            total_chunks, 
-                                            input_file_path_obj, progress_callback)
-                    future_to_chunk_index[future] = i
-
-                if self.stop_requested and not future_to_chunk_index:
-                    logger.info("번역 시작 전 중지 요청됨.")
-                    if pbar: pbar.close()
-
-                # as_completed에서 결과를 기다리되, stop_requested가 True가 되면 루프를 중단합니다.
-                for future in as_completed(future_to_chunk_index.keys()):
-                    if self.stop_requested:
-                        # 실행 중인 future들을 취소합니다.
-                        for f in future_to_chunk_index.keys():
-                            if not f.done():
-                                f.cancel()
-                        logger.info("진행 중인 작업들이 취소되었습니다.")
-                        break
-                    chunk_idx_completed = future_to_chunk_index[future]
-                    try:
-                        future.result()
-                        
-                        # 실시간 품질 검사 (최소 5개 이상 처리되었을 때부터)
-                        if self.processed_chunks_count >= 5:
-                            try:
-                                # 메타데이터 로드 (최신 상태 반영)
-                                current_metadata = load_metadata(metadata_file_path)
-                                suspicious_chunks = self.quality_check_service.analyze_translation_quality(current_metadata)
-                                
-                                # 이번에 완료된 청크가 의심 목록에 있는지 확인
-                                for chunk in suspicious_chunks:
-                                    if chunk['chunk_index'] == chunk_idx_completed:
-                                        issue_type = chunk['issue_type']
-                                        z_score = chunk['z_score']
-                                        ratio = chunk['ratio']                                    
-                                        
-                                        if issue_type == "omission":
-                                            logger.warning(f"⚠️ 번역 누락 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
-                                        elif issue_type == "hallucination":
-                                            logger.warning(f"⚠️ AI 환각 의심 (청크 {chunk_idx_completed}): 비율 {ratio:.2f}, Z-Score {z_score}")
-                            except Exception as qc_e:
-                                logger.warning(f"품질 검사 중 오류 발생 (무시됨): {qc_e}")
-
-                    except Exception as e_future:
-                        logger.error(f"병렬 작업 (청크 {chunk_idx_completed}) 실행 중 오류 (as_completed): {e_future}", exc_info=True)
-                    finally:
-                        if pbar: pbar.update(1)
-            finally:
-                if pbar: pbar.close()
-                self.executor.shutdown(wait=False) # 모든 스레드가 즉시 종료되도록 보장
-                logger.info("ThreadPoolExecutor가 종료되었습니다. 결과 병합을 시작합니다.") 
 
 
-            logger.info("모든 대상 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
-            # 단일 소스(.chunked.txt)에서 최종 병합 대상 로드
-            final_merged_chunks: Dict[int, str] = {}
-            try:
-                final_merged_chunks = load_chunks_from_file(chunked_output_file_path)
-                logger.info(f"최종 병합 대상 청크 수: {len(final_merged_chunks)}")
-            except Exception as e:
-                logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
-            
-            try:
-                save_merged_chunks_to_file(final_output_file_path_obj, final_merged_chunks)
-                logger.info(f"최종 번역 결과가 '{final_output_file_path_obj}'에 저장되었습니다.")
-                  # ✅ 개선: 후처리 실행 (설정에서 활성화된 경우)
-                if self.config.get("enable_post_processing", True):
-                    logger.info("번역 완료 후 후처리를 시작합니다...")
-                    try:
-                        # 1. 먼저 청크 인덱스가 포함된 백업 파일 저장 (후처리 전 원본 보존)
-                        chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
-                        save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
-                        logger.info(f"이어하기용 청크 백업 파일 저장 완료: {chunked_backup_path}")
-                        
-                        # 2. 청크 단위 후처리 (헤더 제거, HTML 정리 등)
-                        processed_chunks = self.post_processing_service.post_process_merged_chunks(final_merged_chunks, self.config)
-                        
-                        # 3. 후처리된 내용을 임시로 저장 (청크 인덱스는 여전히 포함)
-                        save_merged_chunks_to_file(final_output_file_path_obj, processed_chunks)
-                        logger.info("청크 단위 후처리 완료 및 임시 저장됨.")
-                        
-                        # 4. 최종적으로 청크 인덱스 마커 제거 (사용자가 보는 최종 파일)
-                        if self.post_processing_service.remove_chunk_indexes_from_final_file(final_output_file_path_obj):
-                            logger.info("최종 출력 파일에서 청크 인덱스 마커 제거 완료.")
-                        else:
-                            logger.warning("청크 인덱스 마커 제거에 실패했습니다.")
-                            
-                    except Exception as post_proc_e:
-                        logger.error(f"후처리 중 오류 발생: {post_proc_e}. 후처리를 건너뜁니다.", exc_info=True)
-                        # 후처리 실패 시에도 청크 백업 파일은 보장
-                        try:
-                            chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
-                            save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
-                            logger.info(f"후처리 실패 시 원본 청크 백업 파일 저장: {chunked_backup_path}")
-                        except Exception as backup_fallback_e:
-                            logger.error(f"원본 청크 백업 파일 저장 중 오류: {backup_fallback_e}", exc_info=True)
-                else:
-                    logger.info("후처리가 설정에서 비활성화되어 건너뜁니다.")
-                    # 후처리가 비활성화된 경우에도 청크 백업 파일은 저장 (이어하기용)
-                    try:
-                        chunked_backup_path = final_output_file_path_obj.with_suffix('.chunked.txt')
-                        save_merged_chunks_to_file(chunked_backup_path, final_merged_chunks)
-                        logger.info(f"청크 인덱스 포함 백업 파일 저장: {chunked_backup_path} (후처리 비활성화됨)")
-                    except Exception as backup_e:
-                        logger.error(f"청크 백업 파일 저장 중 오류: {backup_e}", exc_info=True)
-                        
-            except Exception as e:
-                logger.error(f"최종 번역 결과 파일 '{final_output_file_path_obj}' 저장 중 오류: {e}", exc_info=True)
-                raise BtgFileHandlerException(f"최종 출력 파일 저장 오류: {e}", original_exception=e)
-
-            # current_run.tmp는 더 이상 사용하지 않음
-
-            final_status_msg = "번역 완료."
-            with self._progress_lock:
-                # 항상 최신 메타데이터를 다시 로드하여 덮어쓰기 문제를 방지합니다.
-                try:
-                    # 작업 시작 시점의 메타데이터가 아닌, 파일에 기록된 최신 상태를 가져옵니다.
-                    loaded_metadata = load_metadata(metadata_file_path)
-                    if not loaded_metadata:
-                        logger.warning("최종 메타데이터 저장 단계에서 메타데이터 파일을 로드할 수 없습니다. 새 메타데이터를 생성합니다.")
-                        # 이 경우, 정보가 일부 유실될 수 있지만 최소한의 구조는 보존합니다.
-                        loaded_metadata = create_new_metadata(input_file_path_obj, total_chunks, self.config)
-                    else:
-                        logger.info("최종 저장을 위해 최신 메타데이터를 성공적으로 다시 로드했습니다.")
-                except Exception as e:
-                    logger.error(f"최종 메타데이터 저장 전, 최신 정보 로드 실패: {e}. 일부 정보가 유실될 수 있습니다.")
-                    # loaded_metadata는 이전 상태를 유지하지만, 오류를 기록합니다.
-
-                if self.stop_requested:
-                    final_status_msg = "번역 중단됨."
-                    loaded_metadata["status"] = "stopped"
-                elif self.failed_chunks_count > 0:
-                    final_status_msg = f"번역 완료 (실패 {self.failed_chunks_count}개 포함)."
-                    loaded_metadata["status"] = "completed_with_errors"
-                elif self.successful_chunks_count == total_chunks: 
-                    final_status_msg = "번역 완료 (모든 청크 성공)."
-                    loaded_metadata["status"] = "completed"
-                else: 
-                    if self.processed_chunks_count == total_chunks: 
-                        final_status_msg = f"번역 완료 (성공: {self.successful_chunks_count}/{total_chunks}, 실패: {self.failed_chunks_count})."
-                        loaded_metadata["status"] = "completed_with_errors" if self.failed_chunks_count > 0 else "completed_with_pending" 
-                    else: 
-                        final_status_msg = f"번역 처리됨 (처리 시도: {self.processed_chunks_count}/{total_chunks}, 성공: {self.successful_chunks_count})."
-                        loaded_metadata["status"] = "unknown_incomplete" 
-                logger.info(f"최종 상태 메시지: {final_status_msg}")
-
-                loaded_metadata["last_updated"] = time.time()
-                save_metadata(metadata_file_path, loaded_metadata)
-
-            if status_callback: status_callback(final_status_msg)
-            if progress_callback:
-                with self._progress_lock:
-                    progress_callback(TranslationJobProgressDTO(
-                        total_chunks, self.processed_chunks_count,
-                        self.successful_chunks_count, self.failed_chunks_count,
-                        final_status_msg
-                    ))
-
-        except Exception as e:
-            logger.error(f"번역 서비스 중 예상치 못한 오류 발생: {e}", exc_info=True)
-            if status_callback: status_callback(f"오류 발생: {e}")
-            tc_for_error_dto = total_chunks if 'total_chunks' in locals() and total_chunks > 0 else 0
-            pc_for_error_dto = self.processed_chunks_count if hasattr(self, 'processed_chunks_count') else 0
-            sc_for_error_dto = self.successful_chunks_count if hasattr(self, 'successful_chunks_count') else 0
-            fc_for_error_dto = self.failed_chunks_count if hasattr(self, 'failed_chunks_count') else 0
-
-            if progress_callback: progress_callback(TranslationJobProgressDTO(
-                tc_for_error_dto, pc_for_error_dto, sc_for_error_dto, fc_for_error_dto, f"오류 발생: {e}"
-            ))
-            
-            with self._progress_lock:
-                error_metadata = {}
-                try:
-                    error_metadata = load_metadata(metadata_file_path) 
-                except Exception as load_err:
-                    logger.error(f"오류 발생 후 메타데이터 로드 실패: {load_err}")
-
-                if not error_metadata.get("config_hash"): 
-                    error_metadata = create_new_metadata(input_file_path_obj, tc_for_error_dto, self.config)
-
-                error_metadata["status"] = "error"
-                error_metadata["last_updated"] = time.time()
-                if 'total_chunks' in locals(): error_metadata["total_chunks"] = total_chunks 
-                save_metadata(metadata_file_path, error_metadata)
-
-            # current_run.tmp는 더 이상 사용하지 않음
-            raise BtgServiceException(f"번역 서비스 오류: {e}", original_exception=e) from e
-        finally:
-            # 중지 요청이 있었던 경우, is_translation_running은 이미 False로 설정되었을 수 있습니다.
-            if not self.stop_requested:
-                with self._translation_lock:
-                    self.is_translation_running = False
-
-    def stop_translation(self):
-        if not self.is_translation_running:
-            logger.info("번역 작업이 실행 중이 아니므로 중지할 수 없습니다.")
-            return
-
-        logger.info("번역 중지를 요청합니다...")
-        self.stop_requested = True
-
-        # ThreadPoolExecutor를 직접 종료하여 실행 중인 모든 스레드를 정리합니다.
-        if hasattr(self, 'executor') and self.executor:
-            # shutdown(wait=False)는 대기 중인 future를 취소하고, 실행 중인 스레드가 완료될 때까지 기다리지 않습니다.
-            self.executor.shutdown(wait=False)
-            logger.info("ThreadPoolExecutor가 종료되었습니다.")
-
-        # is_translation_running 플래그를 False로 설정하여 새로운 작업이 시작되지 않도록 합니다.
-        with self._translation_lock:
-            self.is_translation_running = False
-        
-        logger.info("번역 작업이 중지되었습니다.")
 
     def request_stop_translation(self):
-        if self.is_translation_running:
-            logger.info("번역 중지 요청 수신됨.")
-            self.stop_translation()
+        """
+        비동기 번역 작업 취소 (즉시 반응)
+        
+        Task.cancel()을 사용하여 현재 진행 중인 asyncio Task를 즉시 취소합니다.
+        기존 스레드 기반의 5-30초 대비 <1초로 개선됩니다.
+        """
+        if self.current_translation_task and not self.current_translation_task.done():
+            logger.info("번역 취소 요청됨 (Task.cancel() 호출)")
+            self.current_translation_task.cancel()
         else:
-            logger.info("실행 중인 번역 작업이 없어 중지 요청을 무시합니다.")
+            logger.warning("현재 실행 중인 번역 작업이 없습니다")
 
     def translate_single_chunk(
         self,

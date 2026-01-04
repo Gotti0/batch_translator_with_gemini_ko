@@ -7,6 +7,7 @@ from typing import Optional, Dict, List, Callable, Any
 import threading
 import logging
 import json
+import asyncio
 
 # 프로젝트 루트 디렉토리를 sys.path에 추가 (main_gui.py와 유사하게)
 project_root = Path(__file__).resolve().parent.parent
@@ -398,13 +399,15 @@ def main():
                     if metadata_file_path.exists(): delete_file(metadata_file_path)
                     if output_file.exists(): delete_file(output_file)
 
-                app_service.start_translation(
-                    input_file,
-                    output_file,
-                    progress_callback=cli_translation_progress_callback,
-                    status_callback=cli_translation_status_callback,
-                    tqdm_file_stream=sys.stdout,
-                    blocking=True # CLI에서는 순차 처리를 위해 blocking=True로 호출
+                # 비동기 번역을 동기 방식으로 래핑 (CLI 호환성)
+                asyncio.run(
+                    app_service.start_translation_async(
+                        input_file,
+                        output_file,
+                        progress_callback=cli_translation_progress_callback,
+                        status_callback=cli_translation_status_callback,
+                        tqdm_file_stream=sys.stdout
+                    )
                 )
                 cli_logger.info(f"--- 파일 {i+1}/{total_files} 처리 완료: {input_file} ---")
             
