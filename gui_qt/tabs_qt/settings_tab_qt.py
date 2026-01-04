@@ -380,7 +380,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         if file_path:
             self.input_edit.setText(file_path)
             # 출력 기본값: 입력과 동일한 폴더/확장자 처리
-            candidate = str(Path(file_path).with_suffix("_translated.txt"))
+            p = Path(file_path)
+            candidate = str(p.parent / f"{p.stem}_translated{p.suffix}")
             if not self.output_edit.text():
                 self.output_edit.setText(candidate)
 
