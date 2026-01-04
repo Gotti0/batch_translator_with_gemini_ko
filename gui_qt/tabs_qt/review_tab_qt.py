@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PySide6 import QtCore, QtGui, QtWidgets
 from qasync import asyncSlot
 
+from gui_qt.components_qt.tooltip_qt import TooltipQt
 from infrastructure import file_handler
 from infrastructure.file_handler import read_text_file, write_text_file
 from infrastructure.logger_config import setup_logger
@@ -99,10 +100,15 @@ class ReviewTabQt(QtWidgets.QWidget):
         file_group = QtWidgets.QGroupBox("입력 파일 선택")
         file_form = QtWidgets.QHBoxLayout(file_group)
         self.file_path_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.file_path_edit, "검토할 번역 파일의 경로입니다.")
         browse_btn = QtWidgets.QPushButton("찾아보기")
+        TooltipQt(browse_btn, "검토할 파일을 선택합니다.")
         sync_btn = QtWidgets.QPushButton("설정탭 동기화")
+        TooltipQt(sync_btn, "설정 탭의 입력 파일 경로를 가져옵니다.")
         load_btn = QtWidgets.QPushButton("로드")
+        TooltipQt(load_btn, "선택한 파일의 번역 내용을 불러옵니다.")
         refresh_btn = QtWidgets.QPushButton("새로고침")
+        TooltipQt(refresh_btn, "현재 파일을 다시 불러옵니다.")
         for btn in (browse_btn, sync_btn, load_btn, refresh_btn):
             btn.setMinimumWidth(90)
         file_form.addWidget(QtWidgets.QLabel("입력 파일:"))
@@ -119,6 +125,7 @@ class ReviewTabQt(QtWidgets.QWidget):
         left_layout = QtWidgets.QVBoxLayout(left_widget)
 
         self.stats_label = QtWidgets.QLabel("청크: 0개 | 성공: 0 | 실패: 0 | 의심: 0")
+        TooltipQt(self.stats_label, "현재 로드된 파일의 번역 통계 정보입니다.")
         left_layout.addWidget(self.stats_label)
 
         self.model = QtGui.QStandardItemModel(0, 6)
@@ -128,6 +135,7 @@ class ReviewTabQt(QtWidgets.QWidget):
         self.proxy.setSortCaseSensitivity(QtCore.Qt.CaseInsensitive)
 
         self.table = QtWidgets.QTableView()
+        TooltipQt(self.table, "번역 청크 목록입니다. 클릭하여 상세 내용을 확인하거나 다중 선택할 수 있습니다.")
         self.table.setModel(self.proxy)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -141,11 +149,17 @@ class ReviewTabQt(QtWidgets.QWidget):
 
         btns = QtWidgets.QVBoxLayout()
         self.retranslate_btn = QtWidgets.QPushButton("재번역")
+        TooltipQt(self.retranslate_btn, "선택한 청크를 다시 번역합니다.")
         self.edit_btn = QtWidgets.QPushButton("수동 수정")
+        TooltipQt(self.edit_btn, "선택한 청크의 번역을 수동으로 수정합니다.")
         self.reset_btn = QtWidgets.QPushButton("초기화")
+        TooltipQt(self.reset_btn, "수정 내용을 취소하고 원래 번역으로 돌립니다.")
         self.confirm_btn = QtWidgets.QPushButton("확정")
+        TooltipQt(self.confirm_btn, "선택한 청크의 번역을 확정하고 파일에 저장합니다.")
         self.copy_src_btn = QtWidgets.QPushButton("원문 복사")
+        TooltipQt(self.copy_src_btn, "선택한 청크의 원문을 클립보드에 복사합니다.")
         self.copy_trans_btn = QtWidgets.QPushButton("번역 복사")
+        TooltipQt(self.copy_trans_btn, "선택한 청크의 번역을 클립보드에 복사합니다.")
         for b in (self.retranslate_btn, self.edit_btn, self.reset_btn, self.confirm_btn, self.copy_src_btn, self.copy_trans_btn):
             b.setMinimumHeight(32)
             btns.addWidget(b)
@@ -168,12 +182,14 @@ class ReviewTabQt(QtWidgets.QWidget):
         src_layout = QtWidgets.QVBoxLayout(src_group)
         self.source_view = QtWidgets.QPlainTextEdit()
         self.source_view.setReadOnly(True)
+        TooltipQt(self.source_view, "선택한 청크의 원문 내용입니다.")
         src_layout.addWidget(self.source_view)
 
         trans_group = QtWidgets.QGroupBox("번역문")
         trans_layout = QtWidgets.QVBoxLayout(trans_group)
         self.trans_view = QtWidgets.QPlainTextEdit()
         self.trans_view.setReadOnly(True)
+        TooltipQt(self.trans_view, "선택한 청크의 번역 내용입니다.")
         trans_layout.addWidget(self.trans_view)
 
         right_layout.addWidget(src_group, 1)
@@ -187,9 +203,12 @@ class ReviewTabQt(QtWidgets.QWidget):
 
         bottom = QtWidgets.QHBoxLayout()
         self.status_label = QtWidgets.QLabel("파일을 선택하고 로드 버튼을 클릭하세요.")
+        TooltipQt(self.status_label, "현재 작업의 상태를 표시합니다.")
         bottom.addWidget(self.status_label, 1)
         self.final_btn = QtWidgets.QPushButton("최종 파일 생성")
+        TooltipQt(self.final_btn, "모든 번역 청크를 병합하여 최종 파일을 생성합니다.")
         self.integrity_btn = QtWidgets.QPushButton("무결성 검사")
+        TooltipQt(self.integrity_btn, "번역 파일의 무결성을 검사하고 문제를 표시합니다.")
         bottom.addWidget(self.integrity_btn)
         bottom.addWidget(self.final_btn)
         layout.addLayout(bottom)

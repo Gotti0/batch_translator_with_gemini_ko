@@ -12,6 +12,8 @@ from typing import Optional, Dict
 
 from PySide6 import QtCore, QtWidgets, QtGui
 
+from gui_qt.components_qt.tooltip_qt import TooltipQt
+
 
 class _QtLogEmitter(QtCore.QObject):
     message = QtCore.Signal(str, str)  # text, level
@@ -77,6 +79,7 @@ class LogTabQt(QtWidgets.QWidget):
         self.text_widget = QtWidgets.QPlainTextEdit()
         self.text_widget.setReadOnly(True)
         self.text_widget.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        TooltipQt(self.text_widget, "애플리케이션 실행 로그와 번역 진행 상황이 표시됩니다.\n오류 및 경고 메시지를 확인할 수 있습니다.")
 
         layout.addWidget(self.text_widget)
         

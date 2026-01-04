@@ -16,6 +16,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from qasync import asyncSlot
 
 from core.dtos import TranslationJobProgressDTO
+from gui_qt.components_qt.tooltip_qt import TooltipQt
 from gui_qt.dialogs_qt.prefill_history_editor_qt import PrefillHistoryEditorDialogQt
 
 
@@ -117,15 +118,21 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         self.api_keys_edit = QtWidgets.QPlainTextEdit()
         self.api_keys_edit.setPlaceholderText("API 키를 줄바꿈으로 구분하여 입력")
+        TooltipQt(self.api_keys_edit, "Gemini API 키를 줄바꿈으로 구분하여 입력합니다.\n여러 키를 사용하면 로터이션됩니다.")
         self.use_vertex_check = QtWidgets.QCheckBox("Vertex AI 사용")
+        TooltipQt(self.use_vertex_check, "Google Cloud Vertex AI를 사용하여 API를 호출합니다.\n서비스 계정 JSON 파일이 필요합니다.")
         self.sa_path_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.sa_path_edit, "Vertex AI 서비스 계정 JSON 파일 경로입니다.")
         sa_browse = QtWidgets.QPushButton("찾기")
+        TooltipQt(sa_browse, "서비스 계정 JSON 파일을 선택합니다.")
         sa_browse.clicked.connect(self._browse_sa)
         sa_row = QtWidgets.QHBoxLayout()
         sa_row.addWidget(self.sa_path_edit)
         sa_row.addWidget(sa_browse)
         self.gcp_project_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.gcp_project_edit, "GCP 프로젝트 ID를 입력합니다.")
         self.gcp_location_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.gcp_location_edit, "GCP 리전을 입력합니다 (예: us-central1).")
 
         # 모델 콤보 (editable) - 기본 후보 + 사용자 입력 유지
         self.model_name_combo = NoWheelComboBox()
@@ -138,8 +145,10 @@ class SettingsTabQt(QtWidgets.QWidget):
             "gemini-3.0-pro",
             "gemini-3.0-flash",
         ])
+        TooltipQt(self.model_name_combo, "번역에 사용할 Gemini 모델을 선택하거나 직접 입력합니다.")
 
         self.model_refresh_btn = QtWidgets.QPushButton("모델 목록 새로고침")
+        TooltipQt(self.model_refresh_btn, "API에서 사용 가능한 모델 목록을 불러옵니다.")
         self.model_progress = QtWidgets.QProgressBar()
         self.model_progress.setRange(0, 0)
         self.model_progress.setTextVisible(False)
@@ -165,8 +174,10 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.temperature_slider = NoWheelSlider(QtCore.Qt.Horizontal)
         self.temperature_slider.setRange(0, 200)
         self.temperature_slider.setValue(70)
+        TooltipQt(self.temperature_slider, "모델 출력의 무작위성을 조절합니다 (0.0 ~ 2.0).\n낮을수록 일관적이고 예측 가능하며, 높을수록 창의적이지만 예측 불가능합니다.\n번역에는 0.5~1.0 권장.")
         self.temperature_label = QtWidgets.QLabel("0.70")
         self.temperature_label.setMinimumWidth(40)
+        TooltipQt(self.temperature_label, "현재 설정된 Temperature 값입니다.")
         self.temperature_slider.valueChanged.connect(
             lambda v: self.temperature_label.setText(f"{v/100:.2f}")
         )
@@ -178,8 +189,10 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.top_p_slider = NoWheelSlider(QtCore.Qt.Horizontal)
         self.top_p_slider.setRange(0, 100)
         self.top_p_slider.setValue(90)
+        TooltipQt(self.top_p_slider, "Nucleus Sampling 파라미터입니다 (0.0 ~ 1.0).\n다음 토큰 선택 시 고려할 확률 누적 범위를 설정합니다.\n0.9는 상위 90% 확률의 토큰만 고려한다는 의미입니다.")
         self.top_p_label = QtWidgets.QLabel("0.90")
         self.top_p_label.setMinimumWidth(40)
+        TooltipQt(self.top_p_label, "현재 설정된 Top P 값입니다.")
         self.top_p_slider.valueChanged.connect(
             lambda v: self.top_p_label.setText(f"{v/100:.2f}")
         )
@@ -192,8 +205,10 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.thinking_budget_slider.setRange(-1, 32000)
         self.thinking_budget_slider.setSingleStep(128)
         self.thinking_budget_slider.setValue(-1)
+        TooltipQt(self.thinking_budget_slider, "Gemini 2.5 전용 파라미터입니다.\n복잡한 추론에 사용할 토큰 예산을 설정합니다.\n-1: 비활성화, 양수: 사고에 사용할 최대 토큰 수.\n값이 클수록 더 깊은 추론이 가능하지만 비용이 증가합니다.")
         self.thinking_budget_label = QtWidgets.QLabel("-1 (비활성)")
         self.thinking_budget_label.setMinimumWidth(80)
+        TooltipQt(self.thinking_budget_label, "현재 설정된 Thinking Budget 값입니다.")
         self.thinking_budget_slider.valueChanged.connect(
             lambda v: self.thinking_budget_label.setText(
                 "-1 (비활성)" if v == -1 else str(v)
@@ -205,6 +220,7 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         self.thinking_level_combo = NoWheelComboBox()
         self.thinking_level_combo.addItems(["low", "high"])
+        TooltipQt(self.thinking_level_combo, "Gemini 3 전용 파라미터입니다.\n모델의 추론 깊이 수준을 설정합니다.\nminimal/low/medium/high (Flash는 4단계, Pro는 2단계).\n높을수록 더 신중하게 추론하지만 응답 시간이 길어집니다.")
 
         gen_form.addRow("Temperature", self._wrap(temp_row))
         gen_form.addRow("Top P", self._wrap(top_p_row))
@@ -216,9 +232,13 @@ class SettingsTabQt(QtWidgets.QWidget):
         file_form = QtWidgets.QFormLayout(file_group)
 
         self.input_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.input_edit, "번역할 입력 파일의 경로입니다.")
         self.output_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.output_edit, "번역 결과를 저장할 출력 파일의 경로입니다.")
         browse_in = QtWidgets.QPushButton("파일 선택")
+        TooltipQt(browse_in, "입력 파일을 선택합니다.")
         browse_out = QtWidgets.QPushButton("출력 경로")
+        TooltipQt(browse_out, "출력 파일 경로를 설정합니다.")
         browse_in.clicked.connect(self._browse_input)
         browse_out.clicked.connect(self._browse_output)
 
@@ -232,11 +252,14 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.chunk_size_spin = NoWheelSpinBox()
         self.chunk_size_spin.setRange(500, 30000)
         self.chunk_size_spin.setSingleStep(500)
+        TooltipQt(self.chunk_size_spin, "텍스트를 분할하는 청크의 크기(문자 수)입니다.\n크면 API 호출이 줄지만 품질이 떨어질 수 있습니다.")
         self.max_workers_spin = NoWheelSpinBox()
         self.max_workers_spin.setRange(1, 64)
+        TooltipQt(self.max_workers_spin, "동시에 처리할 최대 작업 수입니다.\nAPI 할당량에 따라 조절하세요.")
         self.rpm_spin = NoWheelSpinBox()
         self.rpm_spin.setRange(0, 2000)
         self.rpm_spin.setSingleStep(10)
+        TooltipQt(self.rpm_spin, "분당 최대 API 요청 수입니다.\n0으로 설정하면 제한 없음.")
 
         file_form.addRow("입력 파일", self._wrap(in_row))
         file_form.addRow("출력 파일", self._wrap(out_row))
@@ -248,7 +271,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         lang_group = QtWidgets.QGroupBox("언어 설정")
         lang_form = QtWidgets.QFormLayout(lang_group)
         self.novel_lang_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.novel_lang_edit, "원문의 언어를 지정합니다 (예: English, Japanese).")
         self.novel_fallback_edit = QtWidgets.QLineEdit()
+        TooltipQt(self.novel_fallback_edit, "언어 자동감지 실패 시 사용할 폴백 언어입니다.")
         lang_form.addRow("출발 언어", self.novel_lang_edit)
         lang_form.addRow("자동감지 실패 폴백", self.novel_fallback_edit)
 
@@ -257,15 +282,19 @@ class SettingsTabQt(QtWidgets.QWidget):
         prompt_vbox = QtWidgets.QVBoxLayout(prompt_group)
         self.prompt_edit = QtWidgets.QPlainTextEdit()
         self.prompt_edit.setPlaceholderText("번역 프롬프트: {{slot}}과 {{glossary_context}} 지원")
+        TooltipQt(self.prompt_edit, "번역 시 모델에 제공할 프롬프트입니다.\n{{slot}}에 텍스트가, {{glossary_context}}에 용어집이 삽입됩니다.")
         prompt_vbox.addWidget(self.prompt_edit)
 
         # --- 프리필 ---
         prefill_group = QtWidgets.QGroupBox("프리필(Prefill)")
         prefill_vbox = QtWidgets.QVBoxLayout(prefill_group)
         self.enable_prefill_check = QtWidgets.QCheckBox("프리필 번역 사용")
+        TooltipQt(self.enable_prefill_check, "프리필 모드를 활성화하여 모델엔 예시를 제공합니다.")
         self.prefill_system_edit = QtWidgets.QPlainTextEdit()
         self.prefill_system_edit.setPlaceholderText("시스템 지침")
+        TooltipQt(self.prefill_system_edit, "프리필 모드에서 사용할 시스템 지침입니다.")
         self.edit_history_btn = QtWidgets.QPushButton("프리필 히스토리 편집 (준비 중)")
+        TooltipQt(self.edit_history_btn, "프리필에 사용할 예시 대화 히스토리를 편집합니다.")
         self.edit_history_btn.setEnabled(True)
         self.edit_history_btn.clicked.connect(self._open_prefill_history_dialog)
         prefill_vbox.addWidget(self.enable_prefill_check)
@@ -276,21 +305,28 @@ class SettingsTabQt(QtWidgets.QWidget):
         safety_group = QtWidgets.QGroupBox("콘텐츠 안전 재시도")
         safety_form = QtWidgets.QFormLayout(safety_group)
         self.use_content_safety_check = QtWidgets.QCheckBox("검열 오류 시 청크 분할 재시도")
+        TooltipQt(self.use_content_safety_check, "콘텐츠 안전 오류 발생 시 청크를 분할하여 재시도합니다.")
         self.max_split_spin = NoWheelSpinBox()
         self.max_split_spin.setRange(1, 10)
+        TooltipQt(self.max_split_spin, "최대 분할 시도 횟수입니다.")
         self.min_chunk_spin = NoWheelSpinBox()
         self.min_chunk_spin.setRange(50, 5000)
         self.min_chunk_spin.setSingleStep(50)
+        TooltipQt(self.min_chunk_spin, "분할 시 최소 청크 크기입니다.")
         safety_form.addRow(self.use_content_safety_check)
         safety_form.addRow("최대 분할 시도", self.max_split_spin)
         safety_form.addRow("최소 청크 크기", self.min_chunk_spin)
 
         # --- 액션/진행 표시 ---
         self.start_btn = QtWidgets.QPushButton("번역 시작")
+        TooltipQt(self.start_btn, "현재 설정으로 번역을 시작합니다.")
         self.cancel_btn = QtWidgets.QPushButton("취소")
+        TooltipQt(self.cancel_btn, "진행 중인 번역 작업을 취소합니다.")
         self.cancel_btn.setEnabled(False)
         self.save_config_btn = QtWidgets.QPushButton("설정 저장")
+        TooltipQt(self.save_config_btn, "현재 설정을 config.json 파일에 저장합니다.")
         self.load_config_btn = QtWidgets.QPushButton("설정 불러오기")
+        TooltipQt(self.load_config_btn, "config.json 파일에서 설정을 불러옵니다.")
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addWidget(self.start_btn)
@@ -344,7 +380,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         if file_path:
             self.input_edit.setText(file_path)
             # 출력 기본값: 입력과 동일한 폴더/확장자 처리
-            candidate = str(Path(file_path).with_suffix(".translated.txt"))
+            candidate = str(Path(file_path).with_suffix("_translated.txt"))
             if not self.output_edit.text():
                 self.output_edit.setText(candidate)
 

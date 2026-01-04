@@ -14,6 +14,7 @@ import qdarktheme
 from app.app_service import AppService
 from core.exceptions import BtgConfigException
 from infrastructure.logger_config import setup_logger
+from gui_qt.components_qt.tooltip_qt import TooltipQt
 
 # Qt 탭 구현 (점진 이식)
 try:
@@ -72,11 +73,21 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self.close)
             return
 
+        # 전역 툴팁 스타일 적용
+        self._apply_tooltip_style()
+
         # 탭 위젯 구성 (플레이스홀더 + 점진 이식 탭)
         self._setup_tabs()
         
         # 상태바 설정 (테마 토글 버튼 포함)
         self._setup_statusbar()
+
+    def _apply_tooltip_style(self) -> None:
+        """전역 툴팁 스타일 적용"""
+        app = QtWidgets.QApplication.instance()
+        if app:
+            TooltipQt.apply_global_style(app, theme=self._current_theme)
+            logger.debug(f"전역 툴팁 스타일 적용됨 (테마: {self._current_theme})")
 
     def _setup_statusbar(self) -> None:
         """상태바 생성 및 테마 토글 버튼 추가"""
@@ -104,6 +115,12 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
             self._current_theme = "dark"
             qdarktheme.setup_theme(theme="dark", custom_colors={"primary": "#29B6F6"})
             self.theme_toggle_btn.setText("☀️ 라이트")
+        
+        # 테마 변경 시 툴팁 스타일도 업데이트
+        app = QtWidgets.QApplication.instance()
+        if app:
+            TooltipQt.update_global_theme(app, theme=self._current_theme)
+            logger.debug(f"툴팁 테마 업데이트됨: {self._current_theme}")
 
     def _init_app_service(self) -> None:
         try:
