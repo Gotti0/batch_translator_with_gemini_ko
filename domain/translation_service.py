@@ -171,6 +171,14 @@ class TranslationService:
         if isinstance(prompt_template, (list, tuple)):
             prompt_template = prompt_template[0] if prompt_template else "Translate to Korean: {{slot}}"
 
+        # [Strict Mode] 필수 플레이스홀더 검증
+        if "{{slot}}" not in prompt_template:
+            raise BtgTranslationException("번역 프롬프트 템플릿에 필수 플레이스홀더 '{{slot}}'이 누락되었습니다. 작업을 중단합니다.")
+
+        # [Strict Mode] 용어집 주입 활성화 시 플레이스홀더 검증
+        if self.config.get("enable_dynamic_glossary_injection", False) and "{{glossary_context}}" not in prompt_template:
+            raise BtgTranslationException("동적 용어집 주입이 활성화되었으나, 프롬프트 템플릿에 '{{glossary_context}}' 플레이스홀더가 없습니다. 작업을 중단합니다.")
+
         final_prompt = prompt_template
 
         # Determine the source language for the current chunk to filter glossary entries

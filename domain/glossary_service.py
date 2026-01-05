@@ -109,6 +109,11 @@ class SimpleGlossaryService:
 
         prompt = base_template.replace("{target_lang_code}", target_lang_code)
         prompt = prompt.replace("{target_lang_name}", target_lang_name)
+        
+        # [Strict Mode] 필수 플레이스홀더 검증
+        if "{novelText}" not in prompt:
+            raise BtgBusinessLogicException("용어집 추출 프롬프트에 필수 플레이스홀더 '{novelText}'가 누락되었습니다. 작업을 중단합니다.")
+
         prompt = prompt.replace("{novelText}", segment_text) # 수정: base_template 대신 prompt 사용
         return prompt
 
