@@ -250,7 +250,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         out_row.addWidget(browse_out)
 
         self.chunk_size_spin = NoWheelSpinBox()
-        self.chunk_size_spin.setRange(500, 30000)
+        self.chunk_size_spin.setRange(500, 100000)
         self.chunk_size_spin.setSingleStep(500)
         TooltipQt(self.chunk_size_spin, "텍스트를 분할하는 청크의 크기(문자 수)입니다.\n크면 API 호출이 줄지만 품질이 떨어질 수 있습니다.")
         self.max_workers_spin = NoWheelSpinBox()

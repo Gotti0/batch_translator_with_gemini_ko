@@ -176,7 +176,7 @@ class GlossaryTabQt(QtWidgets.QWidget):
         self.enable_injection_check = QtWidgets.QCheckBox("동적 용어집 주입 활성화")
         TooltipQt(self.enable_injection_check, "번역 시 현재 청크와 관련된 용어집 항목을 자동으로 프롬프트에 주입합니다.")
         self.max_entries_spin = NoWheelSpinBox()
-        self.max_entries_spin.setRange(1, 50)
+        self.max_entries_spin.setRange(1, 999)
         TooltipQt(self.max_entries_spin, "하나의 번역 청크에 주입될 용어집 항목의 최대 개수입니다.")
         self.max_chars_spin = NoWheelSpinBox()
         self.max_chars_spin.setRange(50, 10000)
