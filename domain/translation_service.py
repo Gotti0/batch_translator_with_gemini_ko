@@ -296,6 +296,9 @@ class TranslationService:
             logger.info("translate_chunk_async: 중단 요청 감지됨 (작업 시작 전)")
             raise asyncio.CancelledError("번역 중단 요청됨")
         
+        # ✨ 방어적 체크포인트: asyncio 취소 확인 강제
+        await asyncio.sleep(0)
+        
         if not chunk_text.strip():
             logger.debug("translate_chunk_async: 입력 텍스트가 비어 있어 빈 문자열 반환.")
             return ""
@@ -366,6 +369,9 @@ class TranslationService:
         if self.stop_check_callback and self.stop_check_callback():
             logger.info("translate_text_async: 중단 요청 감지됨 (작업 시작 전)")
             raise asyncio.CancelledError("번역 중단 요청됨")
+        
+        # ✨ 방어적 체크포인트: asyncio 취소 확인 강제
+        await asyncio.sleep(0)
         
         text_preview = text_chunk[:100].replace('\n', ' ')
         logger.info(f"비동기 번역 요청: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")
@@ -544,7 +550,8 @@ class TranslationService:
             # 📍 취소 확인 1: 작업 시작 전
             if self.stop_check_callback and self.stop_check_callback():
                 raise asyncio.CancelledError(f"서브 청크 {idx+1} 번역 중단 요청됨 (작업 시작 전)")
-            
+                        # ✨ 방어적 체크포인트
+            await asyncio.sleep(0)
             if not sub_chunk.strip():
                 logger.warning(f"   ⚠️ 서브 청크 {idx+1}/{len(sub_chunks)} 빈 청크 감지. 스킵.")
                 return (idx, "")

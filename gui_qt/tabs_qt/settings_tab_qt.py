@@ -75,6 +75,67 @@ class NoWheelComboBox(QtWidgets.QComboBox):
             event.ignore()
 
 
+class ResizablePlainTextEdit(QtWidgets.QWidget):
+    """QPlainTextEdit with a resize grip in the bottom-right corner"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Main text edit
+        self.text_edit = QtWidgets.QPlainTextEdit()
+        self.text_edit.setMinimumHeight(100)
+        layout.addWidget(self.text_edit)
+        
+        # Resize handle
+        self._resize_handle = QtWidgets.QLabel("⋰")
+        self._resize_handle.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom)
+        self._resize_handle.setStyleSheet("QLabel { color: gray; font-size: 16px; padding: 2px; }")
+        self._resize_handle.setFixedHeight(20)
+        self._resize_handle.setCursor(QtCore.Qt.SizeFDiagCursor)
+        self._resize_handle.setMouseTracking(True)
+        layout.addWidget(self._resize_handle)
+        
+        self._resizing = False
+        self._resize_start_pos = None
+        self._resize_start_height = None
+        
+        # Install event filter on resize handle
+        self._resize_handle.installEventFilter(self)
+        
+    def eventFilter(self, obj, event):
+        if obj == self._resize_handle:
+            if event.type() == QtCore.QEvent.MouseButtonPress:
+                if event.button() == QtCore.Qt.LeftButton:
+                    self._resizing = True
+                    self._resize_start_pos = event.globalPosition().toPoint()
+                    self._resize_start_height = self.height()
+                    return True
+            elif event.type() == QtCore.QEvent.MouseMove:
+                if self._resizing:
+                    delta = event.globalPosition().toPoint().y() - self._resize_start_pos.y()
+                    new_height = max(120, self._resize_start_height + delta)
+                    # Use setMinimumHeight to preserve the height without fixing it
+                    self.setMinimumHeight(new_height)
+                    self.updateGeometry()
+                    return True
+            elif event.type() == QtCore.QEvent.MouseButtonRelease:
+                if event.button() == QtCore.Qt.LeftButton and self._resizing:
+                    self._resizing = False
+                    return True
+        return super().eventFilter(obj, event)
+        
+    def setPlaceholderText(self, text: str) -> None:
+        self.text_edit.setPlaceholderText(text)
+        
+    def toPlainText(self) -> str:
+        return self.text_edit.toPlainText()
+        
+    def setPlainText(self, text: str) -> None:
+        self.text_edit.setPlainText(text)
+
+
 class SettingsTabQt(QtWidgets.QWidget):
     """Minimal PySide6 settings tab to drive async translation"""
 
@@ -280,7 +341,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         # --- 프롬프트 ---
         prompt_group = QtWidgets.QGroupBox("프롬프트")
         prompt_vbox = QtWidgets.QVBoxLayout(prompt_group)
-        self.prompt_edit = QtWidgets.QPlainTextEdit()
+        self.prompt_edit = ResizablePlainTextEdit()
         self.prompt_edit.setPlaceholderText("번역 프롬프트: {{slot}}과 {{glossary_context}} 지원")
         TooltipQt(self.prompt_edit, "번역 시 모델에 제공할 프롬프트입니다.\n{{slot}}에 텍스트가, {{glossary_context}}에 용어집이 삽입됩니다.")
         prompt_vbox.addWidget(self.prompt_edit)
@@ -574,10 +635,16 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     @asyncSlot()
     async def _on_cancel_clicked(self) -> None:
-        if self.app_service and self.app_service.current_translation_task:
-            self.app_service.current_translation_task.cancel()
-        self.status_label.setText("취소 요청...")
+        # 즉시 UI 반응: 모든 버튼 비활성화
+        self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
+        self.status_label.setText("취소 처리 중... (진행 중인 작업 정리)")
+        
+        # 취소 요청 (비동기)
+        if self.app_service:
+            await self.app_service.cancel_translation_async()
+        
+        # 완료 시 UI 복구는 completion_signal에서 처리됨
 
     def _on_save_config_clicked(self) -> None:
         """'설정 저장' 버튼 클릭 시 config.json에 저장"""

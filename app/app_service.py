@@ -81,6 +81,9 @@ class AppService:
         # Task 객체로 상태 관리 (Lock 불필요)
         self.current_translation_task: Optional[asyncio.Task] = None
         
+        # 취소 신호 이벤트 (Promise.race 패턴)
+        self.cancel_event: asyncio.Event = asyncio.Event()
+        
         # 카운터 (asyncio 단일 스레드이므로 Lock 불필요)
         self.processed_chunks_count = 0
         self.successful_chunks_count = 0
@@ -433,8 +436,12 @@ class AppService:
             logger.error(f"용어집 동적 로딩 중 오류: {e}", exc_info=True)
         # === 용어집 동적 로딩 로직 끝 ===
         
-        # Task 생성 및 저장
-        self.current_translation_task = asyncio.create_task(
+        # ✨ Promise.race 패턴 구현 ✨
+        # 취소 이벤트 초기화 (새 번역 시작)
+        self.cancel_event.clear()
+        
+        # 번역 Task 생성
+        translation_task = asyncio.create_task(
             self._do_translation_async(
                 input_file_path,
                 output_file_path,
@@ -442,12 +449,53 @@ class AppService:
                 status_callback,
                 tqdm_file_stream,
                 retranslate_failed_only
-            )
+            ),
+            name="translation_main"
         )
         
-        # 예외 처리
+        # 취소 감시 Task 생성 (cancelPromise 역할)
+        cancel_watch_task = asyncio.create_task(
+            self._wait_for_cancel(),
+            name="cancel_watcher"
+        )
+        
+        # current_translation_task는 번역 Task로 설정 (상태 관리용)
+        self.current_translation_task = translation_task
+        
+        logger.info("🏁 Promise.race 시작: 번역 vs 취소 경합")
+        
         try:
-            await self.current_translation_task
+            # 🏁 Promise.race: 먼저 완료되는 Task의 결과를 반환
+            done, pending = await asyncio.wait(
+                [translation_task, cancel_watch_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # 결과 처리: 누가 이겼는가?
+            for task in done:
+                if task == cancel_watch_task:
+                    # ❌ 취소 승리: 번역 Task 취소
+                    logger.warning("❌ 취소 승리! 번역 Task 취소 중...")
+                    translation_task.cancel()
+                    
+                    # 번역 Task 종료 대기 (정리 작업 완료 보장)
+                    try:
+                        await translation_task
+                    except asyncio.CancelledError:
+                        logger.info("✅ 번역 Task 취소 완료")
+                    
+                    if status_callback:
+                        status_callback("중단됨")
+                    raise asyncio.CancelledError("사용자에 의해 취소됨")
+                
+                else:
+                    # ✅ 번역 승리: 취소 감시 Task 정리
+                    logger.info("✅ 번역 승리! 취소 감시 Task 정리")
+                    cancel_watch_task.cancel()
+                    
+                    # 번역 결과 반환 (await로 예외 전파)
+                    await translation_task
+                    
         except asyncio.CancelledError:
             logger.info("번역이 사용자에 의해 취소되었습니다")
             if status_callback:
@@ -459,20 +507,44 @@ class AppService:
                 status_callback(f"오류: {e}")
             raise
         finally:
+            # 정리: 나머지 Task 취소
+            for task in [translation_task, cancel_watch_task]:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            
             self.current_translation_task = None
+            logger.info("🧹 Promise.race 종료 및 정리 완료")
     
     async def cancel_translation_async(self) -> None:
         """
-        비동기 번역 취소 (즉시 반응)
+        비동기 번역 취소 (즉시 반응, Promise.race 패턴)
         
-        Task.cancel()을 사용하여 현재 진행 중인 모든 asyncio Task를 즉시 취소합니다.
-        기존 스레드 기반의 5-30초 대비 <1초로 개선됩니다.
+        asyncio.Event를 사용하여 취소 신호를 즉시 전파합니다.
+        TypeScript의 cancelPromise.reject()와 동일한 패턴입니다.
         """
         if self.current_translation_task and not self.current_translation_task.done():
-            logger.info("번역 취소 요청됨 (Task.cancel() 호출)")
-            self.current_translation_task.cancel()
+            logger.info("🚨 번역 취소 요청됨 (취소 이벤트 발생)")
+            self.cancel_event.set()  # ✅ 즉시 취소 신호 발생
         else:
             logger.warning("현재 실행 중인 번역 작업이 없습니다")
+    
+    async def _wait_for_cancel(self) -> None:
+        """
+        취소 이벤트 대기 Task (TypeScript cancelPromise 역할)
+        
+        이 Task는 cancel_event.wait()로 대기하다가,
+        취소 신호가 발생하면 즉시 CancelledError를 발생시킵니다.
+        
+        Promise.race에서 이 Task가 먼저 완료되면,
+        번역 Task를 취소하고 사용자에게 취소를 알립니다.
+        """
+        await self.cancel_event.wait()
+        logger.info("⏱️ 취소 신호 감지됨. CancelledError 발생")
+        raise asyncio.CancelledError("CANCELLED_BY_USER")
 
     async def _do_translation_async(
         self,
