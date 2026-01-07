@@ -726,7 +726,9 @@ class GeminiClient:
                     
                     if "gemini-3" in check_name:
                         # Gemini 3.0: thinking_level만 사용
-                        level = thinking_level_from_dict or "high"
+                        # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
+                        # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
+                        level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
                         thinking_config = genai_types.ThinkingConfig(thinking_level=level)
                         logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
                         
