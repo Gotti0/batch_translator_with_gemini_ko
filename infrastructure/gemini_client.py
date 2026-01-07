@@ -716,20 +716,29 @@ class GeminiClient:
                     if safety_settings_list_of_dicts:
                         logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
                     
-                    # Thinking config
+                    # Thinking config 관련 필드를 미리 제거 (GenerateContentConfig에서 허용되지 않음)
+                    thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
+                    thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
+                    
+                    # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
+                    check_name = effective_model_name.lower()
                     thinking_config = None
-                    if thinking_budget is not None:
-                        thinking_config = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
-                        logger.info(f"Thinking budget 설정됨 (인자): {thinking_budget}")
-                    else:
-                        check_name = effective_model_name.lower()
-                        if "gemini-3" in check_name:
-                            level = final_generation_config_params.pop("thinking_level", "high")
-                            thinking_config = genai_types.ThinkingConfig(thinking_level=level)
-                            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용 (generation_config_dict에서 추출).")
-                        elif "gemini-2.5" in check_name:
-                            thinking_config = genai_types.ThinkingConfig(thinking_budget=-1)
-                            logger.info("Gemini 2.5 감지: Thinking Budget=-1(Dynamic) 자동 적용 (인자 부재).")
+                    
+                    if "gemini-3" in check_name:
+                        # Gemini 3.0: thinking_level만 사용
+                        level = thinking_level_from_dict or "high"
+                        thinking_config = genai_types.ThinkingConfig(thinking_level=level)
+                        logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
+                        
+                    elif "gemini-2.5" in check_name:
+                        # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
+                        if thinking_budget is not None:
+                            budget = thinking_budget
+                        else:
+                            budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
+                        thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
+                        logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
+                        
                     if thinking_config:
                         final_generation_config_params['thinking_config'] = thinking_config
                     

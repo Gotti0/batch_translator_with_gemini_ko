@@ -301,7 +301,8 @@ class SimpleGlossaryService:
         generation_config_params = { 
             "temperature": self.config.get("glossary_extraction_temperature", 0.3),
             "response_mime_type": "application/json",
-            "response_schema": list[ApiGlossaryTerm]
+            "response_schema": list[ApiGlossaryTerm],
+            "thinking_level": self.config.get("thinking_level", "high")
         }
 
         api_prompt_for_gemini_client: Union[str, List[genai_types.Content]]
@@ -368,6 +369,7 @@ class SimpleGlossaryService:
                 prompt=api_prompt_for_gemini_client,
                 model_name=model_name,
                 generation_config_dict=generation_config_params,
+                thinking_budget=self.config.get("thinking_budget", None),
                 system_instruction_text=api_system_instruction
             )
 
