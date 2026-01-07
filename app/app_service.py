@@ -879,13 +879,33 @@ class AppService:
             """RPM 제한을 고려한 번역 함수"""
             nonlocal last_request_time
             
+            # ✅ 취소 신호 확인 (세마포어 진입 전에 즉시 반응)
+            if self.cancel_event.is_set():
+                logger.info(f"청크 {chunk_index + 1} 취소 신호 감지하여 건너뜀")
+                raise asyncio.CancelledError("취소 신호 감지")
+            
             # 세마포어로 동시 실행 제한
             async with semaphore:
+                # ✅ 세마포어 진입 후 다시 취소 신호 확인 (대기 중 신호 받을 수 있음)
+                if self.cancel_event.is_set():
+                    logger.info(f"청크 {chunk_index + 1} 세마포어 대기 중 취소 신호 감지")
+                    raise asyncio.CancelledError("취소 신호 감지")
+                
                 # RPM 속도 제한 적용
                 current_time = asyncio.get_event_loop().time()
                 elapsed = current_time - last_request_time
                 if elapsed < request_interval:
-                    await asyncio.sleep(request_interval - elapsed)
+                    # ✅ asyncio.sleep도 취소에 반응하도록 설정
+                    try:
+                        await asyncio.sleep(request_interval - elapsed)
+                    except asyncio.CancelledError:
+                        logger.info(f"청크 {chunk_index + 1} RPM 대기 중 취소됨")
+                        raise
+                
+                # ✅ RPM 지연 후 취소 신호 재확인
+                if self.cancel_event.is_set():
+                    logger.info(f"청크 {chunk_index + 1} RPM 지연 후 취소 신호 감지")
+                    raise asyncio.CancelledError("취소 신호 감지")
                 
                 last_request_time = asyncio.get_event_loop().time()
                 
