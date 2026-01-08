@@ -482,6 +482,11 @@ class SettingsTabQt(QtWidgets.QWidget):
     def _load_config(self) -> None:
         cfg = getattr(self.app_service, "config", {}) or {}
         
+        # ConfigManager로부터 기본값 가져오기 (Source of Truth)
+        defaults = {}
+        if hasattr(self.app_service, "config_manager"):
+            defaults = self.app_service.config_manager.get_default_config()
+
         # 입력/출력 파일 경로 로드
         input_files = cfg.get("input_files", []) or []
         self.input_edit.setText(input_files[0] if input_files else "")
@@ -493,19 +498,19 @@ class SettingsTabQt(QtWidgets.QWidget):
         elif isinstance(api_keys, str):
             self.api_keys_edit.setPlainText(api_keys)
 
-        self.use_vertex_check.setChecked(bool(cfg.get("use_vertex_ai", False)))
+        self.use_vertex_check.setChecked(bool(cfg.get("use_vertex_ai", defaults.get("use_vertex_ai", False))))
         self.sa_path_edit.setText(str(cfg.get("service_account_file_path") or ""))
         self.gcp_project_edit.setText(str(cfg.get("gcp_project") or ""))
         self.gcp_location_edit.setText(str(cfg.get("gcp_location") or ""))
-        model_val = str(cfg.get("model_name") or "")
+        model_val = str(cfg.get("model_name") or defaults.get("model_name", ""))
         if model_val and model_val not in [self.model_name_combo.itemText(i) for i in range(self.model_name_combo.count())]:
             self.model_name_combo.addItem(model_val)
         self.model_name_combo.setCurrentText(model_val)
 
-        temp_val = float(cfg.get("temperature", 0.7))
+        temp_val = float(cfg.get("temperature", defaults.get("temperature", 0.7)))
         self.temperature_slider.setValue(int(temp_val * 100))
         
-        top_p_val = float(cfg.get("top_p", 0.9))
+        top_p_val = float(cfg.get("top_p", defaults.get("top_p", 0.9)))
         self.top_p_slider.setValue(int(top_p_val * 100))
 
         thinking_budget = cfg.get("thinking_budget")
@@ -516,45 +521,51 @@ class SettingsTabQt(QtWidgets.QWidget):
                 self.thinking_budget_slider.setValue(-1)
         else:
             self.thinking_budget_slider.setValue(-1)
-        self.thinking_level_combo.setCurrentText(str(cfg.get("thinking_level", "high")))
+        self.thinking_level_combo.setCurrentText(str(cfg.get("thinking_level", defaults.get("thinking_level", "high"))))
 
-        chunk_size = cfg.get("chunk_size", 6000)
+        chunk_size = cfg.get("chunk_size", defaults.get("chunk_size", 6000))
         if isinstance(chunk_size, int):
             self.chunk_size_spin.setValue(chunk_size)
-        max_workers = cfg.get("max_workers", 4)
+        max_workers = cfg.get("max_workers", defaults.get("max_workers", 4))
         if isinstance(max_workers, int):
             self.max_workers_spin.setValue(max_workers)
-        rpm = cfg.get("requests_per_minute", 60)
+        rpm = cfg.get("requests_per_minute", defaults.get("requests_per_minute", 60))
         try:
             self.rpm_spin.setValue(int(rpm))
         except Exception:
             self.rpm_spin.setValue(60)
 
-        self.novel_lang_edit.setText(str(cfg.get("novel_language", "auto")))
-        self.novel_fallback_edit.setText(str(cfg.get("novel_language_fallback", "ja")))
+        self.novel_lang_edit.setText(str(cfg.get("novel_language", defaults.get("novel_language", "auto"))))
+        self.novel_fallback_edit.setText(str(cfg.get("novel_language_fallback", defaults.get("novel_language_fallback", "ja"))))
 
-        prompts_val = cfg.get("prompts", "")
+        prompts_val = cfg.get("prompts", defaults.get("prompts", ""))
         if isinstance(prompts_val, str):
             self.prompt_edit.setPlainText(prompts_val)
         elif isinstance(prompts_val, (list, tuple)) and prompts_val:
             self.prompt_edit.setPlainText(str(prompts_val[0]))
 
-        self.enable_prefill_check.setChecked(bool(cfg.get("enable_prefill_translation", False)))
-        self.prefill_system_edit.setPlainText(str(cfg.get("prefill_system_instruction", "")))
+        self.enable_prefill_check.setChecked(bool(cfg.get("enable_prefill_translation", defaults.get("enable_prefill_translation", False))))
+        self.prefill_system_edit.setPlainText(str(cfg.get("prefill_system_instruction", defaults.get("prefill_system_instruction", ""))))
 
         self.prefill_history = copy.deepcopy(cfg.get("prefill_cached_history", []) or [])
+        # 기본값 로드 시에도 cached history가 없으면 default_config 참조 고려 가능
+        if not self.prefill_history and defaults.get("prefill_cached_history"):
+             self.prefill_history = copy.deepcopy(defaults.get("prefill_cached_history"))
+
         self._update_prefill_button_text()
 
         # Vertex/모델 상태 조정
         self._on_vertex_toggle(self.use_vertex_check.checkState())
         self._on_model_changed(self.model_name_combo.currentText())
 
-        self.use_content_safety_check.setChecked(bool(cfg.get("use_content_safety_retry", True)))
-        self.max_split_spin.setValue(int(cfg.get("max_content_safety_split_attempts", 3)))
-        self.min_chunk_spin.setValue(int(cfg.get("min_content_safety_chunk_size", 100)))
+        self.use_content_safety_check.setChecked(bool(cfg.get("use_content_safety_retry", defaults.get("use_content_safety_retry", True))))
+        self.max_split_spin.setValue(int(cfg.get("max_content_safety_split_attempts", defaults.get("max_content_safety_split_attempts", 3))))
+        self.min_chunk_spin.setValue(int(cfg.get("min_content_safety_chunk_size", defaults.get("min_content_safety_chunk_size", 100))))
 
     def _save_config_to_service(self) -> None:
-        cfg = getattr(self.app_service, "config", {}) or {}
+        # 서비스의 설정을 직접 수정하지 않도록 복사본 생성 (Deep Copy 권장)
+        raw_config = getattr(self.app_service, "config", {}) or {}
+        cfg = copy.deepcopy(raw_config)
         
         # 입력/출력 파일 경로 저장
         input_path = self.input_edit.text().strip()
@@ -586,7 +597,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["use_content_safety_retry"] = self.use_content_safety_check.isChecked()
         cfg["max_content_safety_split_attempts"] = int(self.max_split_spin.value())
         cfg["min_content_safety_chunk_size"] = int(self.min_chunk_spin.value())
-        self.app_service.config = cfg
+        # self.app_service.config = cfg  # 직접 할당 제거 (save_app_config 내부에서 처리됨)
         try:
             self.app_service.save_app_config(cfg)
         except Exception:
