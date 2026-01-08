@@ -272,22 +272,21 @@ class TranslationService:
     async def translate_chunk_async(
         self,
         chunk_text: str,
-        stream: bool = False,
-        timeout: Optional[float] = None
+        stream: bool = False
     ) -> str:
         """
         비동기 청크 번역 메서드 (진정한 비동기 구현)
         
+        Timeout은 GeminiClient의 http_options에 설정되어 모든 API 호출에 자동 적용됩니다.
+        
         Args:
             chunk_text: 번역할 텍스트
             stream: 스트리밍 여부
-            timeout: 타임아웃 시간(초)
             
         Returns:
             번역된 텍스트
             
         Raises:
-            asyncio.TimeoutError: 타임아웃 초과
             asyncio.CancelledError: 작업 취소됨
             BtgTranslationException: 번역 실패
         """
@@ -308,14 +307,8 @@ class TranslationService:
         logger.info(f"비동기 청크 번역 요청: \"{text_preview}{'...' if len(chunk_text) > 100 else ''}\"")
         
         try:
-            # 진정한 비동기 메서드 호출 (run_in_executor 제거)
-            if timeout:
-                result = await asyncio.wait_for(
-                    self.translate_text_with_content_safety_retry_async(chunk_text),
-                    timeout=timeout
-                )
-            else:
-                result = await self.translate_text_with_content_safety_retry_async(chunk_text)
+            # 진정한 비동기 메서드 호출 (GeminiClient의 http_options timeout에 의존)
+            result = await self.translate_text_with_content_safety_retry_async(chunk_text)
             
             # 📍 중단 체크: API 응답 후
             if self.stop_check_callback and self.stop_check_callback():
@@ -323,9 +316,6 @@ class TranslationService:
                 raise asyncio.CancelledError("번역 중단 요청됨")
             
             return result
-        except asyncio.TimeoutError:
-            logger.error(f"비동기 번역 타임아웃 ({timeout}초)")
-            raise
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소됨")
             raise

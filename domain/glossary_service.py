@@ -579,11 +579,11 @@ class SimpleGlossaryService:
             # 생성된 작업들을 완료 처리
             for task, segment in tasks:
                 try:
-                    extracted_entries_for_segment = await asyncio.wait_for(task, timeout=300)
+                    # GeminiClient의 http_options timeout에 의존
+                    # (기본값: _TIMEOUT_SECONDS = 500초)
+                    extracted_entries_for_segment = await task
                     if extracted_entries_for_segment:
                         all_extracted_entries_from_segments.extend(extracted_entries_for_segment)
-                except asyncio.TimeoutError:
-                    logger.error(f"용어집 추출 API 요청 시간 초과 (>300초). 해당 세그먼트를 건너뜁니다: {segment[:50]}...")
                 except asyncio.CancelledError:
                     logger.info("용어집 추출이 취소되었습니다.")
                     # 나머지 진행 중인 작업들도 취소

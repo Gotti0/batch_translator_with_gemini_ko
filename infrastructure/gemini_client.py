@@ -104,7 +104,6 @@ class GeminiClient:
         "The model is overloaded", "503", "Service Unavailable", 
         "Resource has been exhausted", "RESOURCE_EXHAUSTED"
     ]
-    _TIMEOUT_SECONDS = 500.0
 
     _CONTENT_SAFETY_PATTERNS = [
         "PROHIBITED_CONTENT", "SAFETY", "response was blocked",
@@ -164,7 +163,8 @@ class GeminiClient:
                  auth_credentials: Optional[Union[str, List[str], Dict[str, Any]]] = None,
                  project: Optional[str] = None,
                  location: Optional[str] = None,
-                 requests_per_minute: Optional[float] = None):
+                 requests_per_minute: Optional[float] = None,
+                 api_timeout: float = 500.0):
         
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
         
@@ -186,7 +186,7 @@ class GeminiClient:
         # HTTP Client Options for Timeout
         # [수정됨] google-genai SDK는 timeout을 밀리초 단위의 정수(int)로 받습니다.
         # 기존 client_args={'timeout': ...} 방식은 작동하지 않음이 확인되었습니다.
-        timeout_ms = int(self._TIMEOUT_SECONDS * 1000)
+        timeout_ms = int(api_timeout * 1000)
         self.http_options = genai_types.HttpOptions(timeout=timeout_ms)
         
         # RPM control
@@ -597,11 +597,13 @@ class GeminiClient:
         max_retries: int = 5,
         initial_backoff: float = 2.0,
         max_backoff: float = 60.0,
-        stream: bool = False,
-        timeout: Optional[float] = None
+        stream: bool = False
     ) -> Optional[Union[str, Any]]:
         """
         비동기 텍스트 생성 메서드 (generate_text의 비동기 버전)
+        
+        Timeout은 GeminiClient 초기화 시 http_options에 설정되며, 모든 API 호출에 자동 적용됩니다.
+        (기본값: _TIMEOUT_SECONDS = 500초)
         
         Args:
             prompt: 프롬프트 (문자열 또는 Content 리스트)
@@ -614,37 +616,21 @@ class GeminiClient:
             initial_backoff: 초기 백오프 시간(초)
             max_backoff: 최대 백오프 시간(초)
             stream: 스트리밍 여부
-            timeout: 타임아웃 시간(초)
             
         Returns:
             생성된 텍스트 또는 구조화된 출력
             
         Raises:
             asyncio.CancelledError: 작업이 취소된 경우
-            asyncio.TimeoutError: 타임아웃 초과
             GeminiApiException: API 관련 오류
         """
         try:
-            if timeout:
-                return await asyncio.wait_for(
-                    self._generate_text_async_impl(
-                        prompt, model_name, generation_config_dict,
-                        safety_settings_list_of_dicts, thinking_budget,
-                        system_instruction_text, max_retries,
-                        initial_backoff, max_backoff, stream
-                    ),
-                    timeout=timeout
-                )
-            else:
-                return await self._generate_text_async_impl(
-                    prompt, model_name, generation_config_dict,
-                    safety_settings_list_of_dicts, thinking_budget,
-                    system_instruction_text, max_retries,
-                    initial_backoff, max_backoff, stream
-                )
-        except asyncio.TimeoutError:
-            logger.error(f"API 호출 타임아웃 ({timeout}초): {model_name}")
-            raise
+            return await self._generate_text_async_impl(
+                prompt, model_name, generation_config_dict,
+                safety_settings_list_of_dicts, thinking_budget,
+                system_instruction_text, max_retries,
+                initial_backoff, max_backoff, stream
+            )
         except asyncio.CancelledError:
             logger.info(f"API 호출이 취소됨: {model_name}")
             raise

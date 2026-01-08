@@ -200,12 +200,14 @@ class AppService:
                 try:
                     project_to_pass_to_client = gcp_project_from_config if gcp_project_from_config and gcp_project_from_config.strip() else None
                     rpm_value = self.config.get("requests_per_minute")
-                    logger.info(f"GeminiClient 초기화: project={project_to_pass_to_client}, RPM={rpm_value}")
+                    api_timeout_value = self.config.get("api_timeout", 500.0)
+                    logger.info(f"GeminiClient 초기화: project={project_to_pass_to_client}, RPM={rpm_value}, Timeout={api_timeout_value}s")
                     self.gemini_client = GeminiClient(
                         auth_credentials=auth_credentials_for_gemini_client,
                         project=project_to_pass_to_client,
                         location=gcp_location,
-                        requests_per_minute=rpm_value
+                        requests_per_minute=rpm_value,
+                        api_timeout=api_timeout_value
                     )
                 except GeminiInvalidRequestException as e_inv:
                     logger.error(f"GeminiClient 초기화 실패: {e_inv}")
@@ -1019,11 +1021,10 @@ class AppService:
             
             translation_start_time = time.time()
             
-            # 비동기 번역 호출
+            # 비동기 번역 호출 (timeout은 GeminiClient의 http_options에 의해 자동 적용)
             try:
                 translated_chunk = await self.translation_service.translate_chunk_async(
-                    chunk_text,
-                    timeout=300.0  # 5분 타임아웃
+                    chunk_text
                 )
                 success = True
                 

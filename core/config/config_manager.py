@@ -169,6 +169,9 @@ class ConfigManager:
             "enable_dynamic_glossary_injection": False,
             "max_glossary_entries_per_chunk_injection": 3,
             "max_glossary_chars_per_chunk_injection": 500,
+
+            # API 설정
+            "api_timeout": 1000.0, # API 호출 타임아웃 (초)
         }
 
     def load_config(self, use_default_if_missing: bool = True) -> Dict[str, Any]:
