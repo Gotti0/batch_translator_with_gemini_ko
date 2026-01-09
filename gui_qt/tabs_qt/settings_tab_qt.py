@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -141,7 +142,7 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     progress_signal = QtCore.Signal(object)  # TranslationJobProgressDTO
     status_signal = QtCore.Signal(str)
-    completion_signal = QtCore.Signal(bool, str)
+    completion_signal = QtCore.Signal(bool, str, dict)  # success, message, stats_dict
 
     def __init__(self, app_service, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -152,6 +153,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._tqdm_stream = None  # LogTab에서 주입받을 TQDM 스트림
         self._translation_start_time = None  # ETA 계산용 시작 시간
         self._translation_start_chunks = 0  # 번역 시작 시점의 이미 처리된 청크 수 (이어하기 대응)
+        self._total_chunks = 0  # 완료 통계용: 총 청크 수
+        self._final_processed_chunks = 0  # 완료 통계용: 최종 처리 청크 수
 
         self._build_ui()
         self._wire_signals()
@@ -472,12 +475,40 @@ class SettingsTabQt(QtWidgets.QWidget):
                 tqdm_file_stream=self._tqdm_stream,
                 retranslate_failed_only=False,
             )
-            self.completion_signal.emit(True, "완료")
+            # 완료 통계 계산
+            elapsed = time.time() - self._translation_start_time if self._translation_start_time else 0
+            actual_processed = self._final_processed_chunks - self._translation_start_chunks
+            stats = {
+                "success": True,
+                "total_chunks": self._total_chunks,
+                "processed_chunks": self._final_processed_chunks,
+                "newly_processed": actual_processed,
+                "elapsed_seconds": elapsed,
+            }
+            self.completion_signal.emit(True, "번역 완료", stats)
         except asyncio.CancelledError:
-            self.completion_signal.emit(False, "취소됨")
+            elapsed = time.time() - self._translation_start_time if self._translation_start_time else 0
+            stats = {
+                "success": False,
+                "total_chunks": self._total_chunks,
+                "processed_chunks": self._final_processed_chunks,
+                "newly_processed": self._final_processed_chunks - self._translation_start_chunks,
+                "elapsed_seconds": elapsed,
+                "reason": "사용자 취소",
+            }
+            self.completion_signal.emit(False, "취소됨", stats)
             raise
         except Exception as e:  # pragma: no cover - UI 표시 목적
-            self.completion_signal.emit(False, f"오류: {e}")
+            elapsed = time.time() - self._translation_start_time if self._translation_start_time else 0
+            stats = {
+                "success": False,
+                "total_chunks": self._total_chunks,
+                "processed_chunks": self._final_processed_chunks,
+                "newly_processed": self._final_processed_chunks - self._translation_start_chunks,
+                "elapsed_seconds": elapsed,
+                "error": str(e),
+            }
+            self.completion_signal.emit(False, f"오류 발생", stats)
 
     def _load_config(self) -> None:
         cfg = getattr(self.app_service, "config", {}) or {}
@@ -705,6 +736,10 @@ class SettingsTabQt(QtWidgets.QWidget):
                 pct = int((dto.processed_chunks / dto.total_chunks) * 100)
                 self.progress_bar.setValue(pct)
                 
+                # 통계 정보 업데이트 (완료 시 사용)
+                self._total_chunks = dto.total_chunks
+                self._final_processed_chunks = dto.processed_chunks
+                
                 # 이어하기 시작 시점의 청크 수 초기화 (첫 콜백에서만)
                 if self._translation_start_chunks == 0 and dto.processed_chunks > 0:
                     self._translation_start_chunks = dto.processed_chunks
@@ -760,17 +795,73 @@ class SettingsTabQt(QtWidgets.QWidget):
     def _on_status(self, message: str) -> None:
         self.status_label.setText(message)
 
-    @QtCore.Slot(bool, str)
-    def _on_completion(self, success: bool, message: str) -> None:
+    @QtCore.Slot(bool, str, dict)
+    def _on_completion(self, success: bool, message: str, stats: dict) -> None:
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         if success:
             self.progress_bar.setValue(100)
         self.status_label.setText(message)
         
+        # 완료 팝업 다이얼로그 표시
+        self._show_completion_dialog(success, message, stats)
+        
         # 시작 시간 및 청크 카운터 초기화
         self._translation_start_time = None
         self._translation_start_chunks = 0
+        self._total_chunks = 0
+        self._final_processed_chunks = 0
+    
+    def _show_completion_dialog(self, success: bool, message: str, stats: dict) -> None:
+        """완료 또는 오류 다이얼로그 표시 (통계 포함)"""
+        elapsed = stats.get("elapsed_seconds", 0)
+        total_chunks = stats.get("total_chunks", 0)
+        processed_chunks = stats.get("processed_chunks", 0)
+        newly_processed = stats.get("newly_processed", 0)
+        
+        # 시간 포맷팅 함수
+        def format_elapsed(seconds):
+            if seconds < 60:
+                return f"{int(seconds)}초"
+            elif seconds < 3600:
+                minutes = int(seconds / 60)
+                secs = int(seconds % 60)
+                return f"{minutes}분 {secs}초"
+            else:
+                hours = int(seconds / 3600)
+                minutes = int((seconds % 3600) / 60)
+                return f"{hours}시간 {minutes}분"
+        
+        # 다이얼로그 제목 및 아이콘 설정
+        if success:
+            title = "번역 완료"
+            icon = QtWidgets.QMessageBox.Information
+        else:
+            reason = stats.get("reason") or stats.get("error") or "알 수 없는 오류"
+            title = f"번역 {reason}"
+            icon = QtWidgets.QMessageBox.Warning
+        
+        # 통계 정보 포맷팅
+        elapsed_str = format_elapsed(elapsed)
+        stats_text = f"총 청크: {total_chunks}개\n처리된 청크: {processed_chunks}개\n새로 처리: {newly_processed}개\n소요 시간: {elapsed_str}"
+        
+        # 상세 메시지
+        detail_msg = f"{message}\n\n{stats_text}"
+        
+        # 다이얼로그 표시
+        dlg = QtWidgets.QMessageBox(self)
+        dlg.setWindowTitle(title)
+        dlg.setText(title)
+        dlg.setInformativeText(detail_msg)
+        dlg.setIcon(icon)
+        dlg.setStandardButtons(QtWidgets.QMessageBox.Ok)
+        dlg.setDetailedText(f"""완료 요약:
+- 상태: {message}
+- 총 청크: {total_chunks}
+- 처리된 청크: {processed_chunks}
+- 새로 처리된 청크: {newly_processed}
+- 소요 시간: {elapsed_str}""")
+        dlg.exec()
 
     @QtCore.Slot(int)
     def _on_vertex_toggle(self, state: int) -> None:
