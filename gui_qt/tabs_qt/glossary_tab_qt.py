@@ -73,7 +73,6 @@ class GlossaryTabQt(QtWidgets.QWidget):
         self.app_service = app_service
         self._loop = asyncio.get_event_loop()
         self._extraction_task: Optional[asyncio.Task] = None
-        self._stop_requested = False
         self._prefill_history: List[Dict[str, Any]] = []
 
         self._build_ui()
@@ -308,8 +307,7 @@ class GlossaryTabQt(QtWidgets.QWidget):
                 input_file,
                 progress_callback=self._progress_cb,
                 seed_glossary_path=self.glossary_path_edit.text().strip() or None,
-                user_override_glossary_extraction_prompt=self.user_prompt_edit.toPlainText(),
-                stop_check=lambda: self._stop_requested,
+                user_override_glossary_extraction_prompt=self.user_prompt_edit.toPlainText()
             )
         )
         try:
@@ -317,7 +315,6 @@ class GlossaryTabQt(QtWidgets.QWidget):
             self.completion_signal.emit(True, "용어집 추출 완료", result_path)
         except asyncio.CancelledError:
             self.completion_signal.emit(False, "취소됨", None)
-            raise
         except Exception as e:
             self.completion_signal.emit(False, f"오류: {e}", None)
         finally:
@@ -325,8 +322,12 @@ class GlossaryTabQt(QtWidgets.QWidget):
 
     @asyncSlot()
     async def _on_stop_clicked(self) -> None:
-        self._stop_requested = True
+        """중지 버튼 클릭 시 호출"""
         self.stop_btn.setEnabled(False)
+        # 즉시 취소 이벤트를 발생시켜 경합에서 승리하게 함
+        await self.app_service.cancel_glossary_async()
+        
+        # 내부 태스크도 취소 (안전 장치)
         if self._extraction_task:
             self._extraction_task.cancel()
 

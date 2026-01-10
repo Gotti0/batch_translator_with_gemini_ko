@@ -203,7 +203,7 @@ class SimpleGlossaryService:
             
         return [all_segments[i] for i in selected_indices]
 
-    def _get_lorebook_output_path(self, input_file_path: Union[str, Path]) -> Path:
+    def get_glossary_output_path(self, input_file_path: Union[str, Path]) -> Path:
         """입력 파일 경로를 기반으로 로어북 JSON 파일 경로를 생성합니다."""
         p_input = Path(input_file_path)
         base_name = p_input.stem
@@ -211,7 +211,7 @@ class SimpleGlossaryService:
         suffix = self.config.get("glossary_output_json_filename_suffix", "_glossary.json") # 설정 키 변경
         return output_dir / f"{base_name}{suffix}" # 파일명 변경
 
-    def _save_glossary_to_json(self, glossary_entries: List[GlossaryEntryDTO], output_path: Path): # 함수명 및 DTO 변경
+    def save_glossary_to_json(self, glossary_entries: List[GlossaryEntryDTO], output_path: Path): # 함수명 및 DTO 변경
         """용어집 항목 리스트를 JSON 파일로 저장합니다."""
         # dataclass 객체를 dict 리스트로 변환
         data_to_save = [entry.__dict__ for entry in glossary_entries]
@@ -416,6 +416,70 @@ class SimpleGlossaryService:
             logger.error(f"용어집 추출 중 예상치 못한 내부 오류: {e}.", exc_info=True)
             raise BtgBusinessLogicException(f"용어집 추출 중 내부 오류: {e}", original_exception=e) from e
 
+    def load_seed_glossary(self, seed_glossary_path: Optional[Union[str, Path]]) -> List[GlossaryEntryDTO]:
+        """시드 용어집 파일을 로드하여 DTO 리스트로 반환합니다."""
+        seed_entries: List[GlossaryEntryDTO] = []
+        if not seed_glossary_path:
+            return seed_entries
+
+        seed_path_obj = Path(seed_glossary_path)
+        if seed_path_obj.exists() and seed_path_obj.is_file():
+            try:
+                logger.info(f"시드 용어집 파일 로드 중: {seed_path_obj}")
+                raw_seed_data = read_json_file(seed_path_obj)
+                if isinstance(raw_seed_data, list):
+                    for item_dict in raw_seed_data:
+                        if isinstance(item_dict, dict) and "keyword" in item_dict and \
+                           "translated_keyword" in item_dict and \
+                           "target_language" in item_dict:
+                            try:
+                                entry = GlossaryEntryDTO(
+                                    keyword=item_dict.get("keyword", ""),
+                                    translated_keyword=item_dict.get("translated_keyword", ""),
+                                    target_language=item_dict.get("target_language", ""),
+                                    occurrence_count=int(item_dict.get("occurrence_count", 0))
+                                )
+                                if entry.keyword and entry.translated_keyword:
+                                    seed_entries.append(entry)
+                            except (TypeError, ValueError) as e_dto:
+                                logger.warning(f"시드 용어집 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")
+                    logger.info(f"{len(seed_entries)}개의 시드 용어집 항목 로드 완료.")
+            except Exception as e_seed:
+                logger.error(f"시드 용어집 파일 로드 중 오류 ({seed_path_obj}): {e_seed}", exc_info=True)
+        else:
+            logger.warning(f"제공된 시드 용어집 경로를 찾을 수 없거나 파일이 아닙니다: {seed_glossary_path}")
+        
+        return seed_entries
+
+    def prepare_segments(self, novel_text_content: str) -> List[str]:
+        """텍스트를 적절한 크기의 세그먼트로 분할하고 샘플링합니다."""
+        glossary_segment_size = self.config.get("glossary_chunk_size", self.config.get("chunk_size", 8000))
+        all_text_segments = self.chunk_service.create_chunks_from_file_content(novel_text_content, glossary_segment_size)
+        return self._select_sample_segments(all_text_segments)
+
+    def finalize_glossary(
+        self, 
+        all_extracted_entries: List[GlossaryEntryDTO], 
+        seed_entries: List[GlossaryEntryDTO]
+    ) -> List[GlossaryEntryDTO]:
+        """추출된 항목들과 시드 항목들을 병합, 충돌 해결, 정렬 및 제한합니다."""
+        # 시드 항목과 추출 항목 병합 (시드 우선)
+        combined_entries = seed_entries + all_extracted_entries if seed_entries else all_extracted_entries
+
+        # 충돌 해결
+        final_glossary = self._resolve_glossary_conflicts(combined_entries)
+        
+        # 중요도(등장 횟수)에 따라 정렬 (내림차순)
+        final_glossary.sort(key=lambda x: (-x.occurrence_count, x.keyword.lower()))
+
+        # 최대 항목 수 제한
+        max_total_glossary_entries = self.config.get("glossary_max_total_entries", 500)
+        if len(final_glossary) > max_total_glossary_entries:
+            logger.info(f"용어집 항목({len(final_glossary)}개)이 상한({max_total_glossary_entries}개)을 초과하여 절삭합니다.")
+            final_glossary = final_glossary[:max_total_glossary_entries]
+        
+        return final_glossary
+
     async def extract_and_save_glossary_async(
         self,
         novel_text_content: str,
@@ -429,223 +493,75 @@ class SimpleGlossaryService:
     ) -> Path:
         """
         주어진 텍스트 내용에서 로어북을 추출하고 JSON 파일에 저장합니다. (비동기 버전)
-        
-        Args:
-            novel_text_content: 분석할 전체 텍스트 내용
-            input_file_path_for_naming: 출력 JSON 파일 이름 생성에 사용될 원본 입력 파일 경로
-            progress_callback: 진행 상황을 알리기 위한 콜백 함수
-            seed_glossary_path: 참고할 기존 용어집 JSON 파일 경로
-            user_override_glossary_extraction_prompt: 용어집 추출 시 사용할 사용자 정의 프롬프트
-            stop_check: 중지 요청을 확인하는 콜백 함수
-            
-        Returns:
-            생성된 로어북 JSON 파일의 경로
-            
-        Raises:
-            BtgBusinessLogicException: 용어집 추출 또는 저장 과정에서 심각한 오류 발생 시
-            asyncio.CancelledError: 작업 취소 시
+        (참고: 루프 제어 로직이 AppService로 점진적으로 이동 중입니다)
         """
         all_extracted_entries_from_segments: List[GlossaryEntryDTO] = []
-        seed_entries: List[GlossaryEntryDTO] = []
-
-        # 시드 용어집 로드
-        if seed_glossary_path:
-            seed_path_obj = Path(seed_glossary_path)
-            if seed_path_obj.exists() and seed_path_obj.is_file():
-                try:
-                    logger.info(f"시드 용어집 파일 로드 중: {seed_path_obj}")
-                    raw_seed_data = read_json_file(seed_path_obj)
-                    if isinstance(raw_seed_data, list):
-                        for item_dict in raw_seed_data:
-                            if isinstance(item_dict, dict) and "keyword" in item_dict and \
-                               "translated_keyword" in item_dict and \
-                               "target_language" in item_dict:
-                                try:
-                                    entry = GlossaryEntryDTO(
-                                        keyword=item_dict.get("keyword", ""),
-                                        translated_keyword=item_dict.get("translated_keyword", ""),
-                                        target_language=item_dict.get("target_language", ""),
-                                        occurrence_count=int(item_dict.get("occurrence_count", 0))
-                                    )
-                                    if entry.keyword and entry.translated_keyword:
-                                        seed_entries.append(entry)
-                                except (TypeError, ValueError) as e_dto:
-                                    logger.warning(f"시드 용어집 항목 DTO 변환 중 오류: {item_dict}, 오류: {e_dto}")
-                        logger.info(f"{len(seed_entries)}개의 시드 용어집 항목 로드 완료.")
-                except Exception as e_seed:
-                    logger.error(f"시드 용어집 파일 로드 중 오류 ({seed_path_obj}): {e_seed}", exc_info=True)
-            else:
-                logger.warning(f"제공된 시드 용어집 경로를 찾을 수 없거나 파일이 아닙니다: {seed_glossary_path}")
         
-        # ChunkService를 사용하여 텍스트를 세그먼트로 분할
-        glossary_segment_size = self.config.get("glossary_chunk_size", self.config.get("chunk_size", 8000))
-        all_text_segments = self.chunk_service.create_chunks_from_file_content(novel_text_content, glossary_segment_size)
-
-        sample_segments = self._select_sample_segments(all_text_segments)
+        # 1. 시드 용어집 로드
+        seed_entries = self.load_seed_glossary(seed_glossary_path)
+        
+        # 2. 세그먼트 준비 및 샘플링
+        sample_segments = self.prepare_segments(novel_text_content)
         num_sample_segments = len(sample_segments)
 
-        # 진행률 표시를 위한 유효 총 세그먼트 수 계산
-        effective_total_segments_for_progress = num_sample_segments
-        if num_sample_segments == 0 and seed_entries:
-            effective_total_segments_for_progress = 1
-        elif num_sample_segments == 0 and not novel_text_content.strip() and not seed_entries:
-            effective_total_segments_for_progress = 0
+        # 진행률 표시용 변수
+        effective_total = num_sample_segments or (1 if seed_entries else 0)
 
-        # 빈 입력 처리
-        if not novel_text_content.strip() and not sample_segments and not seed_entries:
-            logger.info("입력 텍스트가 비어있고, 표본 세그먼트 및 시드 용어집도 없습니다. 빈 용어집을 생성합니다.")
-            lorebook_output_path = self._get_lorebook_output_path(input_file_path_for_naming)
-            self._save_glossary_to_json([], lorebook_output_path)
+        # 3. 빈 입력 처리
+        if not novel_text_content.strip() and not sample_segments:
+            final_entries = self.finalize_glossary([], seed_entries)
+            output_path = self.get_glossary_output_path(input_file_path_for_naming)
+            self.save_glossary_to_json(final_entries, output_path)
             if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(
-                    total_segments=effective_total_segments_for_progress,
-                    processed_segments=0,
-                    current_status_message="입력 텍스트 및 시드 없음",
-                    extracted_entries_count=0
-                ))
-            return lorebook_output_path
-        elif not novel_text_content.strip() and not sample_segments and seed_entries:
-            logger.info("입력 텍스트가 비어있고 표본 세그먼트가 없습니다. 시드 용어집만으로 처리합니다.")
-            all_extracted_entries_from_segments.extend(seed_entries)
-            if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(
-                    total_segments=effective_total_segments_for_progress,
-                    processed_segments=0,
-                    current_status_message="시드 용어집 처리 중...", 
-                    extracted_entries_count=len(seed_entries)
-                ))
-        elif sample_segments:
-            logger.info(f"총 {len(all_text_segments)}개 세그먼트 중 {num_sample_segments}개의 표본 세그먼트로 용어집 추출 시작...")
-            logger.info(f"동시 작업 수: {max_workers}, RPM 제한: {rpm}/분")
+                progress_callback(GlossaryExtractionProgressDTO(effective_total, 0, "완료 (입력 없음)", len(final_entries)))
+            return output_path
+
+        # 4. 추출 루프 (여전히 Domain에 대규모 루프가 존재 - AppService로 이동 권장)
+        logger.info(f"샘플 {num_sample_segments}개 세그먼트에서 용어 추출 시작...")
         
-            processed_segments_count = 0
-            if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(
-                    total_segments=effective_total_segments_for_progress,
-                    processed_segments=processed_segments_count,
-                    current_status_message="추출 시작 중...",
-                    extracted_entries_count=len(seed_entries)
-                ))
-
-            # 세마포어로 동시 실행 수 제한
-            semaphore = asyncio.Semaphore(max_workers)
-            
-            # RPM 제한을 위한 속도 제한 장치 (시간 간격 계산)
-            request_interval = 60.0 / rpm if rpm > 0 else 0
-            last_request_time = 0
-            
-            async def rate_limited_extract(segment_text: str) -> List[GlossaryEntryDTO]:
-                """RPM 제한을 고려한 추출 함수"""
-                nonlocal last_request_time
-                
-                # 📍 취소 확인 1: API 호출 전
-                if stop_check and stop_check():
-                    raise asyncio.CancelledError("용어집 추출이 취소되었습니다 (작업 시작 전)")
-                
-                # 세마포어로 동시 실행 제한
-                async with semaphore:
-                    # 📍 취소 확인 2: 세마포어 획득 후
-                    if stop_check and stop_check():
-                        raise asyncio.CancelledError("용어집 추출이 취소되었습니다 (세마포어 획득 후)")
-                    
-                    # RPM 속도 제한 적용
-                    elapsed = asyncio.get_event_loop().time() - last_request_time
-                    if elapsed < request_interval:
-                        await asyncio.sleep(request_interval - elapsed)
-                    
-                    # 📍 취소 확인 3: RPM 대기 후
-                    if stop_check and stop_check():
-                        raise asyncio.CancelledError("용어집 추출이 취소되었습니다 (RPM 대기 후)")
-                    
-                    last_request_time = asyncio.get_event_loop().time()
-                    
-                    return await self._extract_glossary_entries_from_segment_via_api_async(
-                        segment_text,
-                        user_override_glossary_extraction_prompt,
-                        stop_check  # stop_check 전달
-                    )
-
-            # 작업을 순차적으로 생성하고 처리 (동시성은 semaphore로 제어)
-            tasks = []
-            for segment_idx, segment in enumerate(sample_segments):
-                # 📍 취소 확인: 작업 생성 전
-                if stop_check and stop_check():
-                    logger.warning(f"사용자 요청으로 용어집 추출을 중단합니다. {segment_idx}/{num_sample_segments}개 세그먼트 처리 중 중단.")
-                    break
-                
-                task = asyncio.create_task(rate_limited_extract(segment))
-                tasks.append((task, segment))
-            
-            # 생성된 작업들을 완료 처리
-            for task, segment in tasks:
-                try:
-                    # GeminiClient의 http_options timeout에 의존
-                    # (기본값: _TIMEOUT_SECONDS = 500초)
-                    extracted_entries_for_segment = await task
-                    if extracted_entries_for_segment:
-                        all_extracted_entries_from_segments.extend(extracted_entries_for_segment)
-                except asyncio.CancelledError:
-                    logger.info("용어집 추출이 취소되었습니다.")
-                    # 나머지 진행 중인 작업들도 취소
-                    for remaining_task, _ in tasks:
-                        if not remaining_task.done():
-                            remaining_task.cancel()
-                    raise  # 상위로 전파하여 즉시 종료
-                except BtgApiClientException as e_api:
-                    if isinstance(e_api.original_exception, GeminiAllApiKeysExhaustedException):
-                        logger.critical("모든 API 키가 소진되어 용어집 추출 작업을 중단합니다.")
-                        for remaining_task, _ in tasks:
-                            if not remaining_task.done():
-                                remaining_task.cancel()
-                        raise e_api
-                    logger.error(f"표본 세그먼트 처리 중 API 오류 발생 (세그먼트: {segment[:50]}...): {e_api}")
-                except Exception as exc:
-                    logger.error(f"표본 세그먼트 처리 중 예외 발생 (세그먼트: {segment[:50]}...): {exc}")
-                finally:
-                    processed_segments_count += 1
-                    if progress_callback:
-                        status_msg = f"표본 세그먼트 {processed_segments_count}/{len(tasks)} 처리 완료"
-                        if processed_segments_count == len(tasks):
-                            status_msg = "모든 표본 세그먼트 처리 완료, 충돌 해결 및 저장 중..."
-                        progress_callback(GlossaryExtractionProgressDTO(
-                            total_segments=effective_total_segments_for_progress,
-                            processed_segments=processed_segments_count,
-                            current_status_message=status_msg,
-                            extracted_entries_count=len(all_extracted_entries_from_segments) + len(seed_entries)
-                        ))
-
-        # 시드 항목이 있고, 새로운 추출도 있었다면 병합
-        if seed_entries and (novel_text_content.strip() and sample_segments):
-            logger.info(f"{len(seed_entries)}개의 시드 항목을 새로 추출된 항목과 병합합니다. (시드 항목 우선)")
-            all_extracted_entries_from_segments = seed_entries + all_extracted_entries_from_segments
-
-        # 충돌 해결
-        final_glossary = self._resolve_glossary_conflicts(all_extracted_entries_from_segments)
+        semaphore = asyncio.Semaphore(max_workers)
+        request_interval = 60.0 / rpm if rpm > 0 else 0
+        last_request_time = 0
         
-        # 중요도(등장 횟수)에 따라 정렬
-        final_glossary.sort(key=lambda x: (-x.occurrence_count, x.keyword.lower()))
-        logger.info(f"최종 용어집을 등장 횟수 순으로 정렬했습니다. (상위 3개: {[e.keyword for e in final_glossary[:3]]})")
+        async def rate_limited_extract(segment_text: str) -> List[GlossaryEntryDTO]:
+            nonlocal last_request_time
+            if stop_check and stop_check(): raise asyncio.CancelledError()
+            
+            async with semaphore:
+                if stop_check and stop_check(): raise asyncio.CancelledError()
+                elapsed = asyncio.get_event_loop().time() - last_request_time
+                if elapsed < request_interval:
+                    await asyncio.sleep(request_interval - elapsed)
+                
+                last_request_time = asyncio.get_event_loop().time()
+                return await self._extract_glossary_entries_from_segment_via_api_async(
+                    segment_text, user_override_glossary_extraction_prompt, stop_check
+                )
 
-        # 로어북 최대 항목 수 제한
-        max_total_glossary_entries = self.config.get("glossary_max_total_entries", 500)
-        if len(final_glossary) > max_total_glossary_entries:
-            logger.info(f"정렬된 용어집 항목({len(final_glossary)}개)이 최대 제한({max_total_glossary_entries}개)을 초과하여 상위 항목만 저장합니다.")
-            final_glossary = final_glossary[:max_total_glossary_entries]
-
-        # 최종 로어북 저장
-        glossary_output_path = self._get_lorebook_output_path(input_file_path_for_naming)
-        self._save_glossary_to_json(final_glossary, glossary_output_path)
+        tasks = [asyncio.create_task(rate_limited_extract(s)) for s in sample_segments]
         
-        logger.info(f"용어집 추출 및 저장 완료. 결과: {glossary_output_path}")
+        processed_count = 0
+        for task in asyncio.as_completed(tasks):
+            try:
+                entries = await task
+                if entries: all_extracted_entries_from_segments.extend(entries)
+            except asyncio.CancelledError:
+                for t in tasks: t.cancel()
+                raise
+            except Exception as e:
+                logger.error(f"세그먼트 추출 중 오류: {e}")
+            finally:
+                processed_count += 1
+                if progress_callback:
+                    progress_callback(GlossaryExtractionProgressDTO(
+                        effective_total, processed_count, f"추출 중... ({processed_count}/{num_sample_segments})",
+                        len(all_extracted_entries_from_segments) + len(seed_entries)
+                    ))
 
-        # 최종 진행률 콜백
-        if progress_callback:
-            final_processed_segments = processed_segments_count if sample_segments else (1 if seed_entries else 0)
-            progress_callback(GlossaryExtractionProgressDTO(
-                total_segments=effective_total_segments_for_progress,
-                processed_segments=final_processed_segments,
-                current_status_message=f"추출 완료: {glossary_output_path.name}",
-                extracted_entries_count=len(final_glossary)
-            ))
-        return glossary_output_path
+        # 5. 최종화 및 저장
+        final_glossary = self.finalize_glossary(all_extracted_entries_from_segments, seed_entries)
+        output_path = self.get_glossary_output_path(input_file_path_for_naming)
+        self.save_glossary_to_json(final_glossary, output_path)
+        
+        return output_path
 

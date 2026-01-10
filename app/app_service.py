@@ -80,9 +80,11 @@ class AppService:
         
         # Task 객체로 상태 관리 (Lock 불필요)
         self.current_translation_task: Optional[asyncio.Task] = None
+        self.current_glossary_task: Optional[asyncio.Task] = None
         
         # 취소 신호 이벤트 (Promise.race 패턴)
         self.cancel_event: asyncio.Event = asyncio.Event()
+        self.cancel_glossary_event: asyncio.Event = asyncio.Event()
         
         # 카운터 (asyncio 단일 스레드이므로 Lock 불필요)
         self.processed_chunks_count = 0
@@ -312,7 +314,7 @@ class AppService:
         stop_check: Optional[Callable[[], bool]] = None
     ) -> Path:
         """
-        용어집을 비동기적으로 추출합니다.
+        용어집을 비동기적으로 추출합니다. (경합 기반 취소 패턴 적용)
         
         Args:
             input_file_path: 분석할 입력 파일 경로
@@ -324,61 +326,198 @@ class AppService:
             
         Returns:
             생성된 용어집 파일 경로
-            
-        Raises:
-            BtgServiceException: 서비스 초기화 안됨
-            BtgFileHandlerException: 파일 읽기 실패
-            asyncio.CancelledError: 작업 취소됨
         """
         if not self.glossary_service:
             logger.error("용어집 추출 서비스 실패: 서비스가 초기화되지 않았습니다.")
             raise BtgServiceException("용어집 추출 서비스가 초기화되지 않았습니다. 설정을 확인하세요.")
         
-        logger.info(f"비동기 용어집 추출 서비스 시작: {input_file_path}, 시드 파일: {seed_glossary_path}")
+        # 이미 실행 중이면 예외 발생
+        if self.current_glossary_task and not self.current_glossary_task.done():
+            raise BtgServiceException("용어집 추출이 이미 실행 중입니다. 기존 작업을 먼저 취소하세요.")
+
+        logger.info(f"비동기 용어집 추출 프로세스 시작: {input_file_path}")
+
+        # 취소 이벤트 초기화
+        self.cancel_glossary_event.clear()
+
+        # 추출 실행 Task 생성
+        extraction_task = asyncio.create_task(
+            self._do_glossary_extraction_async(
+                input_file_path,
+                progress_callback,
+                novel_language_code,
+                seed_glossary_path,
+                user_override_glossary_extraction_prompt,
+                stop_check
+            ),
+            name="glossary_extraction_main"
+        )
+
+        # 취소 감시 Task 생성 (Watchdog)
+        cancel_watch_task = asyncio.create_task(
+            self._wait_for_glossary_cancel(),
+            name="glossary_cancel_watcher"
+        )
+
+        self.current_glossary_task = extraction_task
+
         try:
-            file_content = read_text_file(input_file_path)
-            if not file_content:
-                logger.warning(f"입력 파일이 비어있습니다: {input_file_path}")
-
-            lang_code_for_extraction = novel_language_code or self.config.get("novel_language")
-
-            prompt_to_use = user_override_glossary_extraction_prompt \
-                if user_override_glossary_extraction_prompt is not None \
-                else self.config.get("user_override_glossary_extraction_prompt")
-
-            max_workers = self.config.get("max_workers", 4)
-            rpm = self.config.get("requests_per_minute", 60)
-            
-            result_path = await self.glossary_service.extract_and_save_glossary_async(
-                novel_text_content=file_content,
-                input_file_path_for_naming=input_file_path,
-                progress_callback=progress_callback,
-                seed_glossary_path=seed_glossary_path,
-                user_override_glossary_extraction_prompt=prompt_to_use,
-                stop_check=stop_check,
-                max_workers=max_workers,
-                rpm=rpm
+            # 🏁 Promise.race 경합
+            done, pending = await asyncio.wait(
+                [extraction_task, cancel_watch_task],
+                return_when=asyncio.FIRST_COMPLETED
             )
-            logger.info(f"비동기 용어집 추출 완료. 결과 파일: {result_path}")
-        
-            return result_path
+
+            for task in done:
+                if task == cancel_watch_task:
+                    # ❌ 취소가 먼저 완료됨 (이벤트 발생)
+                    logger.warning("🚨 취소 감지기에 의해 용어집 추출 작업 중단 결정")
+                    extraction_task.cancel()
+                    try:
+                        await extraction_task
+                    except asyncio.CancelledError:
+                        logger.info("용어집 추출 Task 취소 및 중간 결과 저장 완료")
+                    
+                    # 취소 시에도 생성된 파일 경로를 반환하여 GUI가 표시할 수 있게 함
+                    output_path = self.glossary_service.get_glossary_output_path(input_file_path)
+                    
+                    if progress_callback:
+                        progress_callback(GlossaryExtractionProgressDTO(0, 0, "사용자에 의해 중단됨 (부분 저장됨)", 0))
+                    
+                    return output_path
+                else:
+                    # ✅ 추출 작업이 완료됨
+                    cancel_watch_task.cancel()
+                    result_path = await task
+                    logger.info(f"비동기 용어집 추출 성공: {result_path}")
+                    return result_path
+
         except asyncio.CancelledError:
-            logger.info("용어집 추출이 취소되었습니다.")
+            logger.info("용어집 추출 프로세스가 종료되었습니다.")
             raise
-        except FileNotFoundError as e:
-            logger.error(f"용어집 추출을 위한 입력 파일을 찾을 수 없습니다: {input_file_path}")
-            if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(0, 0, f"오류: 입력 파일 없음 - {e.filename}", 0))
-            raise BtgFileHandlerException(f"입력 파일 없음: {input_file_path}", original_exception=e) from e
-        except (BtgBusinessLogicException, BtgApiClientException) as e:
-            logger.error(f"용어집 추출 중 오류: {e}")
+        except Exception as e:
+            logger.error(f"용어집 추출 중 심각한 오류: {e}", exc_info=True)
             if progress_callback:
                 progress_callback(GlossaryExtractionProgressDTO(0, 0, f"오류: {e}", 0))
             raise
-        except Exception as e: 
-            logger.error(f"용어집 추출 서비스 중 예상치 못한 오류: {e}", exc_info=True)
-            if progress_callback:
-                progress_callback(GlossaryExtractionProgressDTO(0, 0, f"예상치 못한 오류: {e}", 0))
+        finally:
+            self.current_glossary_task = None
+            for t in [extraction_task, cancel_watch_task]:
+                if not t.done(): t.cancel()
+
+    async def _do_glossary_extraction_async(
+        self,
+        input_file_path: Union[str, Path],
+        progress_callback: Optional[Callable[[GlossaryExtractionProgressDTO], None]] = None,
+        novel_language_code: Optional[str] = None,
+        seed_glossary_path: Optional[Union[str, Path]] = None,
+        user_override_glossary_extraction_prompt: Optional[str] = None,
+        stop_check: Optional[Callable[[], bool]] = None
+    ) -> Path:
+        """실제 용어집 추출 루프 오케스트레이션 (AppService 책임)"""
+        all_extracted_entries = []
+        seed_entries = []
+        try:
+            file_content = read_text_file(input_file_path)
+            if not file_content:
+                logger.warning("입력 파일이 비어 있어 작업을 중단합니다.")
+                return Path(input_file_path)
+
+            # 1. 초기 데이터 준비 (도메인 서비스 활용)
+            seed_entries = self.glossary_service.load_seed_glossary(seed_glossary_path)
+            sample_segments = self.glossary_service.prepare_segments(file_content)
+            num_samples = len(sample_segments)
+            
+            if num_samples == 0:
+                final_entries = self.glossary_service.finalize_glossary([], seed_entries)
+                output_path = self.glossary_service.get_glossary_output_path(input_file_path)
+                self.glossary_service.save_glossary_to_json(final_entries, output_path)
+                return output_path
+
+            # 2. 루프 실행 설정
+            max_workers = self.config.get("max_workers", 4)
+            rpm = self.config.get("requests_per_minute", 60)
+            semaphore = asyncio.Semaphore(max_workers)
+            request_interval = 60.0 / rpm if rpm > 0 else 0
+            last_request_time = 0
+            
+            async def rate_limited_extract(segment: str):
+                nonlocal last_request_time
+                if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
+                
+                async with semaphore:
+                    if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
+                    
+                    # RPM 제한
+                    current_time = asyncio.get_event_loop().time()
+                    elapsed = current_time - last_request_time
+                    if elapsed < request_interval:
+                        try:
+                            await asyncio.sleep(request_interval - elapsed)
+                        except asyncio.CancelledError: raise
+                    
+                    if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
+                    
+                    last_request_time = asyncio.get_event_loop().time()
+                    return await self.glossary_service._extract_glossary_entries_from_segment_via_api_async(
+                        segment, user_override_glossary_extraction_prompt, stop_check
+                    )
+
+            # 3. 작업 실행 (순차 생성, 병렬 처리)
+            tasks = [asyncio.create_task(rate_limited_extract(s)) for s in sample_segments]
+            processed_count = 0
+            
+            for task in asyncio.as_completed(tasks):
+                try:
+                    entries = await task
+                    if entries: all_extracted_entries.extend(entries)
+                except asyncio.CancelledError:
+                    for t in tasks: 
+                        if not t.done(): t.cancel()
+                    raise
+                except Exception as e:
+                    logger.error(f"세그먼트 처리 실패: {e}")
+                finally:
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(GlossaryExtractionProgressDTO(
+                            num_samples, processed_count, 
+                            f"추출 중 ({processed_count}/{num_samples})",
+                            len(all_extracted_entries) + len(seed_entries)
+                        ))
+
+            # 4. 마무리 (도메인 서비스 활용)
+            final_entries = self.glossary_service.finalize_glossary(all_extracted_entries, seed_entries)
+            output_path = self.glossary_service.get_glossary_output_path(input_file_path)
+            self.glossary_service.save_glossary_to_json(final_entries, output_path)
+            
+            return output_path
+        except asyncio.CancelledError:
+            # ✨ 취소 시 중간 결과 저장 로직 ✨
+            if all_extracted_entries or seed_entries:
+                logger.info(f"작업 취소 감지: 현재까지 추출된 {len(all_extracted_entries)}개 항목을 저장합니다.")
+                try:
+                    final_entries = self.glossary_service.finalize_glossary(all_extracted_entries, seed_entries)
+                    output_path = self.glossary_service.get_glossary_output_path(input_file_path)
+                    self.glossary_service.save_glossary_to_json(final_entries, output_path)
+                except Exception as save_err:
+                    logger.error(f"중간 결과 저장 중 오류: {save_err}")
+            raise
+        except Exception as e:
+            logger.error(f"_do_glossary_extraction_async 내부 오류: {e}")
+            raise
+
+    async def cancel_glossary_async(self) -> None:
+        """용어집 추출 즉시 취소 요청"""
+        if self.current_glossary_task and not self.current_glossary_task.done():
+            logger.info("🚨 용어집 추출 취소 이벤트 발생!")
+            self.cancel_glossary_event.set()
+
+    async def _wait_for_glossary_cancel(self) -> None:
+        """취소 신호 대기용 Task"""
+        await self.cancel_glossary_event.wait()
+        logger.info("⏱️ 용어집 취소 신호가 감지되었습니다.")
+        raise asyncio.CancelledError("GLOSSARY_CANCELLED")
     # _translate_and_save_chunk() 동기 메서드 제거됨
     # 비동기 버전 _translate_and_save_chunk_async()를 사용하세요
 

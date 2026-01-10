@@ -206,8 +206,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             "gemini-2.0-flash",
             "gemini-2.0-pro",
             "gemini-2.5-pro",
-            "gemini-3.0-pro",
-            "gemini-3.0-flash",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
         ])
         TooltipQt(self.model_name_combo, "번역에 사용할 Gemini 모델을 선택하거나 직접 입력합니다.")
 
