@@ -22,6 +22,7 @@ try:
     from infrastructure.logger_config import setup_logger
     from core.exceptions import BtgTranslationException, BtgApiClientException
     from utils.chunk_service import ChunkService
+    from utils.lang_utils import normalize_language_code # Added
     # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다. # 로어북 -> 용어집
     # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다. # 로어북 -> 용어집
     from google.genai import types as genai_types
@@ -39,6 +40,7 @@ except ImportError:
     from infrastructure.logger_config import setup_logger  # type: ignore
     from core.exceptions import BtgTranslationException, BtgApiClientException  # type: ignore
     from utils.chunk_service import ChunkService  # type: ignore
+    from utils.lang_utils import normalize_language_code # type: ignore
     from core.dtos import GlossaryEntryDTO # type: ignore
     from google.genai import types as genai_types # Fallback import
 
@@ -142,10 +144,14 @@ class TranslationService:
                            "translated_keyword" in item_dict and \
                            "target_language" in item_dict:
                             try:
+                                # target_language 정규화 로드 시 미리 수행
+                                raw_lang = item_dict.get("target_language", "")
+                                normalized_lang = normalize_language_code(raw_lang)
+                                
                                 entry = GlossaryEntryDTO( # Explicitly use GlossaryEntryDTO
                                     keyword=item_dict.get("keyword", ""),
                                     translated_keyword=item_dict.get("translated_keyword", ""),
-                                    target_language=item_dict.get("target_language", ""),
+                                    target_language=normalized_lang, # 정규화된 코드 사용
                                     occurrence_count=int(item_dict.get("occurrence_count", 0))
                                 )
                                 if all([entry.keyword, entry.translated_keyword, entry.target_language]): # 필수 필드 확인 (source_language 제거)
@@ -211,7 +217,8 @@ class TranslationService:
             chunk_text_lower = chunk_text.lower() # For case-insensitive keyword matching
             # 최종 번역 목표 언어 (예: "ko")
             # 이 설정은 config.json 또는 다른 방식으로 제공되어야 합니다.
-            final_target_lang = self.config.get("target_translation_language", "ko").lower()
+            # final_target_lang 설정 시 정규화 적용
+            final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
 
             if config_source_lang == "auto":
                 # "auto" 모드: 청크의 언어는 LLM이 감지.
@@ -219,7 +226,8 @@ class TranslationService:
                 # source_language 필터링은 LLM의 문맥 이해에 맡기거나, 여기서 간단한 키워드 매칭만 수행.
                 logger.info(f"자동 언어 감지 모드: 용어집은 키워드 일치 및 최종 목표 언어({final_target_lang}) 일치로 필터링 후 LLM에 전달.") # 메시지 변경
                 for entry in self.glossary_entries_for_injection:
-                    if entry.target_language.lower() == final_target_lang and \
+                    # entry.target_language는 _load_glossary_data에서 이미 정규화됨
+                    if entry.target_language == final_target_lang and \
                        entry.keyword.lower() in chunk_text_lower:
                         relevant_entries_for_chunk.append(entry)
             else:
@@ -227,11 +235,11 @@ class TranslationService:
                 logger.info(f"명시적 언어 모드 ('{current_source_lang_for_glossary_filtering}'): 용어집을 출발어/도착어 및 키워드 기준으로 필터링.") # 메시지 변경
                 for entry in self.glossary_entries_for_injection:
                     # source_language 필터링 제거. DTO에 해당 필드가 없으므로.
-                    if entry.target_language.lower() == final_target_lang and \
+                    if entry.target_language == final_target_lang and \
                        entry.keyword.lower() in chunk_text_lower:
                         relevant_entries_for_chunk.append(entry)
                     # source_language 관련 로깅 제거
-                    elif not (entry.target_language.lower() == final_target_lang): # target_language 불일치 로깅은 유지
+                    elif not (entry.target_language == final_target_lang): # target_language 불일치 로깅은 유지
                         logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 도착 언어 불일치 (용어집TL: {entry.target_language}, 최종TL: {final_target_lang}).")
                         continue
             
@@ -372,11 +380,13 @@ class TranslationService:
         if self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
             logger.info("용어집 컨텍스트 주입 활성화됨 (청크 내 관련 키워드 체크).")
             chunk_text_lower = text_chunk.lower()
-            final_target_lang = self.config.get("target_translation_language", "ko").lower()
+            # target_language 정규화 적용
+            final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
             relevant_entries = []
             
             for entry in self.glossary_entries_for_injection:
-                if entry.target_language.lower() == final_target_lang and entry.keyword.lower() in chunk_text_lower:
+                # entry.target_language는 _load_glossary_data에서 이미 정규화됨
+                if entry.target_language == final_target_lang and entry.keyword.lower() in chunk_text_lower:
                     relevant_entries.append(entry)
             
             max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3)

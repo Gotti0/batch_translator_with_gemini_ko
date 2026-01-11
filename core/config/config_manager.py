@@ -6,8 +6,13 @@ import os # os 모듈 임포트
 
 try:
     from infrastructure.file_handler import read_json_file, write_json_file
+    from utils.lang_utils import normalize_language_code
 except ImportError:
     from infrastructure.file_handler import read_json_file, write_json_file
+    # Fallback to simple normalization if utility is not available
+    def normalize_language_code(lang: str) -> str:
+        if not lang: return ""
+        return lang.strip().lower().split("-")[0].split("_")[0]
 
 
 DEFAULT_CONFIG_FILENAME = "config.json"
@@ -211,6 +216,16 @@ class ConfigManager:
                 if tb_value is not None and not isinstance(tb_value, int):
                     final_config["thinking_budget"] = default_config["thinking_budget"] # 잘못된 타입이면 기본값으로
 
+                # 언어 코드 정규화
+                if "target_translation_language" in final_config:
+                    final_config["target_translation_language"] = normalize_language_code(final_config["target_translation_language"])
+                if "glossary_target_language_code" in final_config:
+                    final_config["glossary_target_language_code"] = normalize_language_code(final_config["glossary_target_language_code"])
+                if "novel_language" in final_config and final_config["novel_language"] != "auto":
+                    final_config["novel_language"] = normalize_language_code(final_config["novel_language"])
+                if "novel_language_fallback" in final_config:
+                    final_config["novel_language_fallback"] = normalize_language_code(final_config["novel_language_fallback"])
+
                 return final_config
             elif use_default_if_missing:
                 print(f"정보: 설정 파일 '{self.config_file_path}'을(를) 찾을 수 없습니다. 기본 설정을 사용합니다.")
@@ -276,6 +291,16 @@ class ConfigManager:
                 if tb_save_value is not None and not isinstance(tb_save_value, int):
                     # 잘못된 타입이면 None (기본값)으로 설정하거나, 오류를 발생시킬 수 있음. 여기서는 None으로.
                     config_data["thinking_budget"] = None
+
+            # 언어 코드 정규화 (저장 시)
+            if "target_translation_language" in config_data:
+                config_data["target_translation_language"] = normalize_language_code(config_data["target_translation_language"])
+            if "glossary_target_language_code" in config_data:
+                config_data["glossary_target_language_code"] = normalize_language_code(config_data["glossary_target_language_code"])
+            if "novel_language" in config_data and config_data["novel_language"] != "auto":
+                config_data["novel_language"] = normalize_language_code(config_data["novel_language"])
+            if "novel_language_fallback" in config_data:
+                config_data["novel_language_fallback"] = normalize_language_code(config_data["novel_language_fallback"])
 
             write_json_file(self.config_file_path, config_data, indent=4)
             print(f"정보: 설정이 '{self.config_file_path}'에 성공적으로 저장되었습니다.")

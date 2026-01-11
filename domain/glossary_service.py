@@ -15,6 +15,7 @@ try:
     from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file
     from infrastructure.logger_config import setup_logger
     from utils.chunk_service import ChunkService
+    from utils.lang_utils import normalize_language_code # Added
     from core.exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException
     from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO
     # genai types 임포트 추가 (TranslationService와 동일)
@@ -24,6 +25,7 @@ except ImportError:
     from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException, GeminiRateLimitException, GeminiApiException, GeminiAllApiKeysExhaustedException # type: ignore
     from infrastructure.file_handler import write_json_file, ensure_dir_exists, delete_file, read_json_file # type: ignore
     from utils.chunk_service import ChunkService # type: ignore
+    from utils.lang_utils import normalize_language_code # type: ignore
     from infrastructure.logger_config import setup_logger # type: ignore
     from core.exceptions import BtgBusinessLogicException, BtgApiClientException, BtgFileHandlerException # type: ignore
     from core.dtos import GlossaryExtractionProgressDTO, GlossaryEntryDTO # type: ignore
@@ -242,7 +244,11 @@ class SimpleGlossaryService:
         final_entries_map: Dict[Tuple[str, str], GlossaryEntryDTO] = {} # 키에서 source_language 제거
 
         for entry in all_extracted_entries:
-            key_tuple = (entry.keyword.lower(), entry.target_language.lower().split('-')[0]) # 키에서 source_language 제거
+            # target_language 정규화 적용 (예: ko-KR -> ko, Korean -> ko)
+            normalized_lang = normalize_language_code(entry.target_language)
+            entry.target_language = normalized_lang # 항목 자체의 언어 코드도 정규화된 값으로 업데이트
+            
+            key_tuple = (entry.keyword.lower(), normalized_lang) # 키에서 source_language 제거
             if key_tuple not in final_entries_map:
                 # 첫 번째 등장: 이 번역을 최종 번역으로 사용
                 final_entries_map[key_tuple] = entry
