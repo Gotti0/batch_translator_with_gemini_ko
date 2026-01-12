@@ -189,13 +189,35 @@ class GlossaryEditorDialogQt(QtWidgets.QDialog):
         if not (0 <= row < len(self.entries)):
             QtWidgets.QMessageBox.information(self, "정보", "치환할 항목을 선택하세요.")
             return
-        self._replace_entries([self.entries[row]])
+        
+        entry = self.entries[row]
+        keyword = entry.get("keyword", "")
+        translated = entry.get("translated_keyword", "")
+        
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "치환 확인",
+            f"선택한 항목 '{keyword}' → '{translated}'를 입력 파일에서 치환하시겠습니까?\n이 작업은 파일을 직접 수정하며 되돌릴 수 없습니다.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            self._replace_entries([entry])
 
     def _replace_all(self) -> None:
         if not self.entries:
             QtWidgets.QMessageBox.information(self, "정보", "치환할 용어집 데이터가 없습니다.")
             return
-        self._replace_entries(self.entries)
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "전체 치환 확인",
+            f"용어집의 모든 항목({len(self.entries)}개)을 입력 파일에서 치환하시겠습니까?\n이 작업은 파일을 직접 수정하며 되돌릴 수 없습니다.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            self._replace_entries(self.entries)
 
     def _replace_entries(self, entries: List[Dict[str, Any]]) -> None:
         if not self.input_file_path or not self.input_file_path.exists():
