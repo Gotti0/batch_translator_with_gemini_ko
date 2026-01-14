@@ -888,13 +888,16 @@ class AppService:
             
             logger.info("모든 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
             
-            # 청크 백업 파일에서 최종 병합 대상 로드 (동기 버전과 동일)
+            # 청크 백업 파일에서 최종 병합 대상 로드 및 인덱스 정렬
             final_merged_chunks: Dict[int, str] = {}
             try:
+                # 병렬 번역으로 인해 뒤섞인 백업 파일을 정렬하기 위해 먼저 로드
                 final_merged_chunks = load_chunks_from_file(chunked_output_file_path)
-                logger.info(f"최종 병합 대상 청크 수: {len(final_merged_chunks)}")
+                # 정렬된 순서로 백업 파일 다시 저장 (유저 요청: 인덱스 정렬)
+                save_merged_chunks_to_file(chunked_output_file_path, final_merged_chunks)
+                logger.info(f"청크 백업 파일 인덱스 정렬 완료 및 로드: {len(final_merged_chunks)}개 청크")
             except Exception as e:
-                logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
+                logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 및 정렬 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
             
             try:
                 # ✅ 후처리 실행 (설정에서 활성화된 경우)
