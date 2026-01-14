@@ -902,34 +902,30 @@ class AppService:
             try:
                 # ✅ 후처리 실행 (설정에서 활성화된 경우)
                 if self.config.get("enable_post_processing", True):
-                    logger.info("번역 완료 후 후처리를 시작합니다...")
+                    logger.info("번역 완료 후 후처리를 시작합니다 (비동기 스레드 위임)...")
                     try:
-                        # 1. 청크 백업 파일은 이미 chunked_output_file_path에 저장되어 있음 (번역 중 생성)
-                        logger.info(f"이어하기용 청크 백업 파일이 번역 중 생성됨: {chunked_output_file_path}")
+                        # 1. 별도 스레드에서 가공 및 마커 제거까지 한 번에 수행 (이벤트 루프 차단 방지)
+                        final_text = await asyncio.to_thread(
+                            self.post_processing_service.post_process_and_clean_chunks,
+                            final_merged_chunks,
+                            self.config
+                        )
                         
-                        # 2. 청크 단위 후처리 (헤더 제거, HTML 정리 등)
-                        processed_chunks = self.post_processing_service.post_process_merged_chunks(final_merged_chunks, self.config)
-                        
-                        # 3. 후처리된 내용을 최종 출력 파일에 저장 (청크 인덱스는 여전히 포함)
-                        save_merged_chunks_to_file(final_output_file_path_obj, processed_chunks)
-                        logger.info(f"청크 단위 후처리 완료 및 최종 출력 파일 저장: {final_output_file_path_obj}")
-                        
-                        # 4. 최종적으로 청크 인덱스 마커 제거 (사용자가 보는 최종 파일)
-                        if self.post_processing_service.remove_chunk_indexes_from_final_file(final_output_file_path_obj):
-                            logger.info("최종 출력 파일에서 청크 인덱스 마커 제거 완료.")
-                        else:
-                            logger.warning("청크 인덱스 마커 제거에 실패했습니다.")
+                        # 2. 최종 결과물만 단 한 번 저장
+                        await asyncio.to_thread(write_text_file, final_output_file_path_obj, final_text)
+                        logger.info(f"후처리 및 최종 파일 저장 완료 (단일 I/O): {final_output_file_path_obj}")
                             
                     except Exception as post_proc_e:
-                        logger.error(f"후처리 중 오류 발생: {post_proc_e}. 후처리를 건너뜁니다.", exc_info=True)
-                        # 후처리 실패 시 원본 병합 결과를 최종 출력 파일에 저장
-                        save_merged_chunks_to_file(final_output_file_path_obj, final_merged_chunks)
-                        logger.info(f"후처리 실패 시 원본 병합 결과 저장: {final_output_file_path_obj}")
+                        logger.error(f"후처리 중 오류 발생: {post_proc_e}. 기본 병합 저장을 시도합니다.", exc_info=True)
+                        # 후처리 실패 시 원본 병합 결과를 최종 출력 파일에 저장 (인덱스 제거 시도)
+                        await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
+                        await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
                 else:
-                    logger.info("후처리가 설정에서 비활성화되어 건너뜁니다.")
-                    # 후처리가 비활성화된 경우 원본 병합 결과를 최종 출력 파일에 저장
-                    save_merged_chunks_to_file(final_output_file_path_obj, final_merged_chunks)
-                    logger.info(f"후처리 없이 원본 병합 결과 저장: {final_output_file_path_obj}")
+                    logger.info("후처리가 설정에서 비활성화되었습니다. 기본 병합 저장을 진행합니다.")
+                    # 후처리가 비활성화된 경우에도 인덱스는 제거하여 저장
+                    await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
+                    await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
+                    logger.info(f"후처리 없이 최종 결과 저장 완료: {final_output_file_path_obj}")
                 
                 # 청크 백업 파일(이어하기용)은 이미 chunked_output_file_path에 존재함
                 logger.info(f"✅ 번역 완료! 최종 파일: {final_output_file_path_obj}, 백업: {chunked_output_file_path}")

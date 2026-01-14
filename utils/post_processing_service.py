@@ -100,6 +100,32 @@ class PostProcessingService:
         logger.info(f"청크 내용 후처리 완료: {len(processed_chunks)}개 청크 처리됨")
         return processed_chunks
     
+    def post_process_and_clean_chunks(self, merged_chunks: Dict[int, str], config: Dict[str, any]) -> str:
+        """
+        병합된 청크들에 대해 후처리를 수행하고 최종 텍스트로 변환합니다.
+        메모리 내에서 가공 및 마커 제거를 모두 수행하여 파일 I/O 오버헤드를 줄입니다.
+        """
+        # 1. 청크 단위 후처리 실행
+        processed_chunks_dict = self.post_process_merged_chunks(merged_chunks, config)
+        
+        # 2. 인덱스 순으로 정렬하여 병합
+        sorted_indices = sorted(processed_chunks_dict.keys())
+        full_text = "\n".join([processed_chunks_dict[idx] for idx in sorted_indices])
+        
+        # 3. 혹시 모를 잔여 인덱스 마커 제거 (LLM이 출력에 포함했을 경우 대비)
+        chunk_patterns = [
+            r'##CHUNK_INDEX:\s*\d+##\n*',
+            r'##END_CHUNK##\n*',
+        ]
+        for pattern in chunk_patterns:
+            full_text = re.sub(pattern, '', full_text, flags=re.MULTILINE)
+            
+        # 4. 최종 개행 및 공백 정리
+        full_text = re.sub(r'\n{3,}', '\n\n', full_text)
+        full_text = full_text.strip()
+        
+        return full_text
+    
     def remove_chunk_indexes_from_final_file(self, file_path: Path) -> bool:
         """
         최종 파일에서 청크 인덱스 마커들을 제거합니다.
