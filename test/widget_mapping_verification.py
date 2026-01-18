@@ -175,7 +175,7 @@ class WidgetMappingValidator:
             WidgetMapping(
                 tk_widget_name="rpm_entry",
                 qt_widget_name="rpm_spin",
-                widget_type="SpinBox",
+                widget_type="DoubleSpinBox",
                 tab_name="Settings",
                 config_key="requests_per_minute",
                 description="분당 요청 수"

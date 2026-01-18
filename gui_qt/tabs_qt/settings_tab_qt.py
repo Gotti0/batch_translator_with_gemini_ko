@@ -320,10 +320,11 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.max_workers_spin = NoWheelSpinBox()
         self.max_workers_spin.setRange(1, 64)
         TooltipQt(self.max_workers_spin, "동시에 처리할 최대 작업 수입니다.\nAPI 할당량에 따라 조절하세요.")
-        self.rpm_spin = NoWheelSpinBox()
+        self.rpm_spin = NoWheelDoubleSpinBox()
         self.rpm_spin.setRange(0, 2000)
-        self.rpm_spin.setSingleStep(10)
-        TooltipQt(self.rpm_spin, "분당 최대 API 요청 수입니다.\n0으로 설정하면 제한 없음.")
+        self.rpm_spin.setSingleStep(0.1)
+        self.rpm_spin.setDecimals(1)
+        TooltipQt(self.rpm_spin, "분당 최대 API 요청 수입니다.\n0으로 설정하면 제한 없음 (float 지원).")
 
         file_form.addRow("입력 파일", self._wrap(in_row))
         file_form.addRow("출력 파일", self._wrap(out_row))
@@ -562,9 +563,9 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.max_workers_spin.setValue(max_workers)
         rpm = cfg.get("requests_per_minute", defaults.get("requests_per_minute", 60))
         try:
-            self.rpm_spin.setValue(int(rpm))
+            self.rpm_spin.setValue(float(rpm))
         except Exception:
-            self.rpm_spin.setValue(60)
+            self.rpm_spin.setValue(60.0)
 
         self.novel_lang_edit.setText(str(cfg.get("novel_language", defaults.get("novel_language", "auto"))))
         self.novel_fallback_edit.setText(str(cfg.get("novel_language_fallback", defaults.get("novel_language_fallback", "ja"))))
@@ -618,7 +619,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["thinking_level"] = self.thinking_level_combo.currentText() if self.thinking_level_combo.isEnabled() else None
         cfg["chunk_size"] = int(self.chunk_size_spin.value())
         cfg["max_workers"] = int(self.max_workers_spin.value())
-        cfg["requests_per_minute"] = int(self.rpm_spin.value())
+        cfg["requests_per_minute"] = float(self.rpm_spin.value())
         cfg["novel_language"] = self.novel_lang_edit.text().strip() or "auto"
         cfg["novel_language_fallback"] = self.novel_fallback_edit.text().strip() or "ja"
         cfg["prompts"] = self.prompt_edit.toPlainText()

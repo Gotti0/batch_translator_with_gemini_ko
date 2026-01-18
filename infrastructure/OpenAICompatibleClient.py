@@ -53,7 +53,7 @@ class OpenAICompatibleClient:
                  api_key: str,
                  base_url: str, # Should be the full URL to the chat completions endpoint
                  default_model: Optional[str] = None,
-                 requests_per_minute: Optional[int] = None,
+                 requests_per_minute: Optional[float] = None,
                  request_timeout: Optional[int] = None):
         if not api_key:
             raise ValueError("API key must be provided.")
