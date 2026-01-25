@@ -814,11 +814,12 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._final_processed_chunks = 0
     
     def _show_completion_dialog(self, success: bool, message: str, stats: dict) -> None:
-        """완료 또는 오류 다이얼로그 표시 (통계 포함)"""
+        """완료 또는 오류 다이얼로그 표시 (통계 정보 최적화)"""
         elapsed = stats.get("elapsed_seconds", 0)
         total_chunks = stats.get("total_chunks", 0)
         processed_chunks = stats.get("processed_chunks", 0)
         newly_processed = stats.get("newly_processed", 0)
+        error_detail = stats.get("error") or stats.get("reason")
         
         # 시간 포맷팅 함수
         def format_elapsed(seconds):
@@ -833,35 +834,51 @@ class SettingsTabQt(QtWidgets.QWidget):
                 minutes = int((seconds % 3600) / 60)
                 return f"{hours}시간 {minutes}분"
         
-        # 다이얼로그 제목 및 아이콘 설정
+        elapsed_str = format_elapsed(elapsed)
+        
+        # 속도 계산 (분당 처리 청크 수)
+        speed_str = "N/A"
+        if elapsed > 0 and newly_processed > 0:
+            chunks_per_min = (newly_processed / elapsed) * 60
+            speed_str = f"{chunks_per_min:.1f} 청크/분"
+            
+        # 다이얼로그 기본 설정
+        dlg = QtWidgets.QMessageBox(self)
+        dlg.setStandardButtons(QtWidgets.QMessageBox.Ok)
+        
         if success:
             title = "번역 완료"
-            icon = QtWidgets.QMessageBox.Information
+            dlg.setIcon(QtWidgets.QMessageBox.Information)
+            summary = f"총 {total_chunks}개 중 {newly_processed}개의 청크를 새로 번역했습니다.\n소요 시간: {elapsed_str}"
         else:
-            reason = stats.get("reason") or stats.get("error") or "알 수 없는 오류"
-            title = f"번역 {reason}"
-            icon = QtWidgets.QMessageBox.Warning
-        
-        # 통계 정보 포맷팅
-        elapsed_str = format_elapsed(elapsed)
-        stats_text = f"총 청크: {total_chunks}개\n처리된 청크: {processed_chunks}개\n새로 처리: {newly_processed}개\n소요 시간: {elapsed_str}"
-        
-        # 상세 메시지
-        detail_msg = f"{message}\n\n{stats_text}"
-        
-        # 다이얼로그 표시
-        dlg = QtWidgets.QMessageBox(self)
+            title = f"번역 중단 ({error_detail or '알 수 없는 원인'})"
+            dlg.setIcon(QtWidgets.QMessageBox.Warning)
+            summary = f"진행 중 중단되었습니다. (완료: {processed_chunks}/{total_chunks})\n소요 시간: {elapsed_str}"
+
         dlg.setWindowTitle(title)
         dlg.setText(title)
-        dlg.setInformativeText(detail_msg)
-        dlg.setIcon(icon)
-        dlg.setStandardButtons(QtWidgets.QMessageBox.Ok)
-        dlg.setDetailedText(f"""완료 요약:
-- 상태: {message}
-- 총 청크: {total_chunks}
-- 처리된 청크: {processed_chunks}
-- 새로 처리된 청크: {newly_processed}
-- 소요 시간: {elapsed_str}""")
+        dlg.setInformativeText(summary)
+        
+        # 상세 정보 구성 (실제 상세 데이터 추가)
+        detailed_info = [
+            f"결과 메시지: {message}",
+            f"입력 파일: {self.input_edit.text()}",
+            f"출력 파일: {self.output_edit.text()}",
+            f"사용 모델: {self.model_name_combo.currentText()}",
+            "",
+            f"전체 청크: {total_chunks} 개",
+            f"기존 처리분: {processed_chunks - newly_processed} 개",
+            f"이번 세션 처리: {newly_processed} 개",
+            f"최종 완료율: {processed_chunks}/{total_chunks} ({int(processed_chunks/total_chunks*100) if total_chunks > 0 else 0}%)",
+            "",
+            f"실제 소요 시간: {int(elapsed)}초 ({elapsed_str})",
+            f"평균 처리 속도: {speed_str}"
+        ]
+        
+        if error_detail:
+            detailed_info.append(f"\n추가 정보: {error_detail}")
+            
+        dlg.setDetailedText("\n".join(detailed_info))
         dlg.exec()
 
     @QtCore.Slot(int)
