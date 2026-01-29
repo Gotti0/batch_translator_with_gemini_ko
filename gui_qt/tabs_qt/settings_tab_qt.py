@@ -656,7 +656,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         # ETA 계산을 위한 시작 시간 및 초기 청크 수 기록 (이어하기 대응)
         import time
         self._translation_start_time = time.time()
-        self._translation_start_chunks = 0  # 첫 진행률 콜백에서 업데이트됨
+        self._translation_start_chunks = -1  # -1은 미초기화 상태, 첫 콜백에서 설정됨
 
         # 이미 실행 중이면 예외 발생하도록 방지
         if self.app_service.current_translation_task and not self.app_service.current_translation_task.done():
@@ -742,8 +742,9 @@ class SettingsTabQt(QtWidgets.QWidget):
                 self._final_processed_chunks = dto.processed_chunks
                 
                 # 이어하기 시작 시점의 청크 수 초기화 (첫 콜백에서만)
-                if self._translation_start_chunks == 0 and dto.processed_chunks > 0:
-                    self._translation_start_chunks = dto.processed_chunks
+                # processed_chunks - 1 = 첫 번째 청크 완료 직전의 값 (새 번역: 0, 이어하기: 기존 완료 수)
+                if self._translation_start_chunks == -1:
+                    self._translation_start_chunks = dto.processed_chunks - 1
                 
                 # ETA 계산 (이어하기 robust 대응)
                 if self._translation_start_time and dto.processed_chunks > 0:
