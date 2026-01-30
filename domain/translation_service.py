@@ -315,8 +315,19 @@ class TranslationService:
         logger.info(f"비동기 청크 번역 요청: \"{text_preview}{'...' if len(chunk_text) > 100 else ''}\"")
         
         try:
-            # 진정한 비동기 메서드 호출 (GeminiClient의 http_options timeout에 의존)
-            result = await self.translate_text_with_content_safety_retry_async(chunk_text)
+            # 콘텐츠 안전 재시도 설정 확인
+            use_content_safety_retry = self.config.get("use_content_safety_retry", True)
+            max_split_attempts = self.config.get("max_content_safety_split_attempts", 3)
+            min_chunk_size = self.config.get("min_content_safety_chunk_size", 100)
+            
+            # 설정에 따라 재시도 로직 분기
+            if use_content_safety_retry:
+                result = await self.translate_text_with_content_safety_retry_async(
+                    chunk_text, max_split_attempts, min_chunk_size
+                )
+            else:
+                # 재시도 없이 직접 번역 (OFF 설정 시)
+                result = await self.translate_text_async(chunk_text)
             
             # 📍 중단 체크: API 응답 후
             if self.stop_check_callback and self.stop_check_callback():

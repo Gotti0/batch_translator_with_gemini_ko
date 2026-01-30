@@ -65,6 +65,9 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         self.app_service: Optional[AppService] = None
         self._current_theme: str = "dark"  # 기본 테마
         
+        # 시스템 트레이 아이콘
+        self.tray_icon: Optional[QtWidgets.QSystemTrayIcon] = None
+        
         # 탭 참조 저장 (테마 변경 시그널 연결용)
         self.settings_tab = None
         self.glossary_tab = None
@@ -90,6 +93,9 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         
         # 상태바 설정 (테마 토글 버튼 포함)
         self._setup_statusbar()
+        
+        # 시스템 트레이 설정
+        self._setup_system_tray()
 
     def _apply_theme(self, theme: str) -> None:
         """테마 적용 (qdarktheme + 툴팁 스타일)"""
@@ -221,9 +227,96 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         tab_widget.addTab(self.log_tab, "실행 로그")
         self.setCentralWidget(tab_widget)
 
+    def _setup_system_tray(self) -> None:
+        """시스템 트레이 아이콘 설정"""
+        if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
+            logger.warning("시스템 트레이를 사용할 수 없는 환경입니다.")
+            return
+        
+        # 트레이 아이콘 생성
+        self.tray_icon = QtWidgets.QSystemTrayIcon(self)
+        
+        # 아이콘 설정 (윈도우 아이콘 재사용 또는 기본 아이콘)
+        app_icon = self.windowIcon()
+        if app_icon.isNull():
+            # 기본 아이콘 (앱 아이콘이 없는 경우)
+            app_icon = self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
+        self.tray_icon.setIcon(app_icon)
+        self.tray_icon.setToolTip("BTG - Batch Translator")
+        
+        # 트레이 메뉴 구성
+        tray_menu = QtWidgets.QMenu()
+        
+        show_action = tray_menu.addAction("창 보이기")
+        show_action.triggered.connect(self._show_window_from_tray)
+        
+        tray_menu.addSeparator()
+        
+        quit_action = tray_menu.addAction("종료")
+        quit_action.triggered.connect(self.close)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        
+        # 트레이 아이콘 클릭 시 창 보이기
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        
+        # 트레이 아이콘 표시
+        self.tray_icon.show()
+        logger.info("시스템 트레이 아이콘 초기화 완료")
+
+    def _on_tray_activated(self, reason: QtWidgets.QSystemTrayIcon.ActivationReason) -> None:
+        """트레이 아이콘 클릭 이벤트 처리"""
+        if reason == QtWidgets.QSystemTrayIcon.ActivationReason.Trigger:
+            # 싱글 클릭 시 창 보이기
+            self._show_window_from_tray()
+        elif reason == QtWidgets.QSystemTrayIcon.ActivationReason.DoubleClick:
+            # 더블 클릭 시 창 보이기
+            self._show_window_from_tray()
+
+    def _show_window_from_tray(self) -> None:
+        """트레이에서 창 복원"""
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def show_tray_notification(
+        self,
+        title: str,
+        message: str,
+        icon_type: str = "info",
+        duration_ms: int = 5000
+    ) -> None:
+        """
+        시스템 트레이 알림 표시
+        
+        Args:
+            title: 알림 제목
+            message: 알림 내용
+            icon_type: 아이콘 종류 ("info", "warning", "critical", "none")
+            duration_ms: 표시 시간 (밀리초, 기본 5초)
+        """
+        if not self.tray_icon:
+            logger.debug("시스템 트레이가 없어서 알림을 표시할 수 없습니다.")
+            return
+        
+        icon_map = {
+            "info": QtWidgets.QSystemTrayIcon.MessageIcon.Information,
+            "warning": QtWidgets.QSystemTrayIcon.MessageIcon.Warning,
+            "critical": QtWidgets.QSystemTrayIcon.MessageIcon.Critical,
+            "none": QtWidgets.QSystemTrayIcon.MessageIcon.NoIcon,
+        }
+        icon = icon_map.get(icon_type, QtWidgets.QSystemTrayIcon.MessageIcon.Information)
+        
+        self.tray_icon.showMessage(title, message, icon, duration_ms)
+        logger.debug(f"트레이 알림 표시: {title}")
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[name-defined]
         """창 닫기 시 현재 번역 작업이 있으면 취소 시도"""
         try:
+            # 시스템 트레이 아이콘 숨기기
+            if self.tray_icon:
+                self.tray_icon.hide()
+            
             if self.app_service and self.app_service.current_translation_task:
                 if not self.app_service.current_translation_task.done():
                     self.app_service.current_translation_task.cancel()

@@ -822,6 +822,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         newly_processed = stats.get("newly_processed", 0)
         error_detail = stats.get("error") or stats.get("reason")
         
+        # 시스템 트레이 알림 표시 (앱이 최소화되어 있어도 알림 가능)
+        self._show_tray_notification(success, newly_processed, total_chunks, error_detail)
+        
         # 시간 포맷팅 함수
         def format_elapsed(seconds):
             if seconds < 60:
@@ -1018,3 +1021,32 @@ class SettingsTabQt(QtWidgets.QWidget):
         if new_system_inst is not None:
             self.prefill_system_edit.setPlainText(new_system_inst)
         self._update_prefill_button_text()
+
+    def _show_tray_notification(
+        self,
+        success: bool,
+        newly_processed: int,
+        total_chunks: int,
+        error_detail: Optional[str] = None
+    ) -> None:
+        """시스템 트레이 알림 표시 (메인 윈도우로 위임)"""
+        # 부모 윈도우 탐색 (BatchTranslatorWindow 찾기)
+        main_window = self.window()
+        if not main_window:
+            return
+        
+        # show_tray_notification 메서드가 있는지 확인
+        if not hasattr(main_window, "show_tray_notification"):
+            return
+        
+        if success:
+            title = "✅ 번역 완료"
+            message = f"{newly_processed}개 청크 번역 완료 (전체 {total_chunks}개)"
+            icon_type = "info"
+        else:
+            title = "⚠️ 번역 중단"
+            reason = error_detail or "알 수 없는 원인"
+            message = f"번역이 중단되었습니다: {reason}"
+            icon_type = "warning"
+        
+        main_window.show_tray_notification(title, message, icon_type, duration_ms=8000)
