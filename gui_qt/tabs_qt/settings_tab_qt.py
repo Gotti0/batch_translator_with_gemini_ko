@@ -448,6 +448,9 @@ class SettingsTabQt(QtWidgets.QWidget):
             p = Path(file_path)
             candidate = str(p.parent / f"{p.stem}_translated{p.suffix}")
             self.output_edit.setText(candidate)
+            # config dict에 즉시 반영 (Glossary 탭 등 다른 탭에서 바로 참조 가능)
+            self.app_service.config["input_files"] = [file_path]
+            self.app_service.config["output_file"] = candidate
 
     def _browse_output(self) -> None:
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "출력 파일 선택")

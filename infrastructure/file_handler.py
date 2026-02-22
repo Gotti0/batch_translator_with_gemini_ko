@@ -79,6 +79,11 @@ def load_chunks_from_file(file_path: Union[str, Path]) -> Dict[int, str]:
             logger.warning(f"[load_chunks_from_file] 파일 내용이 비어있음: {file_path}")
             return chunks
         
+        # CRLF → LF 정규화 (Windows 에디터/Git 라인 엔딩 변환 대응)
+        if "\r\n" in content:
+            logger.info(f"[load_chunks_from_file] CRLF 줄바꿈 감지 → LF로 정규화")
+            content = content.replace("\r\n", "\n")
+        
         # 파일 내용 미리보기 (처음 500자)
         preview = content[:500].replace('\n', '\\n')
         logger.debug(f"[load_chunks_from_file] 파일 내용 미리보기: {preview}...")
@@ -91,9 +96,6 @@ def load_chunks_from_file(file_path: Union[str, Path]) -> Dict[int, str]:
             # 매칭 실패 원인 분석
             if "##CHUNK_INDEX:" in content:
                 logger.warning(f"[load_chunks_from_file] CHUNK_INDEX 마커는 있으나 패턴 매칭 실패")
-                # 줄바꿈 문자 확인
-                if "\r\n" in content:
-                    logger.warning(f"[load_chunks_from_file] CRLF(\\r\\n) 줄바꿈 감지됨 - 패턴 불일치 가능성")
                 if "##END_CHUNK##" not in content:
                     logger.warning(f"[load_chunks_from_file] END_CHUNK 마커가 없음")
             else:

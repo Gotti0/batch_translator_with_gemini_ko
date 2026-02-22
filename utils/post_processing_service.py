@@ -115,14 +115,14 @@ class PostProcessingService:
         # 1. 청크 단위 후처리 실행
         processed_chunks_dict = self.post_process_merged_chunks(merged_chunks, config)
         
-        # 2. 인덱스 순으로 정렬하여 병합
+        # 2. 인덱스 순으로 정렬하여 병합 (Review 탭과 동일하게 "\n\n" 사용)
         sorted_indices = sorted(processed_chunks_dict.keys())
-        full_text = "\n".join([processed_chunks_dict[idx] for idx in sorted_indices])
+        full_text = "\n\n".join([processed_chunks_dict[idx] for idx in sorted_indices])
         
         # 3. 혹시 모를 잔여 인덱스 마커 제거 (LLM이 출력에 포함했을 경우 대비)
         chunk_patterns = [
-            r'##CHUNK_INDEX:\s*\d+##\n*',
-            r'##END_CHUNK##\n*',
+            r'##CHUNK_INDEX:\s*\d+##\r?\n{0,2}',
+            r'##END_CHUNK##\r?\n{0,2}',
         ]
         for pattern in chunk_patterns:
             full_text = re.sub(pattern, '', full_text, flags=re.MULTILINE)
@@ -151,12 +151,12 @@ class PostProcessingService:
             
             original_length = len(content)
             
-            # 청크 인덱스 마커 패턴들 제거
+            # 청크 인덱스 마커 패턴들 제거 (CRLF 호환)
             chunk_patterns_to_remove = [
-                r'##CHUNK_INDEX:\s*\d+##\n',  # ##CHUNK_INDEX: 0##
-                r'##END_CHUNK##\n*',        # ##END_CHUNK##
-                r'^##CHUNK_INDEX:\s*\d+##\n', # 파일 시작 부분의 청크 인덱스
-                r'##END_CHUNK##$',             # 파일 끝 부분의 END_CHUNK
+                r'##CHUNK_INDEX:\s*\d+##\r?\n',  # ##CHUNK_INDEX: 0##
+                r'##END_CHUNK##\r?\n{0,2}',      # ##END_CHUNK##
+                r'^##CHUNK_INDEX:\s*\d+##\r?\n',  # 파일 시작 부분의 청크 인덱스
+                r'##END_CHUNK##$',                  # 파일 끝 부분의 END_CHUNK
             ]
             
             cleaned_content = content

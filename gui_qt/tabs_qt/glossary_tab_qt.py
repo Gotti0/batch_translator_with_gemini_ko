@@ -357,8 +357,12 @@ class GlossaryTabQt(QtWidgets.QWidget):
                         self._display_glossary_content(f.read())
                 except Exception:
                     pass
+            QtWidgets.QMessageBox.information(
+                self, "완료", f"용어집 추출이 완료되었습니다.\n{result_path or ''}"
+            )
         else:
             self.progress_label.setText(msg)
+            QtWidgets.QMessageBox.warning(self, "실패", msg)
 
     def _display_glossary_content(self, content: str) -> None:
         self.glossary_display.setReadOnly(False)
