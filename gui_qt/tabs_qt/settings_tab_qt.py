@@ -18,6 +18,7 @@ from qasync import asyncSlot
 
 from core.dtos import TranslationJobProgressDTO
 from gui_qt.components_qt.tooltip_qt import TooltipQt
+from gui_qt.components_qt.mode_card import ModeSelectorGroup
 from gui_qt.dialogs_qt.prefill_history_editor_qt import PrefillHistoryEditorDialogQt
 
 
@@ -230,6 +231,12 @@ class SettingsTabQt(QtWidgets.QWidget):
         api_form.addRow("GCP 위치", self.gcp_location_edit)
         api_form.addRow("모델 이름", self._wrap(model_row))
 
+        # --- 번역 모드 섹션 (신규 Phase 2) ---
+        mode_group = QtWidgets.QGroupBox("번역 파이프라인 모드")
+        mode_vbox = QtWidgets.QVBoxLayout(mode_group)
+        self.mode_selector = ModeSelectorGroup()
+        mode_vbox.addWidget(self.mode_selector)
+        
         # --- 생성 파라미터 ---
         gen_group = QtWidgets.QGroupBox("생성 파라미터")
         gen_form = QtWidgets.QFormLayout(gen_group)
@@ -433,7 +440,18 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.model_name_combo.currentTextChanged.connect(self._on_model_changed)
         self.model_name_combo.editTextChanged.connect(self._on_model_changed)
         self.model_refresh_btn.clicked.connect(self._refresh_model_list)
-            # Removed duplicate connection
+        self.mode_selector.mode_changed.connect(self._on_mode_changed)
+
+    def _on_mode_changed(self, mode_id: str) -> None:
+        """번역 모드 변경 시 설정 업데이트 및 UI 조정"""
+        if self.app_service:
+            self.app_service.config["translation_mode"] = mode_id
+            logger.info(f"UI 번역 모드 변경됨: {mode_id}")
+            
+            # 모드에 따른 특수 UI 조정 (예: EPUB 모드일 때 청크 크기 숨기기 등)
+            is_epub = mode_id == "epub"
+            self.chunk_size_spin.setEnabled(not is_epub)
+            # 무결성/EPUB 모드일 때 안전 재시도 옵션 강제 활성화 고려 가능
 
     def _wrap(self, layout: QtWidgets.QLayout) -> QtWidgets.QWidget:
         w = QtWidgets.QWidget()
@@ -596,6 +614,21 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.use_content_safety_check.setChecked(bool(cfg.get("use_content_safety_retry", defaults.get("use_content_safety_retry", True))))
         self.max_split_spin.setValue(int(cfg.get("max_content_safety_split_attempts", defaults.get("max_content_safety_split_attempts", 3))))
         self.min_chunk_spin.setValue(int(cfg.get("min_content_safety_chunk_size", defaults.get("min_content_safety_chunk_size", 100))))
+        
+        # 번역 모드 선택 동기화 (신규)
+        mode_val = str(cfg.get("translation_mode", "standard"))
+        self.mode_selector._on_card_clicked(mode_val)
+
+    def _on_mode_changed(self, mode_id: str) -> None:
+        """번역 모드 변경 시 설정 업데이트 및 UI 조정"""
+        if self.app_service:
+            self.app_service.config["translation_mode"] = mode_id
+            logger.info(f"UI 번역 모드 변경됨: {mode_id}")
+            
+            # 모드에 따른 특수 UI 조정
+            is_epub = mode_id == "epub"
+            self.chunk_size_spin.setEnabled(not is_epub)
+            # EPUB 모드일 때 파일 선택 필터 힌트 등 추가 가능
 
     def _save_config_to_service(self) -> None:
         # 서비스의 설정을 직접 수정하지 않도록 복사본 생성 (Deep Copy 권장)
@@ -632,6 +665,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["use_content_safety_retry"] = self.use_content_safety_check.isChecked()
         cfg["max_content_safety_split_attempts"] = int(self.max_split_spin.value())
         cfg["min_content_safety_chunk_size"] = int(self.min_chunk_spin.value())
+        cfg["translation_mode"] = self.mode_selector.get_current_mode()
         # self.app_service.config = cfg  # 직접 할당 제거 (save_app_config 내부에서 처리됨)
         try:
             self.app_service.save_app_config(cfg)

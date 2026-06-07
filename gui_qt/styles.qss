@@ -1,0 +1,127 @@
+/* gui_qt/styles.qss */
+
+/* 
+ * DESIGN.md 기반 전역 스타일 시트
+ * - Primary: #8E75FF (Gemini Indigo)
+ * - Secondary: #C3A1FF (Gemini Violet)
+ * - Background: #121214
+ * - Surface: #1E1E22
+ */
+
+QMainWindow {
+    background-color: #121214;
+}
+
+/* 탭 바 스타일링 */
+QTabBar::tab {
+    background: transparent;
+    color: #A1A1AA;
+    padding: 10px 20px;
+    border-bottom: 2px solid transparent;
+}
+
+QTabBar::tab:selected {
+    color: #FFFFFF;
+    border-bottom: 2px solid #8E75FF;
+    font-weight: bold;
+}
+
+QTabBar::tab:hover {
+    background: rgba(142, 117, 255, 0.1);
+    color: #FFFFFF;
+}
+
+/* 카드/섹션용 프레임 */
+QFrame#SectionCard {
+    background-color: #1E1E22;
+    border-radius: 12px;
+    border: 1px solid #2E2E32;
+}
+
+/* 버튼 스타일링 */
+QPushButton {
+    background-color: #1E1E22;
+    border: 1px solid #2E2E32;
+    border-radius: 8px;
+    padding: 8px 16px;
+    color: #FFFFFF;
+}
+
+QPushButton:hover {
+    background-color: #2E2E32;
+    border-color: #8E75FF;
+}
+
+QPushButton:pressed {
+    background-color: #8E75FF;
+}
+
+QPushButton#PrimaryButton {
+    background-color: #8E75FF;
+    border: none;
+    font-weight: bold;
+}
+
+QPushButton#PrimaryButton:hover {
+    background-color: #C3A1FF;
+}
+
+/* 입력창 스타일링 */
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #1E1E22;
+    border: 1px solid #2E2E32;
+    border-radius: 6px;
+    padding: 6px;
+    color: #FFFFFF;
+    selection-background-color: #8E75FF;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 1px solid #8E75FF;
+}
+
+/* 프로그레스 바 */
+QProgressBar {
+    background-color: #1E1E22;
+    border: 1px solid #2E2E32;
+    border-radius: 6px;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #8E75FF, stop:1 #C3A1FF);
+    border-radius: 6px;
+}
+
+/* 스크롤바 커스텀 */
+QScrollBar:vertical {
+    background: #121214;
+    width: 10px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #2E2E32;
+    min-height: 20px;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #8E75FF;
+}
+
+/* Phase 5: 애니메이션 및 시각적 피드백 */
+QFrame#SectionCard:hover {
+    border: 1px solid #8E75FF;
+    background-color: #252529;
+}
+
+/* 타임라인 아이템 애니메이션 느낌 부여 */
+QWidget#ActivityItem {
+    border-left: 2px solid transparent;
+}
+
+QWidget#ActivityItem:hover {
+    background-color: rgba(142, 117, 255, 0.05);
+    border-left: 2px solid #8E75FF;
+}

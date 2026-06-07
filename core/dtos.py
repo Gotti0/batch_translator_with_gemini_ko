@@ -147,3 +147,40 @@ if __name__ == '__main__':
         output_file_path="output/translated_text.txt"
     )
     print(f"번역 요청: {trans_request}")
+
+
+# --- 3-Way 파이프라인 DTO (Pydantic) ---
+from pydantic import BaseModel, Field
+from enum import Enum
+
+class TranslationUnit(BaseModel):
+    """무결성/EPUB 번역의 최소 단위"""
+    id: str = Field(description="고유 식별자 (Line Index 또는 UUID)")
+    text: str = Field(description="번역할 원문 텍스트")
+    context: Optional[str] = Field(None, description="주변 문맥 (이전/다음 문장)")
+
+class TranslatedUnit(BaseModel):
+    """LLM 응답 스키마"""
+    id: str
+    translated_text: str
+
+class NodeType(str, Enum):
+    TEXT = "text"
+    IMAGE = "image"
+    IGNORED = "ignored"  # 태그 구조 유지만 하는 노드 (<div...>, </div>, <br/> 등)
+
+class EpubNode(BaseModel):
+    """EPUB 내부 노드 구조"""
+    id: str             # 결정론적 ID (파일명_인덱스)
+    type: NodeType
+    tag: str            # p, div, span, img 등
+    html: Optional[str] = None  # IGNORED/IMAGE 타입일 때 원본 HTML (<div class="a">)
+    content: Optional[str] = None # TEXT 타입일 때 번역 대상 텍스트
+    attributes: Dict[str, str] = {} # 태그 속성 (class, style, href 등)
+    image_path: Optional[str] = None # 이미지 경로 (상대 경로 리졸브 후)
+
+class EpubChapter(BaseModel):
+    """EPUB 챕터 정보"""
+    file_name: str      # ZIP 내부 전체 경로 (예: OEBPS/Text/ch1.xhtml)
+    nodes: List[EpubNode]
+    head_html: str      # <head> 내부 콘텐츠 보존용

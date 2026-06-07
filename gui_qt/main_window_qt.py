@@ -37,6 +37,11 @@ try:
 except Exception:  # pragma: no cover - 초기 단계에서 없을 수 있음
     LogTabQt = None  # type: ignore
 
+try:
+    from gui_qt.tabs_qt.activity_tab_qt import ActivityTabQt
+except Exception:
+    ActivityTabQt = None
+
 logger = setup_logger(__name__)
 
 
@@ -73,6 +78,7 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         self.glossary_tab = None
         self.review_tab = None
         self.log_tab = None
+        self.activity_tab = None
 
         self.setWindowTitle("BTG - Batch Translator (PySide6)")
         self.resize(1100, 800)
@@ -98,20 +104,43 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         self._setup_system_tray()
 
     def _apply_theme(self, theme: str) -> None:
-        """테마 적용 (qdarktheme + 툴팁 스타일)"""
+        """테마 적용 (qdarktheme + DESIGN.md 커스텀 스타일)"""
         self._current_theme = theme
         
-        # qdarktheme 설정
+        # qdarktheme 설정 (DESIGN.md 기반 컬러 오버라이드)
         if theme == "dark":
-            qdarktheme.setup_theme(theme="dark", custom_colors={"primary": "#29B6F6"})
+            qdarktheme.setup_theme(
+                theme="dark", 
+                custom_colors={
+                    "primary": "#8E75FF",
+                    "background": "#121214",
+                    "surface": "#1E1E22",
+                    "border": "#2E2E32"
+                }
+            )
         else:
-            qdarktheme.setup_theme(theme="light", custom_colors={"primary": "#1976D2"})
+            qdarktheme.setup_theme(theme="light")
+        
+        # 커스텀 QSS 로드
+        self._load_stylesheet()
         
         # 전역 툴팁 스타일 적용
         app = QtWidgets.QApplication.instance()
         if app:
             TooltipQt.apply_global_style(app, theme=theme)
-            logger.debug(f"테마 적용 완료: {theme}")
+            logger.debug(f"테마 및 커스텀 스타일 적용 완료: {theme}")
+
+    def _load_stylesheet(self) -> None:
+        """gui_qt/styles.qss 파일을 읽어 애플리케이션에 적용"""
+        qss_path = Path(__file__).parent / "styles.qss"
+        if qss_path.exists():
+            try:
+                with open(qss_path, "r", encoding="utf-8") as f:
+                    qss = f.read()
+                    self.setStyleSheet(qss)
+                    logger.debug("커스텀 QSS 로드 완료")
+            except Exception as e:
+                logger.error(f"QSS 로드 중 오류: {e}")
 
     def _setup_statusbar(self) -> None:
         """상태바 생성 및 테마 토글 버튼 추가"""
@@ -208,6 +237,19 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         tab_widget.addTab(self.settings_tab, "설정 및 번역")
         tab_widget.addTab(self.glossary_tab, "용어집 관리")
         tab_widget.addTab(self.review_tab, "검토 및 수정")
+
+        # Activity Timeline 탭 (신규 Phase 3)
+        if ActivityTabQt and self.app_service:
+            try:
+                self.activity_tab = ActivityTabQt(self.app_service)
+                self.theme_changed.connect(self.activity_tab.update_theme)
+            except Exception as e:
+                logger.error(f"ActivityTabQt 생성 실패: {e}")
+                self.activity_tab = PlaceholderTab("실시간 활동")
+        else:
+            self.activity_tab = PlaceholderTab("실시간 활동")
+
+        tab_widget.addTab(self.activity_tab, "실시간 활동")
 
         # Log 탭
         if LogTabQt:

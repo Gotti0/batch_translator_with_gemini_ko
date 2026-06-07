@@ -126,7 +126,18 @@ class ReviewTabQt(QtWidgets.QWidget):
 
         self.stats_label = QtWidgets.QLabel("청크: 0개 | 성공: 0 | 실패: 0 | 의심: 0")
         TooltipQt(self.stats_label, "현재 로드된 파일의 번역 통계 정보입니다.")
+        
+        # 필터링 UI (신규 Phase 4)
+        filter_layout = QtWidgets.QHBoxLayout()
+        filter_layout.addWidget(QtWidgets.QLabel("필터:"))
+        self.filter_combo = QtWidgets.QComboBox()
+        self.filter_combo.addItems(["모두 보기", "✅ 성공만", "❌ 실패만", "⚠️ 의심(누락/환각)만"])
+        self.filter_combo.currentTextChanged.connect(self._apply_filter)
+        filter_layout.addWidget(self.filter_combo)
+        filter_layout.addStretch(1)
+        
         left_layout.addWidget(self.stats_label)
+        left_layout.addLayout(filter_layout)
 
         self.model = QtGui.QStandardItemModel(0, 6)
         self.model.setHorizontalHeaderLabels(["ID", "상태", "원문", "번역", "비율", "Z-Score"])
@@ -185,12 +196,19 @@ class ReviewTabQt(QtWidgets.QWidget):
         TooltipQt(self.source_view, "선택한 청크의 원문 내용입니다.")
         src_layout.addWidget(self.source_view)
 
-        trans_group = QtWidgets.QGroupBox("번역문")
+        trans_group = QtWidgets.QGroupBox("번역문 (편집 가능)")
         trans_layout = QtWidgets.QVBoxLayout(trans_group)
         self.trans_view = QtWidgets.QPlainTextEdit()
-        self.trans_view.setReadOnly(True)
-        TooltipQt(self.trans_view, "선택한 청크의 번역 내용입니다.")
+        # Phase 4: 직접 편집 가능하게 설정
+        self.trans_view.setReadOnly(False)
+        TooltipQt(self.trans_view, "선택한 청크의 번역 내용입니다. 여기서 직접 수정하고 '저장' 버튼을 누를 수 있습니다.")
         trans_layout.addWidget(self.trans_view)
+
+        # 사이드바 저장 버튼 추가 (Phase 4)
+        self.quick_save_btn = QtWidgets.QPushButton("현재 변경사항 저장")
+        self.quick_save_btn.setObjectName("PrimaryButton")
+        self.quick_save_btn.clicked.connect(self._on_quick_save_clicked)
+        trans_layout.addWidget(self.quick_save_btn)
 
         right_layout.addWidget(src_group, 1)
         right_layout.addWidget(trans_group, 1)
@@ -834,6 +852,39 @@ class ReviewTabQt(QtWidgets.QWidget):
         else:
             QtWidgets.QMessageBox.information(self, "무결성 검사", "문제가 발견되지 않았습니다.")
         self._set_status(f"무결성 검사 완료 (문제 {len(issues)}건)")
+
+    def _apply_filter(self, filter_text: str) -> None:
+        """선택된 필터에 따라 테이블 행 숨기기/보이기"""
+        if not self.proxy:
+            return
+            
+        if filter_text == "모두 보기":
+            self.proxy.setFilterFixedString("")
+        elif "성공" in filter_text:
+            self.proxy.setFilterFixedString("✅")
+        elif "실패" in filter_text:
+            self.proxy.setFilterFixedString("❌")
+        elif "의심" in filter_text:
+            self.proxy.setFilterRegularExpression("⚠️")
+
+    def _on_quick_save_clicked(self) -> None:
+        """오른쪽 편집창에서 수정한 내용을 즉시 저장"""
+        chunk_idx = self._selected_index_single()
+        if chunk_idx is None:
+            return
+            
+        new_text = self.trans_view.toPlainText().strip()
+        if not new_text:
+            QtWidgets.QMessageBox.warning(self, "경고", "번역문을 입력하세요.")
+            return
+            
+        try:
+            self._save_chunk_translation(chunk_idx, new_text)
+            self._set_status(f"청크 #{chunk_idx} 수동 수정 저장 완료")
+            # 테이블 데이터 갱신 (비율 등)
+            asyncio.create_task(self._load_metadata_from_path(self.current_input_file, silent=True))
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "오류", f"저장 실패: {e}")
 
     # ---------- config bridge ----------
     def get_config(self) -> Dict[str, Any]:

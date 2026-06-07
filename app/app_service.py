@@ -715,12 +715,53 @@ class AppService:
         self.successful_chunks_count = 0
         self.failed_chunks_count = 0
         
-        logger.info(f"비동기 번역 시작: {input_file_path} → {output_file_path}")
-        if status_callback:
-            status_callback("번역 시작됨...")
-        
         input_file_path_obj = Path(input_file_path)
         final_output_file_path_obj = Path(output_file_path)
+        
+        translation_mode = self.config.get("translation_mode", "standard")
+        logger.info(f"비동기 번역 시작 (모드: {translation_mode}): {input_file_path} → {output_file_path}")
+
+        # 🚀 EPUB 모드 특수 처리
+        if translation_mode == "epub" or input_file_path_obj.suffix.lower() == ".epub":
+            if status_callback:
+                status_callback("EPUB 번역 중...")
+            await self.translation_service.translate_epub(input_file_path, output_file_path)
+            if status_callback:
+                status_callback("EPUB 번역 완료!")
+            if progress_callback:
+                progress_callback(TranslationJobProgressDTO(
+                    total_chunks=1, processed_chunks=1, successful_chunks=1, failed_chunks=0,
+                    current_status_message="EPUB 번역 완료"
+                ))
+            return
+
+        # 🚀 무결성 모드 특수 처리 (전체 텍스트를 한 번에 넘기되 내부적으로 청킹)
+        if translation_mode == "integrity":
+            if status_callback:
+                status_callback("무결성 번역 시작 (줄 단위 검증)...")
+            try:
+                file_content = read_text_file(input_file_path_obj)
+                translated_text = await self.translation_service.translate_text_integrity(file_content)
+                write_text_file(final_output_file_path_obj, translated_text)
+                
+                if status_callback:
+                    status_callback("무결성 번역 완료!")
+                if progress_callback:
+                    progress_callback(TranslationJobProgressDTO(
+                        total_chunks=1, processed_chunks=1, successful_chunks=1, failed_chunks=0,
+                        current_status_message="무결성 번역 완료"
+                    ))
+                return
+            except Exception as e_int:
+                logger.error(f"무결성 번역 중 오류: {e_int}")
+                if status_callback:
+                    status_callback(f"무결성 번역 실패: {e_int}")
+                raise
+
+        # 🚀 표준 모드 (기존 청크 기반 로직)
+        if status_callback:
+            status_callback("표준 번역 시작됨...")
+        
         metadata_file_path = get_metadata_file_path(input_file_path_obj)
         loaded_metadata: Dict[str, Any] = {}
         resume_translation = False

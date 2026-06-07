@@ -5,17 +5,20 @@ from pathlib import Path
 try:
     from infrastructure.logger_config import setup_logger
     from core.exceptions import BtgChunkingException
+    from core.dtos import TranslationUnit, EpubNode
 except ImportError:
     from infrastructure.logging.logger_config import setup_logger # type: ignore
     from core.exceptions import BtgChunkingException # type: ignore
+    from core.dtos import TranslationUnit, EpubNode # type: ignore
 
 logger = setup_logger(__name__)
 
 DEFAULT_MAX_CHUNK_SIZE = 6000
+DEFAULT_MAX_ITEMS_PER_CHUNK = 50
 
 class ChunkService:
     """
-    텍스트 콘텐츠를 지정된 크기의 청크로 분할하는 서비스를 제공합니다.
+    텍스트 콘텐츠 또는 노드 리스트를 지정된 크기의 청크로 분할하는 서비스를 제공합니다.
     """
 
     def split_text_into_chunks(self, text_content: str, max_chunk_size: int = DEFAULT_MAX_CHUNK_SIZE) -> List[str]:
@@ -237,6 +240,62 @@ class ChunkService:
             chunk_sentences = sentences[i:i + max_sentences_per_chunk]
             chunks.append(' '.join(chunk_sentences))
         
+        return chunks
+
+    def split_nodes_into_chunks(
+        self, 
+        nodes: List[Union[TranslationUnit, EpubNode]], 
+        max_chunk_size: int = DEFAULT_MAX_CHUNK_SIZE,
+        max_items_per_chunk: int = DEFAULT_MAX_ITEMS_PER_CHUNK
+    ) -> List[List[Union[TranslationUnit, EpubNode]]]:
+        """
+        TranslationUnit 또는 EpubNode 리스트를 지정된 크기와 개수의 청크로 분할합니다.
+
+        Args:
+            nodes: 분할할 노드 리스트.
+            max_chunk_size: 각 청크의 최대 누적 문자 수.
+            max_items_per_chunk: 각 청크의 최대 노드 개수.
+
+        Returns:
+            분할된 노드 리스트의 리스트.
+        """
+        if max_chunk_size <= 0 or max_items_per_chunk <= 0:
+            raise ValueError("max_chunk_size와 max_items_per_chunk는 0보다 커야 합니다.")
+
+        chunks: List[List[Union[TranslationUnit, EpubNode]]] = []
+        current_chunk: List[Union[TranslationUnit, EpubNode]] = []
+        current_chunk_size = 0
+
+        for node in nodes:
+            # 노드 텍스트 추출 (EpubNode는 content, TranslationUnit은 text)
+            node_text = ""
+            if isinstance(node, EpubNode):
+                node_text = node.content or ""
+            elif isinstance(node, TranslationUnit):
+                node_text = node.text
+            
+            node_len = len(node_text)
+
+            # 새 노드를 추가했을 때 제한을 초과하는지 확인
+            if (current_chunk_size + node_len <= max_chunk_size and 
+                len(current_chunk) < max_items_per_chunk):
+                current_chunk.append(node)
+                current_chunk_size += node_len
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                
+                # 단일 노드가 이미 제한을 초과하는 경우 (강제로 하나의 청크로 만듦)
+                if node_len > max_chunk_size:
+                    logger.warning(f"단일 노드(ID: {node.id})의 텍스트가 max_chunk_size({max_chunk_size})를 초과합니다. 강제 포함합니다.")
+                
+                current_chunk = [node]
+                current_chunk_size = node_len
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        logger.info(f"노드 리스트가 {len(chunks)}개의 청크로 분할되었습니다.")
         return chunks
 
 

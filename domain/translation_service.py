@@ -23,10 +23,16 @@ try:
     from core.exceptions import BtgTranslationException, BtgApiClientException
     from utils.chunk_service import ChunkService
     from utils.lang_utils import normalize_language_code # Added
-    # types 모듈은 gemini_client에서 사용되므로, 여기서는 직접적인 의존성이 없을 수 있습니다. # 로어북 -> 용어집
-    # 만약 이 파일 내에서 types.Part 등을 직접 사용한다면, 아래와 같이 임포트가 필요합니다. # 로어북 -> 용어집
     from google.genai import types as genai_types
-    from core.dtos import GlossaryEntryDTO
+    from core.dtos import (
+        GlossaryEntryDTO,
+        TranslationUnit,
+        TranslatedUnit,
+        EpubNode,
+        EpubChapter,
+        NodeType
+    )
+    from utils.epub_processor import EpubProcessor
 except ImportError:
     from infrastructure.gemini_client import (  # type: ignore
         GeminiClient,
@@ -626,4 +632,224 @@ class TranslationService:
         logger.info(f"   📊 병렬 처리 완료: {len(results)}/{len(sub_chunks)}개 서브 청크 처리됨")
         
         return "\n\n".join(translated_parts)
+
+    async def translate_text_integrity(self, text: str) -> str:
+        """
+        무결성 번역: 줄 단위로 분리하여 JSON 형태로 번역하고 누락을 검사합니다.
+        
+        Args:
+            text: 번역할 전체 텍스트
+            
+        Returns:
+            번역된 텍스트
+        """
+        if not text.strip():
+            logger.debug("translate_text_integrity: 입력 텍스트가 비어 있음.")
+            return ""
+
+        # 1. 전처리 (Parsing)
+        lines = text.splitlines()
+        units = []
+        for i, line in enumerate(lines):
+            # 빈 줄도 컨텍스트 보존을 위해 포함 (단, 번역 대상에서는 제외하거나 마킹 가능)
+            units.append(TranslationUnit(id=str(i), text=line))
+
+        # 2. 청크 분할
+        max_chunk_size = self.config.get("integrity_chunk_size", 3000)
+        max_items = self.config.get("integrity_max_items", 40) # 무결성 모드는 더 보수적으로 잡음
+        chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
+
+        translated_map: Dict[str, str] = {}
+
+        for i, chunk in enumerate(chunks):
+            # 📍 중단 체크
+            if self.stop_check_callback and self.stop_check_callback():
+                raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 시작 전)")
+
+            logger.info(f"📦 무결성 번역 청크 {i+1}/{len(chunks)} 처리 중 (항목: {len(chunk)}개)")
+            
+            # 3. API 요청 및 검증 (재시도 포함)
+            chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
+            translated_map.update(chunk_results)
+
+        # 4. 조립
+        result_lines = []
+        for i in range(len(lines)):
+            # 번역이 없으면 원문 사용
+            result_lines.append(translated_map.get(str(i), lines[i]))
+
+        return "\n".join(result_lines)
+
+    async def _translate_integrity_chunk_with_retry(
+        self, 
+        chunk: List[TranslationUnit], 
+        depth: int = 0
+    ) -> Dict[str, str]:
+        """
+        무결성 청크 번역 (Binary Split 및 Targeted Retry 포함)
+        """
+        if not chunk:
+            return {}
+
+        # 📍 중단 체크
+        if self.stop_check_callback and self.stop_check_callback():
+            raise asyncio.CancelledError("무결성 청크 번역 중단 요청됨")
+
+        try:
+            # 1. 프롬프트 구성
+            prompt = "Translate each item in the following JSON array. Keep the 'id' exactly as given.\n\n"
+            # 번역 언어 힌트 추가
+            target_lang = self.config.get("target_translation_language", "Korean")
+            prompt += f"Target Language: {target_lang}\n\n"
+            
+            # 노드들을 JSON 리스트 문자열로 변환
+            import json
+            chunk_json = [unit.model_dump() for unit in chunk]
+            prompt += json.dumps(chunk_json, ensure_ascii=False)
+
+            # 2. API 호출 (Structured Output 모드)
+            # GeminiClient가 List[TranslatedUnit]을 직접 처리할 수 있는지에 따라 schema 정의 방식이 달라짐
+            # 현재 구현에서는 Pydantic 클래스를 response_schema로 넘기면 
+            # 단일 객체는 잘 동작하지만 리스트는 확인 필요. 
+            # 일단 response_mime_type="application/json"만 사용하고 직접 파싱 처리.
+            
+            gen_config = {
+                "temperature": self.config.get("temperature", 0.3), # 무결성 모드는 낮게
+                "top_p": self.config.get("top_p", 0.9),
+                "response_mime_type": "application/json"
+            }
+            
+            # system_instruction_text 사용
+            sys_instr = "You are a professional translator. Respond ONLY with a valid JSON array of objects, each containing 'id' and 'translated_text' keys."
+
+            raw_response = await self.gemini_client.generate_text_async(
+                prompt=prompt,
+                model_name=self.config.get("model_name", "gemini-2.0-flash"),
+                generation_config_dict=gen_config,
+                system_instruction_text=sys_instr
+            )
+
+            # 3. 응답 파싱 및 검증
+            if not raw_response or not isinstance(raw_response, list):
+                # JSON 파싱 실패 또는 빈 응답 -> Binary Split
+                logger.warning(f"무결성 번역 JSON 파싱 실패 (depth {depth}). Binary Split 시도.")
+                return await self._binary_split_integrity_retry(chunk, depth)
+
+            # 4. 누락 검사 및 Targeted Retry
+            translated_units = []
+            for item in raw_response:
+                try:
+                    translated_units.append(TranslatedUnit(**item))
+                except Exception:
+                    continue
+            
+            translated_map = {u.id: u.translated_text for u in translated_units}
+            requested_ids = {u.id for u in chunk}
+            received_ids = set(translated_map.keys())
+            missing_ids = requested_ids - received_ids
+
+            if missing_ids and depth < self.config.get("max_integrity_retry_depth", 2):
+                logger.warning(f"무결성 번역 누락 감지: {len(missing_ids)}개. Targeted Retry 시도.")
+                missing_units = [u for u in chunk if u.id in missing_ids]
+                additional_results = await self._translate_integrity_chunk_with_retry(missing_units, depth + 1)
+                translated_map.update(additional_results)
+
+            return translated_map
+
+        except Exception as e:
+            logger.error(f"무결성 청크 번역 중 오류 발생: {e}")
+            if depth < self.config.get("max_integrity_retry_depth", 2):
+                return await self._binary_split_integrity_retry(chunk, depth)
+            else:
+                # 최후의 수단: 실패 시 원문 유지
+                return {u.id: u.text for u in chunk}
+
+    async def _binary_split_integrity_retry(self, chunk: List[TranslationUnit], depth: int) -> Dict[str, str]:
+        """청크를 반으로 나누어 재귀적으로 번역 시도"""
+        if len(chunk) <= 1:
+            logger.error("더 이상 나눌 수 없는 단일 항목 무결성 번역 실패.")
+            return {chunk[0].id: chunk[0].text} if chunk else {}
+
+        mid = len(chunk) // 2
+        left_chunk = chunk[:mid]
+        right_chunk = chunk[mid:]
+        
+        logger.info(f"🔄 Binary Split: {len(chunk)} -> {len(left_chunk)}, {len(right_chunk)}")
+        
+        results = {}
+        results.update(await self._translate_integrity_chunk_with_retry(left_chunk, depth + 1))
+        results.update(await self._translate_integrity_chunk_with_retry(right_chunk, depth + 1))
+        return results
+
+    async def translate_epub(self, epub_path: Union[str, Path], output_path: Union[str, Path]) -> None:
+        """
+        EPUB 번역 파이프라인: 구조를 유지하며 내용을 번역합니다.
+        """
+        import zipfile
+        
+        processor = EpubProcessor()
+        epub_path = Path(epub_path)
+        output_path = Path(output_path)
+
+        logger.info(f"🚀 EPUB 번역 시작: {epub_path.name}")
+
+        try:
+            with zipfile.ZipFile(epub_path, 'r') as zin:
+                with zipfile.ZipFile(output_path, 'w') as zout:
+                    # 1. mimetype 보존 (EPUB 표준: 압축 없이 첫 번째 파일)
+                    if 'mimetype' in zin.namelist():
+                        zout.writestr('mimetype', zin.read('mimetype'), compress_type=zipfile.ZIP_STORED)
+
+                    # 2. 모든 파일 순회
+                    for item in zin.infolist():
+                        if item.filename == 'mimetype':
+                            continue
+                        
+                        # 중단 체크
+                        if self.stop_check_callback and self.stop_check_callback():
+                            raise asyncio.CancelledError("EPUB 번역 중단 요청됨")
+
+                        content = zin.read(item.filename)
+                        
+                        # HTML/XHTML 파일만 번역
+                        if item.filename.lower().endswith(('.xhtml', '.html', '.htm')):
+                            logger.info(f"  📄 챕터 처리 중: {item.filename}")
+                            try:
+                                chapter = processor.process_chapter(content, item.filename)
+                                translatable_nodes = [n for n in chapter.nodes if n.type == NodeType.TEXT]
+                                
+                                if translatable_nodes:
+                                    # 무결성 모드와 동일한 로직으로 노드 리스트 번역
+                                    # 번역 단위로 변환 (id와 text만 필요)
+                                    units = [TranslationUnit(id=n.id, text=n.content or "") for n in translatable_nodes]
+                                    
+                                    # 청크 분할 및 번역 요청
+                                    max_chunk_size = self.config.get("integrity_chunk_size", 3000)
+                                    max_items = self.config.get("integrity_max_items", 40)
+                                    chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
+                                    
+                                    translated_map: Dict[str, str] = {}
+                                    for i, chunk in enumerate(chunks):
+                                        logger.info(f"    📦 EPUB 노드 청크 {i+1}/{len(chunks)} 번역 중")
+                                        chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
+                                        translated_map.update(chunk_results)
+                                    
+                                    # 번역된 내용으로 HTML 재조립
+                                    translated_html = processor.reconstruct_chapter(chapter, translated_map)
+                                    zout.writestr(item.filename, translated_html.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
+                                else:
+                                    zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
+                                    
+                            except Exception as e_chapter:
+                                logger.error(f"챕터 {item.filename} 처리 중 오류 (원본 보존): {e_chapter}")
+                                zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
+                        else:
+                            # 이미지, CSS, 기타 리소스는 그대로 복사
+                            zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
+
+            logger.info(f"✅ EPUB 번역 완료: {output_path.name}")
+
+        except Exception as e:
+            logger.error(f"EPUB 번역 작업 중 치명적 오류: {e}")
+            raise BtgTranslationException(f"EPUB 번역 실패: {e}")
 
