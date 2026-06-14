@@ -741,7 +741,7 @@ class AppService:
                 status_callback("무결성 번역 시작 (줄 단위 검증)...")
             try:
                 file_content = read_text_file(input_file_path_obj)
-                translated_text = await self.translation_service.translate_text_integrity(file_content)
+                translated_text = await self.translation_service.translate_text_integrity(file_content, output_path_for_progress=final_output_file_path_obj)
                 write_text_file(final_output_file_path_obj, translated_text)
                 
                 if status_callback:
@@ -1368,6 +1368,61 @@ class AppService:
             self.current_translation_task.cancel()
         else:
             logger.warning("현재 실행 중인 번역 작업이 없습니다")
+
+    async def translate_single_chunk_with_force_split(
+        self,
+        input_file: str,
+        chunked_output_file: str,
+        chunk_idx: int,
+        split_level: int = 1,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> tuple[bool, str]:
+        """
+        특정 청크를 강제 분할(Depth 1 시작)로 재번역합니다. (비동기)
+        """
+        if not self.translation_service:
+            return False, "번역 서비스가 초기화되지 않았습니다."
+
+        try:
+            # 1. 원문 로드
+            content = read_text_file(input_file)
+            chunk_size = self.config.get("chunk_size", 6000)
+            chunks_list = self.chunk_service.create_chunks_from_file_content(content, chunk_size)
+            
+            if chunk_idx >= len(chunks_list):
+                return False, f"잘못된 청크 인덱스: {chunk_idx}"
+            
+            source_text = chunks_list[chunk_idx]
+            if progress_callback:
+                progress_callback(f"청크 #{chunk_idx} 강제 분할 재번역 시작 (Level {split_level})...")
+
+            # 2. 강제 분할 번역 실행
+            max_split = self.config.get("max_content_safety_split_attempts", 3)
+            min_size = self.config.get("min_content_safety_chunk_size", 100)
+            
+            translated_text = await self.translation_service.translate_text_force_split_async(
+                source_text, max_split, min_size, split_level=split_level
+            )
+
+            # 3. 결과 저장 및 메타데이터 갱신
+            # (기존 logic 재사용을 위해 동기 래퍼 호출 가능하나, 여기서는 직접 처리 권장)
+            from infrastructure import file_handler
+            translated_chunks = file_handler.load_chunks_from_file(Path(chunked_output_file))
+            translated_chunks[chunk_idx] = translated_text
+            file_handler.save_merged_chunks_to_file(Path(chunked_output_file), translated_chunks)
+            
+            file_handler.update_metadata_for_chunk_completion(
+                input_file,
+                chunk_idx,
+                source_length=len(source_text),
+                translated_length=len(translated_text)
+            )
+            
+            return True, translated_text
+
+        except Exception as e:
+            logger.error(f"청크 #{chunk_idx} 강제 분할 재번역 중 오류: {e}")
+            return False, str(e)
 
     def translate_single_chunk(
         self,

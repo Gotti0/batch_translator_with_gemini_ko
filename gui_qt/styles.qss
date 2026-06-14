@@ -4,86 +4,94 @@
  * DESIGN.md 기반 전역 스타일 시트
  * - Primary: #8E75FF (Gemini Indigo)
  * - Secondary: #C3A1FF (Gemini Violet)
- * - Background: #121214
- * - Surface: #1E1E22
  */
 
-QMainWindow {
-    background-color: #121214;
+/* 전역 폰트 설정 (필요시) */
+* {
+    font-family: "Malgun Gothic", "Segoe UI", sans-serif;
 }
 
 /* 탭 바 스타일링 */
 QTabBar::tab {
     background: transparent;
-    color: #A1A1AA;
     padding: 10px 20px;
     border-bottom: 2px solid transparent;
 }
 
 QTabBar::tab:selected {
-    color: #FFFFFF;
+    color: #8E75FF;
     border-bottom: 2px solid #8E75FF;
     font-weight: bold;
 }
 
 QTabBar::tab:hover {
     background: rgba(142, 117, 255, 0.1);
-    color: #FFFFFF;
 }
 
-/* 카드/섹션용 프레임 */
+/* 섹션 그룹박스 (여백 및 구분 강화) */
+QGroupBox {
+    margin-top: 1.1em;
+    font-weight: bold;
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+    padding-top: 12px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    left: 10px;
+}
+
+/* 카드/섹션용 프레임 (ModeCard 등) */
 QFrame#SectionCard {
-    background-color: #1E1E22;
+    background-color: palette(alternate-base);
     border-radius: 12px;
-    border: 1px solid #2E2E32;
+    border: 1px solid palette(mid);
+}
+
+QFrame#SectionCard:hover {
+    border: 1px solid #8E75FF;
+    background-color: palette(base);
+}
+
+/* ModeCard 선택 상태 (Property Selector) */
+QFrame#SectionCard[selected="true"] {
+    background-color: rgba(142, 117, 255, 0.15);
+    border: 2px solid #8E75FF;
+}
+
+/* 모드 카드 내부 텍스트 */
+QLabel#ModeCardTitle {
+    font-weight: bold;
+}
+
+QLabel#ModeCardDesc {
+    /* 화이트 테마에서 가독성을 위해 너무 연하지 않은 색상 사용 */
+    color: palette(text);
+    opacity: 0.8;
 }
 
 /* 버튼 스타일링 */
-QPushButton {
-    background-color: #1E1E22;
-    border: 1px solid #2E2E32;
-    border-radius: 8px;
-    padding: 8px 16px;
-    color: #FFFFFF;
-}
-
-QPushButton:hover {
-    background-color: #2E2E32;
-    border-color: #8E75FF;
-}
-
-QPushButton:pressed {
-    background-color: #8E75FF;
-}
-
 QPushButton#PrimaryButton {
     background-color: #8E75FF;
     border: none;
     font-weight: bold;
+    color: #FFFFFF;
 }
 
 QPushButton#PrimaryButton:hover {
-    background-color: #C3A1FF;
+    background-color: #A38FFF;
 }
 
-/* 입력창 스타일링 */
-QLineEdit, QTextEdit, QPlainTextEdit {
-    background-color: #1E1E22;
-    border: 1px solid #2E2E32;
-    border-radius: 6px;
-    padding: 6px;
-    color: #FFFFFF;
-    selection-background-color: #8E75FF;
-}
-
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
-    border: 1px solid #8E75FF;
+QPushButton#PrimaryButton:pressed {
+    background-color: #7A5CFF;
 }
 
 /* 프로그레스 바 */
 QProgressBar {
-    background-color: #1E1E22;
-    border: 1px solid #2E2E32;
+    border: 1px solid palette(mid);
     border-radius: 6px;
     text-align: center;
 }
@@ -93,35 +101,41 @@ QProgressBar::chunk {
     border-radius: 6px;
 }
 
-/* 스크롤바 커스텀 */
+/* 스크롤바 커스텀 (테마 적응형) */
 QScrollBar:vertical {
-    background: #121214;
-    width: 10px;
+    background: transparent;
+    width: 8px;
     margin: 0px;
 }
 
 QScrollBar::handle:vertical {
-    background: #2E2E32;
+    background: palette(mid);
     min-height: 20px;
-    border-radius: 5px;
+    border-radius: 4px;
 }
 
 QScrollBar::handle:vertical:hover {
     background: #8E75FF;
 }
 
-/* Phase 5: 애니메이션 및 시각적 피드백 */
-QFrame#SectionCard:hover {
-    border: 1px solid #8E75FF;
-    background-color: #252529;
-}
-
 /* 타임라인 아이템 애니메이션 느낌 부여 */
 QWidget#ActivityItem {
-    border-left: 2px solid transparent;
+    border-left: 3px solid transparent;
 }
 
 QWidget#ActivityItem:hover {
-    background-color: rgba(142, 117, 255, 0.05);
-    border-left: 2px solid #8E75FF;
+    background-color: rgba(142, 117, 255, 0.08);
+    border-left: 3px solid #8E75FF;
+}
+
+QLabel#ActivityTime {
+    color: palette(placeholder-text);
+}
+
+QLabel#ActivityMessage {
+    color: palette(text);
+}
+
+QLabel#ActivityHeader {
+    color: palette(text);
 }

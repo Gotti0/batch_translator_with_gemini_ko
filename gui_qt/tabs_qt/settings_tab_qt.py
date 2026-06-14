@@ -17,7 +17,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from qasync import asyncSlot
 
 from core.dtos import TranslationJobProgressDTO
+from infrastructure.logger_config import setup_logger
 from gui_qt.components_qt.tooltip_qt import TooltipQt
+
+logger = setup_logger(__name__)
 from gui_qt.components_qt.mode_card import ModeSelectorGroup
 from gui_qt.dialogs_qt.prefill_history_editor_qt import PrefillHistoryEditorDialogQt
 
@@ -234,7 +237,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         # --- 번역 모드 섹션 (신규 Phase 2) ---
         mode_group = QtWidgets.QGroupBox("번역 파이프라인 모드")
         mode_vbox = QtWidgets.QVBoxLayout(mode_group)
-        self.mode_selector = ModeSelectorGroup()
+        self.mode_selector = ModeSelectorGroup(self)
         mode_vbox.addWidget(self.mode_selector)
         
         # --- 생성 파라미터 ---
@@ -412,6 +415,7 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         # 전체 배치
         layout.addWidget(api_group)
+        layout.addWidget(mode_group)
         layout.addWidget(gen_group)
         layout.addWidget(file_group)
         layout.addWidget(lang_group)

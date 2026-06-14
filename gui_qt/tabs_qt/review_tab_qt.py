@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from qasync import asyncSlot
+from tqdm import tqdm
 
 from gui_qt.components_qt.tooltip_qt import TooltipQt
 from infrastructure import file_handler
@@ -22,6 +23,7 @@ from infrastructure.logger_config import setup_logger
 from utils.chunk_service import ChunkService
 from utils.quality_check_service import QualityCheckService
 from utils.post_processing_service import PostProcessingService
+from domain.review_providers.factory import get_review_provider
 
 # 로깅 설정 (커스텀 로거 사용)
 logger = setup_logger("review_tab", log_level=logging.DEBUG, log_to_console=True, log_to_file=True)
@@ -50,6 +52,42 @@ class NumericSortProxyModel(QtCore.QSortFilterProxyModel):
         return super().lessThan(left, right)
 
 
+class RetranslateOptionDialog(QtWidgets.QDialog):
+    def __init__(self, target_count: int, is_mass: bool = True, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("재번역 설정")
+        self.resize(350, 200)
+        
+        layout = QtWidgets.QVBoxLayout(self)
+        
+        if is_mass:
+            msg = f"총 {target_count}개의 문제 청크가 발견되었습니다.\n"
+        else:
+            msg = f"선택한 청크(#{target_count})를 재번역합니다.\n"
+        msg += "재번역 시, 청크를 얼마나 잘게 쪼갤까요?"
+        layout.addWidget(QtWidgets.QLabel(msg))
+        
+        self.radio_lv1 = QtWidgets.QRadioButton("1레벨 (절반으로 분할)")
+        self.radio_lv2 = QtWidgets.QRadioButton("2레벨 (1/4로 분할)")
+        self.radio_lv3 = QtWidgets.QRadioButton("3레벨 (1천자 고정으로 분할)")
+        self.radio_lv1.setChecked(True)
+        
+        layout.addWidget(self.radio_lv1)
+        layout.addWidget(self.radio_lv2)
+        layout.addWidget(self.radio_lv3)
+        
+        layout.addStretch(1)
+        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def get_selected_level(self) -> int:
+        if self.radio_lv2.isChecked(): return 2
+        if self.radio_lv3.isChecked(): return 3
+        return 1
+
+
 class ReviewTabQt(QtWidgets.QWidget):
     status_signal = QtCore.Signal(str)
 
@@ -69,6 +107,8 @@ class ReviewTabQt(QtWidgets.QWidget):
         self.suspicious_chunks: List[Dict[str, Any]] = []
         self._source_cache: Dict[str, Dict[int, str]] = {}
         self._source_cache_info: Dict[str, Tuple[float, int]] = {}
+        self._tqdm_stream = None  # LogTab에서 주입받을 TQDM 스트림
+        self.provider = None # 다형성을 위한 Review Provider
 
         # ui refs
         self.file_path_edit: Optional[QtWidgets.QLineEdit] = None
@@ -83,6 +123,10 @@ class ReviewTabQt(QtWidgets.QWidget):
         self._build_ui()
         self._wire_signals()
         self.status_signal.connect(self._set_status)
+
+    def set_tqdm_stream(self, tqdm_stream) -> None:
+        """LogTab에서 TQDM 스트림 주입"""
+        self._tqdm_stream = tqdm_stream
 
     # ---------- UI ----------
     def _build_ui(self) -> None:
@@ -159,8 +203,13 @@ class ReviewTabQt(QtWidgets.QWidget):
         left_layout.addWidget(self.table, 1)
 
         btns = QtWidgets.QVBoxLayout()
-        self.retranslate_btn = QtWidgets.QPushButton("재번역")
-        TooltipQt(self.retranslate_btn, "선택한 청크를 다시 번역합니다.")
+        self.mass_retranslate_btn = QtWidgets.QPushButton("의심 청크 일괄 재번역")
+        self.mass_retranslate_btn.setObjectName("PrimaryButton")
+        TooltipQt(self.mass_retranslate_btn, "품질 이슈(누락/환각)가 있거나 실패한 모든 청크를 정밀 모드(강제 분할)로 일괄 재번역합니다.")
+        
+        self.retranslate_btn = QtWidgets.QPushButton("선택 청크 재번역")
+        TooltipQt(self.retranslate_btn, "선택한 청크만 다시 번역합니다.")
+        
         self.edit_btn = QtWidgets.QPushButton("수동 수정")
         TooltipQt(self.edit_btn, "선택한 청크의 번역을 수동으로 수정합니다.")
         self.reset_btn = QtWidgets.QPushButton("초기화")
@@ -171,7 +220,8 @@ class ReviewTabQt(QtWidgets.QWidget):
         TooltipQt(self.copy_src_btn, "선택한 청크의 원문을 클립보드에 복사합니다.")
         self.copy_trans_btn = QtWidgets.QPushButton("번역 복사")
         TooltipQt(self.copy_trans_btn, "선택한 청크의 번역을 클립보드에 복사합니다.")
-        for b in (self.retranslate_btn, self.edit_btn, self.reset_btn, self.confirm_btn, self.copy_src_btn, self.copy_trans_btn):
+        
+        for b in (self.mass_retranslate_btn, self.retranslate_btn, self.edit_btn, self.reset_btn, self.confirm_btn, self.copy_src_btn, self.copy_trans_btn):
             b.setMinimumHeight(32)
             btns.addWidget(b)
         btns.addStretch(1)
@@ -246,6 +296,7 @@ class ReviewTabQt(QtWidgets.QWidget):
         self.sync_btn.clicked.connect(self._sync_from_settings)
         self.load_btn.clicked.connect(self._on_load_clicked)
         self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        self.mass_retranslate_btn.clicked.connect(self._on_mass_retranslate_clicked)
         self.retranslate_btn.clicked.connect(self._on_retranslate_clicked)
         self.edit_btn.clicked.connect(self._on_edit_clicked)
         self.reset_btn.clicked.connect(self._on_reset_clicked)
@@ -409,28 +460,21 @@ class ReviewTabQt(QtWidgets.QWidget):
         p = Path(input_file_path)
         return p.parent / f"{p.stem}_translated{p.suffix}"
 
-    def _load_metadata_sync(self, file_path: str) -> Tuple[Dict[str, Any], Dict[int, str], Dict[int, str], List[Dict[str, Any]]]:
+    def _load_metadata_sync(self, file_path: str):
         """
-        메타데이터 및 청크 동기 로드
+        메타데이터 및 청크 동기 로드 (Provider 다형성 적용)
         """
-        metadata = file_handler.load_metadata(file_path)
+        provider = get_review_provider(file_path, self.app_service)
+        metadata = provider.load_metadata(file_path)
         if not metadata:
             raise ValueError("메타데이터가 없습니다. 먼저 번역을 실행하세요.")
         
-        source_chunks = self._load_source_chunks(file_path)
-        
-        # 청크 백업 파일 로드
-        translated_path = self._get_translated_chunked_file_path(file_path)
-        translated_chunks: Dict[int, str] = {}
-        if translated_path.exists():
-            try:
-                translated_chunks = file_handler.load_chunks_from_file(translated_path)
-            except Exception as e:
-                logger.error(f"청크 파일 로드 실패: {e}", exc_info=True)
+        source_chunks = provider.load_source_chunks(file_path)
+        translated_chunks = provider.load_translated_chunks(file_path)
         
         suspicious = self.quality_service.analyze_translation_quality(metadata)
         
-        return metadata, source_chunks, translated_chunks, suspicious
+        return metadata, source_chunks, translated_chunks, suspicious, provider
 
     async def _load_metadata_from_path(self, file_path: str, silent: bool = False) -> None:
         if not file_path:
@@ -444,9 +488,10 @@ class ReviewTabQt(QtWidgets.QWidget):
         self._set_busy(True)
         self._set_status("데이터 로드 중...")
         try:
-            metadata, source, translated, suspicious = await self._loop.run_in_executor(
+            metadata, source, translated, suspicious, provider = await self._loop.run_in_executor(
                 None, lambda: self._load_metadata_sync(file_path)
             )
+            self.provider = provider
             self.current_input_file = file_path
             self.current_metadata = metadata
             self.source_chunks = source
@@ -615,9 +660,82 @@ class ReviewTabQt(QtWidgets.QWidget):
 
     # ---------- actions ----------
     @asyncSlot()
+    async def _on_mass_retranslate_clicked(self) -> None:
+        if not self.current_input_file or not self.current_metadata:
+            return
+            
+        # 1. 대상 식별 (실패 또는 의심 청크)
+        failed_indices = [int(k) for k in self.current_metadata.get("failed_chunks", {}).keys()]
+        suspicious_indices = [s.get("chunk_index") for s in self.suspicious_chunks if s.get("chunk_index") is not None]
+        target_indices = sorted(list(set(failed_indices + suspicious_indices)))
+        
+        if not target_indices:
+            QtWidgets.QMessageBox.information(self, "정보", "재번역이 필요한 의심/실패 청크가 없습니다.")
+            return
+            
+        # 2. 사용자 확인 (커스텀 다이얼로그)
+        dlg = RetranslateOptionDialog(len(target_indices), is_mass=True, parent=self)
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+            
+        split_level = dlg.get_selected_level()
+            
+        self._set_busy(True)
+        self._set_status(f"일괄 재번역 시작... (0/{len(target_indices)})")
+        
+        # 3. 병렬 처리 설정 (Semaphore)
+        # config.json의 max_workers가 있다면 사용, 없으면 안전하게 3개
+        max_parallel = self.app_service.config.get("max_workers", 3) if self.app_service else 3
+        semaphore = asyncio.Semaphore(max_parallel)
+        
+        async def retranslate_task(idx: int) -> bool:
+            async with semaphore:
+                try:
+                    chunk_file_path = self._get_translated_chunked_file_path(self.current_input_file)
+                    success, _ = await self.app_service.translate_single_chunk_with_force_split(
+                        self.current_input_file,
+                        str(chunk_file_path),
+                        idx,
+                        split_level=split_level
+                    )
+                    return success
+                except Exception as e:
+                    logger.error(f"청크 #{idx} 일괄 재번역 중 오류: {e}")
+                    return False
+
+        # 4. 작업 실행 및 진행 상황 업데이트
+        tasks = [retranslate_task(idx) for idx in target_indices]
+        completed = 0
+        
+        # tqdm 인스턴스 생성 (LogTab의 스트림 사용)
+        pbar = None
+        if self._tqdm_stream:
+            pbar = tqdm(total=len(target_indices), file=self._tqdm_stream, desc="일괄 재번역")
+        
+        for coro in asyncio.as_completed(tasks):
+            success = await coro
+            completed += 1
+            if pbar:
+                pbar.update(1)
+            self._set_status(f"일괄 재번역 진행 중... ({completed}/{len(target_indices)})")
+            
+        if pbar:
+            pbar.close()
+            
+        # 5. 최종 결과 알림 및 UI 갱신
+        logger.info(f"🎯 일괄 재번역 전체 처리 완료 ({len(target_indices)}개 처리됨)")
+        self._set_status(f"일괄 재번역 완료 ({len(target_indices)}개 처리됨)")
+        QtWidgets.QMessageBox.information(self, "완료", f"{len(target_indices)}개의 청크에 대한 정밀 재번역이 완료되었습니다.")
+        await self._load_metadata_from_path(self.current_input_file, silent=True)
+        self._set_busy(False)
+
+    @asyncSlot()
     async def _on_retranslate_clicked(self) -> None:
-        chunk_idx = self._selected_index_single()
-        if chunk_idx is None or not self.current_input_file:
+        selected_indices = self._selected_indices()
+        if not selected_indices:
+            QtWidgets.QMessageBox.warning(self, "경고", "재번역할 청크를 하나 이상 선택하세요.")
+            return
+        if not self.current_input_file:
             return
         if not self.app_service or not self.app_service.translation_service:
             QtWidgets.QMessageBox.critical(self, "오류", "번역 서비스가 초기화되지 않았습니다.")
@@ -625,40 +743,83 @@ class ReviewTabQt(QtWidgets.QWidget):
         if self.app_service.current_translation_task and not self.app_service.current_translation_task.done():
             QtWidgets.QMessageBox.warning(self, "경고", "현재 번역 작업이 진행 중입니다. 완료 후 시도하세요.")
             return
-        if QtWidgets.QMessageBox.question(
-            self,
-            "재번역 확인",
-            f"청크 #{chunk_idx}를 재번역하시겠습니까?\n현재 번역 설정이 적용됩니다.",
-        ) != QtWidgets.QMessageBox.Yes:
+            
+        # 다중 선택 여부에 따라 메시지가 다르게 나오도록 is_mass 활용
+        is_multiple = len(selected_indices) > 1
+        dlg = RetranslateOptionDialog(
+            target_count=len(selected_indices) if is_multiple else selected_indices[0], 
+            is_mass=is_multiple, 
+            parent=self
+        )
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
             return
+            
+        split_level = dlg.get_selected_level()
 
         self._set_busy(True)
-        self._set_status(f"청크 #{chunk_idx} 재번역 중...")
+        self._set_status(f"선택 청크 재번역 시작... (0/{len(selected_indices)})")
 
-        def task() -> Tuple[bool, str]:
-            def progress_cb(msg: str) -> None:
-                self.status_signal.emit(msg)
-            chunk_file_path = self._get_translated_chunked_file_path(self.current_input_file)
-            return self.app_service.translate_single_chunk(
-                self.current_input_file,
-                str(chunk_file_path),
-                chunk_idx,
-                progress_callback=progress_cb,
-            )
+        # 병렬 처리 설정
+        max_parallel = self.app_service.config.get("max_workers", 3) if self.app_service else 3
+        semaphore = asyncio.Semaphore(max_parallel)
+        
+        chunk_file_path = self._get_translated_chunked_file_path(self.current_input_file)
+        
+        async def retranslate_task(idx: int) -> bool:
+            async with semaphore:
+                try:
+                    def progress_cb(msg: str) -> None:
+                        self.status_signal.emit(msg)
+                    
+                    src_text = self.source_chunks.get(idx, "")
+                    if hasattr(self, 'provider') and self.provider:
+                        new_trans = await self.provider.retranslate_chunk(str(idx), src_text)
+                        if new_trans:
+                            self._save_chunk_translation(idx, new_trans)
+                            return True
+                        return False
+                        
+                    success, _ = await self.app_service.translate_single_chunk_with_force_split(
+                        self.current_input_file,
+                        str(chunk_file_path),
+                        idx,
+                        split_level=split_level,
+                        progress_callback=progress_cb
+                    )
+                    return success
+                except Exception as e:
+                    logger.error(f"청크 #{idx} 재번역 중 오류: {e}")
+                    return False
+
+        # tqdm 인스턴스 생성 (LogTab의 스트림 사용)
+        pbar = None
+        if self._tqdm_stream:
+            pbar = tqdm(total=len(selected_indices), file=self._tqdm_stream, desc="선택 청크 재번역")
+
+        tasks = [retranslate_task(idx) for idx in selected_indices]
+        completed = 0
+        success_count = 0
 
         try:
-            success, result = await self._loop.run_in_executor(None, task)
-            if success:
-                self._set_status(f"청크 #{chunk_idx} 재번역 완료")
-                QtWidgets.QMessageBox.information(self, "성공", f"청크 #{chunk_idx} 재번역 완료")
-                await self._load_metadata_from_path(self.current_input_file, silent=True)
-            else:
-                self._set_status(f"재번역 실패: {result}")
-                QtWidgets.QMessageBox.critical(self, "재번역 실패", result)
+            for coro in asyncio.as_completed(tasks):
+                success = await coro
+                completed += 1
+                if success:
+                    success_count += 1
+                if pbar:
+                    pbar.update(1)
+                self._set_status(f"선택 청크 재번역 진행 중... ({completed}/{len(selected_indices)})")
+                
+            self._set_status(f"재번역 완료 ({success_count}/{len(selected_indices)}개 성공)")
+            logger.info(f"🎯 선택 청크 재번역 처리 완료 ({success_count}/{len(selected_indices)}개 성공)")
+            QtWidgets.QMessageBox.information(self, "성공", f"총 {success_count}개의 청크 재번역이 완료되었습니다.")
+            await self._load_metadata_from_path(self.current_input_file, silent=True)
         except Exception as e:
             self._set_status(f"재번역 오류: {e}")
             QtWidgets.QMessageBox.critical(self, "재번역 오류", str(e))
         finally:
+            if pbar:
+                pbar.close()
             self._set_busy(False)
 
     def _on_edit_clicked(self) -> None:
@@ -706,8 +867,12 @@ class ReviewTabQt(QtWidgets.QWidget):
         if not self.current_input_file:
             raise ValueError("파일이 로드되지 않았습니다.")
         self.translated_chunks[chunk_idx] = translation
-        translated_path = self._get_translated_chunked_file_path(self.current_input_file)
-        file_handler.save_merged_chunks_to_file(translated_path, self.translated_chunks)
+        
+        if hasattr(self, 'provider') and self.provider:
+            self.provider.save_translated_chunk(self.current_input_file, chunk_idx, translation, self.translated_chunks)
+        else:
+            translated_path = self._get_translated_chunked_file_path(self.current_input_file)
+            file_handler.save_merged_chunks_to_file(translated_path, self.translated_chunks)
         source_len = len(self.source_chunks.get(chunk_idx, ""))
         trans_len = len(translation)
         file_handler.update_metadata_for_chunk_completion(
@@ -799,6 +964,10 @@ class ReviewTabQt(QtWidgets.QWidget):
         self._set_status("최종 파일 생성 중...")
 
         def task() -> Path:
+            if hasattr(self, 'provider') and self.provider:
+                final_str = self.provider.generate_final_file(self.current_input_file, self.translated_chunks)
+                return Path(final_str)
+                
             final_output_path = self._get_final_output_file_path(self.current_input_file)
             chunked_path = self._get_translated_chunked_file_path(self.current_input_file)
             file_handler.save_merged_chunks_to_file(chunked_path, self.translated_chunks)

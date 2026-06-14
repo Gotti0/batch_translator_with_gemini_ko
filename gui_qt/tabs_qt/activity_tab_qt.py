@@ -25,7 +25,8 @@ class ActivityItem(QtWidgets.QWidget):
 
         # 시간 표시
         self.time_label = QtWidgets.QLabel(timestamp)
-        self.time_label.setStyleSheet("color: #A1A1AA; font-size: 11px; min-width: 60px;")
+        self.time_label.setObjectName("ActivityTime")
+        self.time_label.setStyleSheet("font-size: 11px; min-width: 60px;")
         layout.addWidget(self.time_label)
 
         # 아이콘 및 수직선 컨테이너
@@ -41,7 +42,8 @@ class ActivityItem(QtWidgets.QWidget):
 
         # 메시지
         self.msg_label = QtWidgets.QLabel(message)
-        self.msg_label.setStyleSheet(f"color: #FFFFFF; font-size: 13px;")
+        self.msg_label.setObjectName("ActivityMessage")
+        self.msg_label.setStyleSheet("font-size: 13px;")
         self.msg_label.setWordWrap(True)
         layout.addWidget(self.msg_label, 1)
 
@@ -93,7 +95,8 @@ class ActivityTabQt(QtWidgets.QWidget):
         
         # 헤더
         header = QtWidgets.QLabel("실시간 활동 타임라인")
-        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #FFFFFF; margin-bottom: 8px;")
+        header.setObjectName("ActivityHeader")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 8px;")
         main_layout.addWidget(header)
 
         # 타임라인 스크롤 영역

@@ -41,12 +41,13 @@ class EpubProcessor:
             # Title 태그 별도 추출
             title_tag = soup.head.find('title')
             if title_tag:
+                normalized_attrs = {k: " ".join(v) if isinstance(v, list) else str(v) for k, v in title_tag.attrs.items()}
                 nodes.append(EpubNode(
                     id=f"{file_name}_title",
                     type=NodeType.TEXT,
                     tag="title",
                     content=title_tag.get_text(),
-                    attributes=title_tag.attrs
+                    attributes=normalized_attrs
                 ))
                 title_tag.decompose()
             head_html = "".join([str(x) for x in soup.head.contents])
@@ -128,12 +129,13 @@ class EpubProcessor:
                 # Case 4: 말단 텍스트 블록 (번역 대상)
                 pure_text = self._extract_pure_text(child)
                 if pure_text:
+                    normalized_attrs = {k: " ".join(v) if isinstance(v, list) else str(v) for k, v in child.attrs.items()}
                     nodes.append(EpubNode(
                         id=deterministic_id,
                         type=NodeType.TEXT,
                         tag=tag_name,
                         content=pure_text,
-                        attributes=child.attrs
+                        attributes=normalized_attrs
                     ))
                 else:
                     # 텍스트는 없지만 빈 태그인 경우 보존
@@ -195,10 +197,10 @@ class EpubProcessor:
                     val = v if isinstance(v, str) else " ".join(v)
                     attrs.append(f'{k}="{val}"')
                 attr_str = " " + " ".join(attrs) if attrs else ""
-                html_parts.append(f"<{node.tag}{attr_str}>{translated_text}</{node.tag}>")
+                html_parts.append(f"<{node.tag}{attr_str}>{translated_text}</{node.tag}>\n")
             else:
                 # IMAGE 또는 IGNORED는 원본 HTML 그대로 사용
-                html_parts.append(node.html or "")
+                html_parts.append((node.html or "") + "\n")
 
-        html_parts.append("</body></html>")
+        html_parts.append("</body>\n</html>")
         return "".join(html_parts)

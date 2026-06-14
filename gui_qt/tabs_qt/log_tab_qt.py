@@ -34,13 +34,6 @@ class QtGuiLogHandler(logging.Handler):
                 return
             level_name = record.levelname
             self.emitter.message.emit(msg, level_name)
-            
-            # Phase 3: ActivityTab으로 전달 시도
-            app = QtWidgets.QApplication.instance()
-            if app:
-                for widget in app.topLevelWidgets():
-                    if hasattr(widget, "activity_tab") and widget.activity_tab:
-                        widget.activity_tab.add_log(msg, level_name)
         except Exception:
             self.handleError(record)
 

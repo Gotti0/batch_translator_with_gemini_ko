@@ -36,13 +36,15 @@ class ModeCard(QtWidgets.QFrame):
 
         # 제목
         self.title_label = QtWidgets.QLabel(title)
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 16px; color: #FFFFFF;")
+        self.title_label.setObjectName("ModeCardTitle")
+        self.title_label.setStyleSheet("font-weight: bold; font-size: 16px;")
         self.title_label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(self.title_label)
 
         # 설명
         self.desc_label = QtWidgets.QLabel(description)
-        self.desc_label.setStyleSheet("color: #A1A1AA; font-size: 12px;")
+        self.desc_label.setObjectName("ModeCardDesc")
+        self.desc_label.setStyleSheet("font-size: 12px;")
         self.desc_label.setAlignment(QtCore.Qt.AlignCenter)
         self.desc_label.setWordWrap(True)
         layout.addWidget(self.desc_label)
@@ -54,16 +56,11 @@ class ModeCard(QtWidgets.QFrame):
 
     def set_selected(self, selected: bool):
         self._selected = selected
-        if selected:
-            self.setStyleSheet("""
-                QFrame#SectionCard {
-                    background-color: rgba(142, 117, 255, 0.15);
-                    border: 2px solid #8E75FF;
-                    border-radius: 12px;
-                }
-            """)
-        else:
-            self.setStyleSheet("") # 기본 styles.qss 스타일로 복구
+        self.setProperty("selected", selected)
+        # 스타일 업데이트 강제 (폴리싱)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         if event.button() == QtCore.Qt.LeftButton:
@@ -91,7 +88,7 @@ class ModeSelectorGroup(QtWidgets.QWidget):
         ]
 
         for m_id, title, desc, icon in modes:
-            card = ModeCard(m_id, title, desc, icon)
+            card = ModeCard(m_id, title, desc, icon, self)
             card.clicked.connect(self._on_card_clicked)
             layout.addWidget(card)
             self.cards[m_id] = card

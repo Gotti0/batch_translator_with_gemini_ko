@@ -7,6 +7,7 @@ PySide6 메인 윈도우 (qasync 연동)
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Optional
 
 from PySide6 import QtCore, QtWidgets
@@ -78,7 +79,6 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         self.glossary_tab = None
         self.review_tab = None
         self.log_tab = None
-        self.activity_tab = None
 
         self.setWindowTitle("BTG - Batch Translator (PySide6)")
         self.resize(1100, 800)
@@ -114,7 +114,6 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
                 custom_colors={
                     "primary": "#8E75FF",
                     "background": "#121214",
-                    "surface": "#1E1E22",
                     "border": "#2E2E32"
                 }
             )
@@ -131,14 +130,17 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
             logger.debug(f"테마 및 커스텀 스타일 적용 완료: {theme}")
 
     def _load_stylesheet(self) -> None:
-        """gui_qt/styles.qss 파일을 읽어 애플리케이션에 적용"""
+        """gui_qt/styles.qss 파일을 읽어 애플리케이션 전역에 적용"""
         qss_path = Path(__file__).parent / "styles.qss"
         if qss_path.exists():
             try:
                 with open(qss_path, "r", encoding="utf-8") as f:
                     qss = f.read()
-                    self.setStyleSheet(qss)
-                    logger.debug("커스텀 QSS 로드 완료")
+                    app = QtWidgets.QApplication.instance()
+                    if app:
+                        # qdarktheme의 스타일과 병합됨
+                        app.setStyleSheet(app.styleSheet() + "\n" + qss)
+                        logger.debug("전역 커스텀 QSS 적용 완료")
             except Exception as e:
                 logger.error(f"QSS 로드 중 오류: {e}")
 
@@ -238,28 +240,18 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         tab_widget.addTab(self.glossary_tab, "용어집 관리")
         tab_widget.addTab(self.review_tab, "검토 및 수정")
 
-        # Activity Timeline 탭 (신규 Phase 3)
-        if ActivityTabQt and self.app_service:
-            try:
-                self.activity_tab = ActivityTabQt(self.app_service)
-                self.theme_changed.connect(self.activity_tab.update_theme)
-            except Exception as e:
-                logger.error(f"ActivityTabQt 생성 실패: {e}")
-                self.activity_tab = PlaceholderTab("실시간 활동")
-        else:
-            self.activity_tab = PlaceholderTab("실시간 활동")
-
-        tab_widget.addTab(self.activity_tab, "실시간 활동")
-
         # Log 탭
         if LogTabQt:
             try:
                 self.log_tab = LogTabQt(self.app_service)
                 # 테마 변경 시그널 연결
                 self.theme_changed.connect(self.log_tab.update_theme)
-                # Settings 탭에 TQDM 스트림 주입
+                # Settings/Review 탭에 TQDM 스트림 주입
+                tqdm_stream = self.log_tab.get_tqdm_stream()
                 if isinstance(self.settings_tab, SettingsTabQt):
-                    self.settings_tab.set_tqdm_stream(self.log_tab.get_tqdm_stream())
+                    self.settings_tab.set_tqdm_stream(tqdm_stream)
+                if hasattr(self.review_tab, "set_tqdm_stream"):
+                    self.review_tab.set_tqdm_stream(tqdm_stream)
             except Exception as e:  # pragma: no cover - 방어적
                 logger.error(f"LogTabQt 생성 실패, 플레이스홀더로 대체: {e}")
                 self.log_tab = PlaceholderTab("실행 로그")

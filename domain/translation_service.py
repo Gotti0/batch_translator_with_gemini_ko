@@ -18,7 +18,7 @@ try:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from infrastructure.file_handler import read_json_file
+    from infrastructure.file_handler import read_json_file, save_metadata
     from infrastructure.logger_config import setup_logger
     from core.exceptions import BtgTranslationException, BtgApiClientException
     from utils.chunk_service import ChunkService
@@ -42,7 +42,7 @@ except ImportError:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from infrastructure.file_handler import read_json_file  # type: ignore
+    from infrastructure.file_handler import read_json_file, save_metadata  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
     from core.exceptions import BtgTranslationException, BtgApiClientException  # type: ignore
     from utils.chunk_service import ChunkService  # type: ignore
@@ -524,12 +524,29 @@ class TranslationService:
                 text_chunk, max_split_attempts, min_chunk_size, current_attempt=1
             )
 
+    async def translate_text_force_split_async(
+        self, 
+        text_chunk: str, 
+        max_split_attempts: int = 3,
+        min_chunk_size: int = 100,
+        split_level: int = 1
+    ) -> str:
+        """
+        강제 분할 번역: Depth 0(전체) 시도를 생략하고 바로 지정된 레벨의 분할부터 시작합니다.
+        주로 누락 의심 청크나 실패 청크의 재번역에 사용됩니다.
+        """
+        logger.info(f"⚡ 강제 분할 번역 시작 (Level {split_level} 진입): {len(text_chunk)} 글자")
+        return await self._translate_with_recursive_splitting_async(
+            text_chunk, max_split_attempts, min_chunk_size, current_attempt=1, split_level=split_level
+        )
+
     async def _translate_with_recursive_splitting_async(
         self,
         text_chunk: str,
         max_split_attempts: int,
         min_chunk_size: int,
-        current_attempt: int = 1
+        current_attempt: int = 1,
+        split_level: int = 1
     ) -> str:
         if current_attempt > max_split_attempts:
             logger.error(f"최대 분할 시도 횟수({max_split_attempts})에 도달. 번역 실패.")
@@ -541,14 +558,22 @@ class TranslationService:
 
         logger.info(f"📊 청크 분할 시도 #{current_attempt} (깊이: {current_attempt-1})")
         logger.info(f"   📏 원본 크기: {len(text_chunk)} 글자")
-        logger.info(f"   🎯 목표: 정확히 2개 청크로 분할 (이진 분할)")
+        logger.info(f"   🎯 목표: 분할 레벨 {split_level}에 따른 서브 청크 분할")
 
-        # Strict 이진 분할 (정확히 2개 청크)
-        sub_chunks = self.chunk_service.split_chunk_into_two_halves(
-            text_chunk,
-            target_size=len(text_chunk) // 2,
-            min_chunk_ratio=0.3  # 마지막 청크가 30% 미만이면 병합
-        )
+        if split_level == 3:
+            target_size = 1000
+            sub_chunks = self.chunk_service.split_text_into_chunks(text_chunk, max_chunk_size=target_size)
+        elif split_level == 2:
+            target_size = max(min_chunk_size, len(text_chunk) // 4)
+            sub_chunks = self.chunk_service.split_text_into_chunks(text_chunk, max_chunk_size=target_size)
+        else:
+            # 기본 1레벨: Strict 이진 분할 (정확히 2개 청크)
+            target_size = max(min_chunk_size, len(text_chunk) // 2)
+            sub_chunks = self.chunk_service.split_chunk_into_two_halves(
+                text_chunk,
+                target_size=target_size,
+                min_chunk_ratio=0.3
+            )
         
         if len(sub_chunks) <= 1:
             sub_chunks = self.chunk_service.split_chunk_by_sentences(
@@ -561,44 +586,49 @@ class TranslationService:
         
         logger.info(f"   🔄 {len(sub_chunks)}개 서브 청크를 병렬 처리합니다 (비동기).")
         
+        # 어플리케이션 전역 설정의 max_workers를 준수하여 동시 요청 수 제어
+        max_parallel = self.config.get("max_workers", 3) if self.config else 3
+        semaphore = asyncio.Semaphore(max_parallel)
+        
         # 비동기 작업 래퍼 함수
         async def translate_sub_chunk_with_check(sub_chunk: str, idx: int) -> tuple[int, str]:
             """개별 서브 청크 번역 (취소 확인 포함)"""
-            # 📍 취소 확인 1: 작업 시작 전
-            if self.stop_check_callback and self.stop_check_callback():
-                raise asyncio.CancelledError(f"서브 청크 {idx+1} 번역 중단 요청됨 (작업 시작 전)")
-                        # ✨ 방어적 체크포인트
-            await asyncio.sleep(0)
-            if not sub_chunk.strip():
-                logger.warning(f"   ⚠️ 서브 청크 {idx+1}/{len(sub_chunks)} 빈 청크 감지. 스킵.")
-                return (idx, "")
-            
-            try:
-                # 📍 취소 확인 2: API 호출 직전
+            async with semaphore:
+                # 📍 취소 확인 1: 작업 시작 전
                 if self.stop_check_callback and self.stop_check_callback():
-                    raise asyncio.CancelledError(f"서브 청크 {idx+1} 번역 중단 요청됨 (API 호출 직전)")
+                    raise asyncio.CancelledError(f"서브 청크 {idx+1} 번역 중단 요청됨 (작업 시작 전)")
+                # ✨ 방어적 체크포인트
+                await asyncio.sleep(0)
+                if not sub_chunk.strip():
+                    logger.warning(f"   ⚠️ 서브 청크 {idx+1}/{len(sub_chunks)} 빈 청크 감지. 스킵.")
+                    return (idx, "")
                 
-                translated = await self.translate_text_async(sub_chunk)
-                logger.info(f"   ✅ 서브 청크 {idx+1}/{len(sub_chunks)} 번역 완료")
-                return (idx, translated)
-                
-            except asyncio.CancelledError:
-                logger.info(f"   🛑 서브 청크 {idx+1} 취소됨")
-                raise
-            except BtgTranslationException as e_sub:
-                if "콘텐츠 안전 문제" in str(e_sub) and current_attempt < max_split_attempts:
-                    logger.warning(f"   🛡️ 서브 청크 {idx+1} 콘텐츠 안전 오류. 재귀 분할 시도.")
-                    recursive_result = await self._translate_with_recursive_splitting_async(
-                        sub_chunk, max_split_attempts, min_chunk_size, current_attempt + 1
-                    )
-                    return (idx, recursive_result)
-                else:
-                    error_marker = f"[서브 청크 {idx+1} 번역 실패: {str(e_sub)[:50]}]"
-                    logger.error(f"   ❌ 서브 청크 {idx+1} 번역 실패: {str(e_sub)[:100]}")
-                    return (idx, error_marker)
-            except Exception as e_general:
-                logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_general}")
-                return (idx, f"[서브 청크 {idx+1} 번역 오류]")
+                try:
+                    # 📍 취소 확인 2: API 호출 직전
+                    if self.stop_check_callback and self.stop_check_callback():
+                        raise asyncio.CancelledError(f"서브 청크 {idx+1} 번역 중단 요청됨 (API 호출 직전)")
+                    
+                    translated = await self.translate_text_async(sub_chunk)
+                    logger.info(f"   ✅ 서브 청크 {idx+1}/{len(sub_chunks)} 번역 완료")
+                    return (idx, translated)
+                    
+                except asyncio.CancelledError:
+                    logger.info(f"   🛑 서브 청크 {idx+1} 취소됨")
+                    raise
+                except BtgTranslationException as e_sub:
+                    if "콘텐츠 안전 문제" in str(e_sub) and current_attempt < max_split_attempts:
+                        logger.warning(f"   🛡️ 서브 청크 {idx+1} 콘텐츠 안전 오류. 재귀 분할 시도.")
+                        recursive_result = await self._translate_with_recursive_splitting_async(
+                            sub_chunk, max_split_attempts, min_chunk_size, current_attempt + 1
+                        )
+                        return (idx, recursive_result)
+                    else:
+                        error_marker = f"[서브 청크 {idx+1} 번역 실패: {str(e_sub)[:50]}]"
+                        logger.error(f"   ❌ 서브 청크 {idx+1} 번역 실패: {str(e_sub)[:100]}")
+                        return (idx, error_marker)
+                except Exception as e_general:
+                    logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_general}")
+                    return (idx, f"[서브 청크 {idx+1} 번역 오류]")
         
         # 작업 생성 (순차적으로 취소 확인하며 생성)
         tasks = []
@@ -633,16 +663,20 @@ class TranslationService:
         
         return "\n\n".join(translated_parts)
 
-    async def translate_text_integrity(self, text: str) -> str:
+    async def translate_text_integrity(self, text: str, output_path_for_progress: Optional[Union[str, Path]] = None) -> str:
         """
         무결성 번역: 줄 단위로 분리하여 JSON 형태로 번역하고 누락을 검사합니다.
         
         Args:
             text: 번역할 전체 텍스트
+            output_path_for_progress: 진행 상황 저장을 위한 임시 폴더 생성 기준 경로
             
         Returns:
             번역된 텍스트
         """
+        import json
+        import shutil
+
         if not text.strip():
             logger.debug("translate_text_integrity: 입력 텍스트가 비어 있음.")
             return ""
@@ -655,11 +689,33 @@ class TranslationService:
             units.append(TranslationUnit(id=str(i), text=line))
 
         # 2. 청크 분할
-        max_chunk_size = self.config.get("integrity_chunk_size", 3000)
-        max_items = self.config.get("integrity_max_items", 40) # 무결성 모드는 더 보수적으로 잡음
+        max_chunk_size = self.config.get("chunk_size", 6000)
+        max_items = self.config.get("integrity_max_items", 100) # 무결성 모드는 더 보수적으로 잡음
         chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
 
         translated_map: Dict[str, str] = {}
+        
+        temp_dir = None
+        metadata_path = None
+        metadata = {"translated_chunks": []}
+        translated_chunk_indices = set()
+        
+        if output_path_for_progress:
+            out_p = Path(output_path_for_progress)
+            temp_dir = out_p.parent / f"{out_p.stem}_integrity_temp"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            metadata_path = temp_dir / "integrity_metadata.json"
+            
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                    translated_chunk_indices = set(metadata.get("translated_chunks", []))
+                    logger.info(f"기존 무결성 번역 진행 상태 로드됨: {len(translated_chunk_indices)}개 청크 완료")
+                except Exception as e:
+                    logger.warning(f"무결성 메타데이터 읽기 실패: {e}. 임시 폴더를 초기화합니다.")
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    temp_dir.mkdir(parents=True, exist_ok=True)
 
         for i, chunk in enumerate(chunks):
             # 📍 중단 체크
@@ -668,15 +724,56 @@ class TranslationService:
 
             logger.info(f"📦 무결성 번역 청크 {i+1}/{len(chunks)} 처리 중 (항목: {len(chunk)}개)")
             
+            if i in translated_chunk_indices and temp_dir:
+                try:
+                    chunk_file = temp_dir / f"chunk_{i}.json"
+                    with open(chunk_file, 'r', encoding='utf-8') as f:
+                        chunk_results = json.load(f)
+                    translated_map.update(chunk_results)
+                    logger.info(f"  ⏭️ 이미 번역된 청크 건너뜀")
+                    continue
+                except Exception as e:
+                    logger.warning(f"  ⚠️ 저장된 청크 읽기 실패, 재번역 시도: {e}")
+
             # 3. API 요청 및 검증 (재시도 포함)
             chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
             translated_map.update(chunk_results)
+            
+            if temp_dir and metadata_path:
+                try:
+                    chunk_file = temp_dir / f"chunk_{i}.json"
+                    with open(chunk_file, 'w', encoding='utf-8') as f:
+                        json.dump(chunk_results, f, ensure_ascii=False)
+                    translated_chunk_indices.add(i)
+                    metadata["translated_chunks"] = list(translated_chunk_indices)
+                    with open(metadata_path, 'w', encoding='utf-8') as f:
+                        json.dump(metadata, f, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"  ❌ 무결성 진행 상태 저장 실패: {e}")
 
         # 4. 조립
         result_lines = []
         for i in range(len(lines)):
             # 번역이 없으면 원문 사용
             result_lines.append(translated_map.get(str(i), lines[i]))
+            
+        if output_path_for_progress:
+            with open(output_path_for_progress, "w", encoding="utf-8") as f:
+                f.write("\n".join(result_lines))
+
+            # 성공 시 메타데이터 영구 보존 (Review 탭 다형성 지원용)
+            # 일반 번역처럼 메타데이터를 저장하되, pipeline_type을 명시
+            final_metadata = {
+                "pipeline_type": "integrity",
+                "total_chunks": len(chunks),
+                "translated_chunks": {str(i): {"status": "success"} for i in range(len(chunks))},
+                "failed_chunks": {},
+            }
+            # 파일 핸들러를 이용해 output_path_for_progress를 기준으로 메타데이터 저장
+            save_metadata(output_path_for_progress, final_metadata)
+
+        if temp_dir and temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
         return "\n".join(result_lines)
 
@@ -696,36 +793,88 @@ class TranslationService:
             raise asyncio.CancelledError("무결성 청크 번역 중단 요청됨")
 
         try:
-            # 1. 프롬프트 구성
-            prompt = "Translate each item in the following JSON array. Keep the 'id' exactly as given.\n\n"
-            # 번역 언어 힌트 추가
-            target_lang = self.config.get("target_translation_language", "Korean")
-            prompt += f"Target Language: {target_lang}\n\n"
-            
-            # 노드들을 JSON 리스트 문자열로 변환
             import json
-            chunk_json = [unit.model_dump() for unit in chunk]
-            prompt += json.dumps(chunk_json, ensure_ascii=False)
+            chunk_json_str = json.dumps([unit.model_dump() for unit in chunk], ensure_ascii=False)
 
-            # 2. API 호출 (Structured Output 모드)
-            # GeminiClient가 List[TranslatedUnit]을 직접 처리할 수 있는지에 따라 schema 정의 방식이 달라짐
-            # 현재 구현에서는 Pydantic 클래스를 response_schema로 넘기면 
-            # 단일 객체는 잘 동작하지만 리스트는 확인 필요. 
-            # 일단 response_mime_type="application/json"만 사용하고 직접 파싱 처리.
-            
-            gen_config = {
-                "temperature": self.config.get("temperature", 0.3), # 무결성 모드는 낮게
-                "top_p": self.config.get("top_p", 0.9),
-                "response_mime_type": "application/json"
+            # 1. 시스템 지침 준비 (사용자 시스템 지침 + JSON 강제 지침)
+            sys_instr_base = self.config.get("prefill_system_instruction", "") if self.config.get("enable_prefill_translation", False) else ""
+            json_instruction = "You are a professional translator. Respond ONLY with a valid JSON array of objects, each containing 'id' and 'translated_text' keys. Do NOT wrap in markdown code blocks."
+            sys_instr = f"{sys_instr_base}\n\n{json_instruction}".strip()
+
+            # 2. 용어집 및 프롬프트 준비
+            glossary_context_str = "용어집 컨텍스트 없음"
+            if self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
+                chunk_text_lower = chunk_json_str.lower()
+                final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
+                relevant_entries = [e for e in self.glossary_entries_for_injection if e.target_language == final_target_lang and e.keyword.lower() in chunk_text_lower]
+                
+                max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3)
+                max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
+                glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
+
+            replacements = {
+                "{{slot}}": chunk_json_str,
+                "{{glossary_context}}": glossary_context_str
             }
+
+            api_prompt_for_gemini_client: List[genai_types.Content] = []
             
-            # system_instruction_text 사용
-            sys_instr = "You are a professional translator. Respond ONLY with a valid JSON array of objects, each containing 'id' and 'translated_text' keys."
+            integrity_prompt_suffix = "\n\nTranslate each item in the following JSON array. Keep the 'id' exactly as given. Return ONLY a valid JSON array."
+
+            if self.config.get("enable_prefill_translation", False):
+                prefill_cached_history_raw = self.config.get("prefill_cached_history", [])
+                base_history: List[genai_types.Content] = []
+                
+                if isinstance(prefill_cached_history_raw, list):
+                    for item in prefill_cached_history_raw:
+                        if isinstance(item, dict) and "role" in item and "parts" in item:
+                            sdk_parts = [genai_types.Part.from_text(text=p) for p in item.get("parts", []) if isinstance(p, str)]
+                            if sdk_parts:
+                                base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
+
+                injected_history, injected = _inject_slots_into_history(base_history, replacements)
+
+                if injected:
+                    api_prompt_for_gemini_client = injected_history
+                    # Jailbreak 주입 모드일 경우 마지막에 무결성 지침만 덧붙임
+                    if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "model":
+                        api_prompt_for_gemini_client.append(
+                            genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=integrity_prompt_suffix)])
+                        )
+                    else:
+                        # 히스토리의 마지막이 user일 경우 (또는 비어있을 경우)
+                        api_prompt_for_gemini_client.append(
+                            genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=integrity_prompt_suffix)])
+                        )
+                else:
+                    api_prompt_for_gemini_client = injected_history
+                    user_prompt_str = self._construct_prompt(chunk_json_str)
+                    if integrity_prompt_suffix not in user_prompt_str:
+                        user_prompt_str += integrity_prompt_suffix
+                    api_prompt_for_gemini_client.append(
+                        genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+                    )
+            else:
+                user_prompt_str = self._construct_prompt(chunk_json_str)
+                if integrity_prompt_suffix not in user_prompt_str:
+                    user_prompt_str += integrity_prompt_suffix
+                api_prompt_for_gemini_client = [
+                    genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+                ]
+
+            # 3. API 호출 (Structured Output 모드)
+            gen_config = {
+                "temperature": self.config.get("temperature", 0.3), # 유저 설정값 우선, 없으면 0.3
+                "top_p": self.config.get("top_p", 0.9),
+                "response_mime_type": "application/json",
+                "thinking_level": self.config.get("thinking_level", "high")
+            }
 
             raw_response = await self.gemini_client.generate_text_async(
-                prompt=prompt,
+                prompt=api_prompt_for_gemini_client,
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict=gen_config,
+                thinking_budget=self.config.get("thinking_budget", None),
                 system_instruction_text=sys_instr
             )
 
@@ -784,14 +933,35 @@ class TranslationService:
     async def translate_epub(self, epub_path: Union[str, Path], output_path: Union[str, Path]) -> None:
         """
         EPUB 번역 파이프라인: 구조를 유지하며 내용을 번역합니다.
+        임시 디렉토리를 사용한 파일 기반 진행도 저장 및 재개(Resume)를 지원합니다.
         """
         import zipfile
+        import json
+        import shutil
         
         processor = EpubProcessor()
         epub_path = Path(epub_path)
         output_path = Path(output_path)
 
         logger.info(f"🚀 EPUB 번역 시작: {epub_path.name}")
+        
+        temp_dir = epub_path.parent / f"{epub_path.stem}_epub_temp"
+        metadata_path = temp_dir / "epub_metadata.json"
+        
+        metadata = {"translated_files": []}
+        if temp_dir.exists() and metadata_path.exists():
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                logger.info(f"기존 EPUB 진행 상태 로드됨: {len(metadata.get('translated_files', []))}개 챕터 번역 완료")
+            except Exception as e:
+                logger.warning(f"EPUB 메타데이터 읽기 실패: {e}. 임시 폴더를 초기화합니다.")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                temp_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+        translated_files = set(metadata.get("translated_files", []))
 
         try:
             with zipfile.ZipFile(epub_path, 'r') as zin:
@@ -808,6 +978,14 @@ class TranslationService:
                         # 중단 체크
                         if self.stop_check_callback and self.stop_check_callback():
                             raise asyncio.CancelledError("EPUB 번역 중단 요청됨")
+                            
+                        # 진행도 저장 체크
+                        temp_file_path = temp_dir / item.filename.replace("/", "_")
+                        if item.filename in translated_files and temp_file_path.exists():
+                            logger.info(f"  ⏭️ 이미 번역된 챕터 건너뜀: {item.filename}")
+                            with open(temp_file_path, "rb") as f:
+                                zout.writestr(item.filename, f.read(), compress_type=zipfile.ZIP_DEFLATED)
+                            continue
 
                         content = zin.read(item.filename)
                         
@@ -824,8 +1002,8 @@ class TranslationService:
                                     units = [TranslationUnit(id=n.id, text=n.content or "") for n in translatable_nodes]
                                     
                                     # 청크 분할 및 번역 요청
-                                    max_chunk_size = self.config.get("integrity_chunk_size", 3000)
-                                    max_items = self.config.get("integrity_max_items", 40)
+                                    max_chunk_size = self.config.get("chunk_size", 6000)
+                                    max_items = self.config.get("integrity_max_items", 100)
                                     chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
                                     
                                     translated_map: Dict[str, str] = {}
@@ -836,7 +1014,18 @@ class TranslationService:
                                     
                                     # 번역된 내용으로 HTML 재조립
                                     translated_html = processor.reconstruct_chapter(chapter, translated_map)
-                                    zout.writestr(item.filename, translated_html.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
+                                    translated_bytes = translated_html.encode('utf-8')
+                                    
+                                    # 임시 디렉토리에 저장 및 메타데이터 업데이트
+                                    with open(temp_file_path, "wb") as f:
+                                        f.write(translated_bytes)
+                                        
+                                    translated_files.add(item.filename)
+                                    metadata["translated_files"] = list(translated_files)
+                                    with open(metadata_path, "w", encoding="utf-8") as f:
+                                        json.dump(metadata, f, ensure_ascii=False)
+                                        
+                                    zout.writestr(item.filename, translated_bytes, compress_type=zipfile.ZIP_DEFLATED)
                                 else:
                                     zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
                                     
@@ -845,8 +1034,22 @@ class TranslationService:
                                 zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
                         else:
                             # 이미지, CSS, 기타 리소스는 그대로 복사
-                            zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
+                            if item.filename.lower().endswith('.opf'):
+                                try:
+                                    opf_text = content.decode('utf-8')
+                                    opf_text = re.sub(r'page-progression-direction\s*=\s*["\']rtl["\']', 'page-progression-direction="ltr"', opf_text, flags=re.IGNORECASE)
+                                    zout.writestr(item, opf_text.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
+                                except Exception as e_opf:
+                                    logger.error(f"OPF 방향 수정 중 오류: {e_opf}")
+                                    zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
+                            else:
+                                zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
 
+            # 성공적으로 완료되면 메타데이터를 영구 보존하고 임시 디렉토리 삭제
+            metadata["pipeline_type"] = "epub"
+            save_metadata(epub_path, metadata)
+            
+            shutil.rmtree(temp_dir, ignore_errors=True)
             logger.info(f"✅ EPUB 번역 완료: {output_path.name}")
 
         except Exception as e:
