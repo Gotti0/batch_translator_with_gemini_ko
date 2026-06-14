@@ -23,10 +23,13 @@ class StandardReviewProvider(BaseReviewProvider):
             return load_chunks_from_file(translated_path)
         return {}
 
-    async def retranslate_chunk(self, chunk_id: str, new_prompt: str) -> str:
-        # Standard retranslation uses translation_service.translate_text_async for a single chunk
-        # Since it's a raw string, we can just call it
-        return await self.translation_service.translate_text_async(new_prompt)
+    async def retranslate_chunk(self, chunk_id: str, new_prompt: str, split_level: int = 1) -> str:
+        # Standard retranslation uses force split async if split_level is provided
+        max_split = self.app_service.config.get("max_content_safety_split_attempts", 3)
+        min_size = self.app_service.config.get("min_content_safety_chunk_size", 100)
+        return await self.translation_service.translate_text_force_split_async(
+            new_prompt, max_split, min_size, split_level=split_level
+        )
 
     def save_translated_chunk(self, file_path: str, chunk_id: int, new_text: str, current_all_chunks: Dict[int, str]) -> None:
         p = Path(file_path)

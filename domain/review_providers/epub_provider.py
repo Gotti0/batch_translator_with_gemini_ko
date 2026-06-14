@@ -94,12 +94,42 @@ class EpubReviewProvider(BaseReviewProvider):
             
         return translated_chunks_map
 
-    async def retranslate_chunk(self, chunk_id: str, new_prompt: str) -> str:
+    async def retranslate_chunk(self, chunk_id: str, new_prompt: str, split_level: int = 1) -> str:
         # new_prompt는 수정된 원문
         lines = new_prompt.splitlines()
         units = [TranslationUnit(id=str(i), text=line) for i, line in enumerate(lines)]
         
-        result_map = await self.translation_service._translate_integrity_chunk_with_retry(units)
+        # split_level에 따라 units 리스트를 분할
+        if split_level == 3:
+            sub_chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size=1000, max_items_per_chunk=50)
+        elif split_level == 2:
+            mid1 = len(units) // 4
+            mid2 = len(units) // 2
+            mid3 = len(units) * 3 // 4
+            sub_chunks = [units[:mid1], units[mid1:mid2], units[mid2:mid3], units[mid3:]]
+            sub_chunks = [c for c in sub_chunks if c]
+        elif split_level == 1:
+            mid = len(units) // 2
+            sub_chunks = [units[:mid], units[mid:]]
+            sub_chunks = [c for c in sub_chunks if c]
+        else:
+            sub_chunks = [units]
+            
+        import asyncio
+        max_parallel = self.app_service.config.get("max_workers", 3) if self.app_service else 3
+        semaphore = asyncio.Semaphore(max_parallel)
+        
+        async def translate_sub_chunk(sub_chunk):
+            async with semaphore:
+                return await self.translation_service._translate_integrity_chunk_with_retry(sub_chunk)
+        
+        tasks = [translate_sub_chunk(c) for c in sub_chunks if c]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        result_map = {}
+        for res in results:
+            if isinstance(res, dict):
+                result_map.update(res)
         
         result_lines = []
         for i in range(len(units)):

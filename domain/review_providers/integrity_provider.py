@@ -50,13 +50,33 @@ class IntegrityReviewProvider(BaseReviewProvider):
             
         return translated_chunks_map
 
-    async def retranslate_chunk(self, chunk_id: str, new_prompt: str) -> str:
+    async def retranslate_chunk(self, chunk_id: str, new_prompt: str, split_level: int = 1) -> str:
         # new_prompt는 재번역할 원문 텍스트입니다.
         lines = new_prompt.splitlines()
         units = [TranslationUnit(id=str(i), text=line) for i, line in enumerate(lines)]
         
-        # 무결성 재번역 호출
-        result_map = await self.translation_service._translate_integrity_chunk_with_retry(units)
+        # split_level에 따라 units 리스트를 분할
+        if split_level == 3:
+            sub_chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size=1000, max_items_per_chunk=50)
+        elif split_level == 2:
+            mid1 = len(units) // 4
+            mid2 = len(units) // 2
+            mid3 = len(units) * 3 // 4
+            sub_chunks = [units[:mid1], units[mid1:mid2], units[mid2:mid3], units[mid3:]]
+            sub_chunks = [c for c in sub_chunks if c]
+        elif split_level == 1:
+            mid = len(units) // 2
+            sub_chunks = [units[:mid], units[mid:]]
+            sub_chunks = [c for c in sub_chunks if c]
+        else:
+            sub_chunks = [units]
+            
+        result_map = {}
+        for sub_chunk in sub_chunks:
+            if not sub_chunk:
+                continue
+            res = await self.translation_service._translate_integrity_chunk_with_retry(sub_chunk)
+            result_map.update(res)
         
         # 결과를 라인 순서대로 합침
         result_lines = []

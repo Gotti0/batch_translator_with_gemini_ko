@@ -31,7 +31,7 @@ class BaseReviewProvider(ABC):
         pass
 
     @abstractmethod
-    async def retranslate_chunk(self, chunk_id: str, new_prompt: str) -> str:
+    async def retranslate_chunk(self, chunk_id: str, new_prompt: str, split_level: int = 1) -> str:
         """
         주어진 청크를 새로운 프롬프트(원문)로 재번역합니다.
         각 파이프라인(Standard/Integrity/Epub)에 맞는 API를 호출해야 합니다.

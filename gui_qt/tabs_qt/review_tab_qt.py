@@ -692,6 +692,15 @@ class ReviewTabQt(QtWidgets.QWidget):
             async with semaphore:
                 try:
                     chunk_file_path = self._get_translated_chunked_file_path(self.current_input_file)
+                    
+                    src_text = self.source_chunks.get(idx, "")
+                    if hasattr(self, 'provider') and self.provider:
+                        new_trans = await self.provider.retranslate_chunk(str(idx), src_text, split_level=split_level)
+                        if new_trans:
+                            self._save_chunk_translation(idx, new_trans)
+                            return True
+                        return False
+
                     success, _ = await self.app_service.translate_single_chunk_with_force_split(
                         self.current_input_file,
                         str(chunk_file_path),
@@ -773,7 +782,7 @@ class ReviewTabQt(QtWidgets.QWidget):
                     
                     src_text = self.source_chunks.get(idx, "")
                     if hasattr(self, 'provider') and self.provider:
-                        new_trans = await self.provider.retranslate_chunk(str(idx), src_text)
+                        new_trans = await self.provider.retranslate_chunk(str(idx), src_text, split_level=split_level)
                         if new_trans:
                             self._save_chunk_translation(idx, new_trans)
                             return True
