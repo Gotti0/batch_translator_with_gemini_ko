@@ -67,8 +67,16 @@ class EpubProcessor:
                 text = str(child).strip()
                 if text:
                     # 부모가 TEXT 타입으로 처리되지 않는 독립적인 텍스트 노드 처리
-                    # 보통은 부모 태그가 Case 4에서 처리되지만, 만약 복합 태그 내부라면 무시되거나 처리 필요
-                    pass 
+                    # 복합 태그 내부의 텍스트가 유실되지 않도록 TEXT 노드로 추가
+                    deterministic_id = f"{self.current_file_name}_{self.node_index}"
+                    self.node_index += 1
+                    nodes.append(EpubNode(
+                        id=deterministic_id,
+                        type=NodeType.TEXT,
+                        tag="",
+                        content=text,
+                        attributes={}
+                    ))
                 continue
             
             tag_name = child.name.lower()
@@ -191,13 +199,17 @@ class EpubProcessor:
 
             if node.type == NodeType.TEXT:
                 translated_text = translated_map.get(node.id, node.content)
-                # 속성 재구성
-                attrs = []
-                for k, v in node.attributes.items():
-                    val = v if isinstance(v, str) else " ".join(v)
-                    attrs.append(f'{k}="{val}"')
-                attr_str = " " + " ".join(attrs) if attrs else ""
-                html_parts.append(f"<{node.tag}{attr_str}>{translated_text}</{node.tag}>\n")
+                
+                if not node.tag:
+                    html_parts.append(f"{translated_text}\n")
+                else:
+                    # 속성 재구성
+                    attrs = []
+                    for k, v in node.attributes.items():
+                        val = v if isinstance(v, str) else " ".join(v)
+                        attrs.append(f'{k}="{val}"')
+                    attr_str = " " + " ".join(attrs) if attrs else ""
+                    html_parts.append(f"<{node.tag}{attr_str}>{translated_text}</{node.tag}>\n")
             else:
                 # IMAGE 또는 IGNORED는 원본 HTML 그대로 사용
                 html_parts.append((node.html or "") + "\n")

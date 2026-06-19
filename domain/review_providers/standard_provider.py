@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Dict, Any
 
-from infrastructure.file_handler import load_metadata, load_chunks_from_file, read_text_file, save_merged_chunks_to_file
+from infrastructure.file_handler import load_metadata, load_chunks_from_file, read_text_file, save_merged_chunks_to_file, write_text_file
 from domain.review_providers.base_provider import BaseReviewProvider
 
 class StandardReviewProvider(BaseReviewProvider):
@@ -34,11 +34,28 @@ class StandardReviewProvider(BaseReviewProvider):
     def save_translated_chunk(self, file_path: str, chunk_id: int, new_text: str, current_all_chunks: Dict[int, str]) -> None:
         p = Path(file_path)
         translated_path = p.parent / f"{p.stem}_translated_chunked.txt"
-        str_chunks = {str(k): v for k, v in current_all_chunks.items()}
-        save_merged_chunks_to_file(translated_path, str_chunks)
+        # 키를 str로 변환하면 사전순(1, 10, 2...) 정렬되므로 원본 int 키 유지
+        save_merged_chunks_to_file(translated_path, current_all_chunks)
 
     def generate_final_file(self, file_path: str, current_all_chunks: Dict[int, str]) -> str:
-        # Using post_processing_service to generate final
-        self.app_service.post_processing_service.process_final_file(file_path)
         p = Path(file_path)
-        return str(p.parent / f"{p.stem}_translated{p.suffix}")
+        final_output_path = p.parent / f"{p.stem}_translated{p.suffix}"
+        chunked_path = p.parent / f"{p.stem}_translated_chunked.txt"
+        
+        # 1. Update the chunked file just in case
+        save_merged_chunks_to_file(chunked_path, current_all_chunks)
+        
+        # 2. Generate final text
+        enable_post_processing = self.app_service.config.get("enable_post_processing", True)
+        if enable_post_processing:
+            final_content = self.app_service.post_processing_service.post_process_and_clean_chunks(
+                current_all_chunks, self.app_service.config
+            )
+        else:
+            sorted_indices = sorted(current_all_chunks.keys())
+            final_content = "\n\n".join([current_all_chunks[i] for i in sorted_indices])
+            
+        # 3. Write to final file
+        write_text_file(final_output_path, final_content)
+        
+        return str(final_output_path)
