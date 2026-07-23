@@ -30,7 +30,8 @@ try:
         TranslatedUnit,
         EpubNode,
         EpubChapter,
-        NodeType
+        NodeType,
+        TranslationJobProgressDTO
     )
     from utils.epub_processor import EpubProcessor
 except ImportError:
@@ -663,13 +664,21 @@ class TranslationService:
         
         return "\n\n".join(translated_parts)
 
-    async def translate_text_integrity(self, text: str, output_path_for_progress: Optional[Union[str, Path]] = None) -> str:
+    async def translate_text_integrity(
+        self, 
+        text: str, 
+        output_path_for_progress: Optional[Union[str, Path]] = None,
+        progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
+        status_callback: Optional[Callable[[str], None]] = None
+    ) -> str:
         """
         무결성 번역: 줄 단위로 분리하여 JSON 형태로 번역하고 누락을 검사합니다.
         
         Args:
             text: 번역할 전체 텍스트
             output_path_for_progress: 진행 상황 저장을 위한 임시 폴더 생성 기준 경로
+            progress_callback: 전체 작업 진행률 콜백
+            status_callback: 현재 상세 상태 메시지 콜백
             
         Returns:
             번역된 텍스트
@@ -692,6 +701,7 @@ class TranslationService:
         max_chunk_size = self.config.get("chunk_size", 6000)
         max_items = self.config.get("integrity_max_items", 100) # 무결성 모드는 더 보수적으로 잡음
         chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
+        total_chunks = len(chunks)
 
         translated_map: Dict[str, str] = {}
         
@@ -717,12 +727,25 @@ class TranslationService:
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     temp_dir.mkdir(parents=True, exist_ok=True)
 
+        if progress_callback:
+            progress_callback(TranslationJobProgressDTO(
+                total_chunks=total_chunks,
+                processed_chunks=len(translated_chunk_indices),
+                successful_chunks=len(translated_chunk_indices),
+                failed_chunks=0,
+                current_status_message=f"무결성 번역 시작 ({len(translated_chunk_indices)}/{total_chunks} 청크 완료됨)"
+            ))
+
         for i, chunk in enumerate(chunks):
             # 📍 중단 체크
             if self.stop_check_callback and self.stop_check_callback():
                 raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 시작 전)")
 
-            logger.info(f"📦 무결성 번역 청크 {i+1}/{len(chunks)} 처리 중 (항목: {len(chunk)}개)")
+            status_msg = f"무결성 번역 청크 {i+1}/{total_chunks} 처리 중..."
+            if status_callback:
+                status_callback(status_msg)
+
+            logger.info(f"📦 무결성 번역 청크 {i+1}/{total_chunks} 처리 중 (항목: {len(chunk)}개)")
             
             if i in translated_chunk_indices and temp_dir:
                 try:
@@ -731,6 +754,15 @@ class TranslationService:
                         chunk_results = json.load(f)
                     translated_map.update(chunk_results)
                     logger.info(f"  ⏭️ 이미 번역된 청크 건너뜀")
+                    if progress_callback:
+                        progress_callback(TranslationJobProgressDTO(
+                            total_chunks=total_chunks,
+                            processed_chunks=i + 1,
+                            successful_chunks=len(translated_chunk_indices),
+                            failed_chunks=0,
+                            current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 건너뜀",
+                            current_chunk_processing=i + 1
+                        ))
                     continue
                 except Exception as e:
                     logger.warning(f"  ⚠️ 저장된 청크 읽기 실패, 재번역 시도: {e}")
@@ -751,6 +783,16 @@ class TranslationService:
                 except Exception as e:
                     logger.error(f"  ❌ 무결성 진행 상태 저장 실패: {e}")
 
+            if progress_callback:
+                progress_callback(TranslationJobProgressDTO(
+                    total_chunks=total_chunks,
+                    processed_chunks=i + 1,
+                    successful_chunks=len(translated_chunk_indices),
+                    failed_chunks=0,
+                    current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 완료",
+                    current_chunk_processing=i + 1
+                ))
+
         # 4. 조립
         result_lines = []
         for i in range(len(lines)):
@@ -769,8 +811,14 @@ class TranslationService:
                 "translated_chunks": {str(i): {"status": "success"} for i in range(len(chunks))},
                 "failed_chunks": {},
             }
-            # 파일 핸들러를 이용해 output_path_for_progress를 기준으로 메타데이터 저장
+            # 파일 핸들러를 이용해 번역 파일 및 원문 파일 기준 메타데이터 모두 저장
             save_metadata(output_path_for_progress, final_metadata)
+
+            out_p = Path(output_path_for_progress)
+            if out_p.stem.endswith("_translated"):
+                orig_stem = out_p.stem[:-11]
+                orig_file_path = out_p.parent / f"{orig_stem}{out_p.suffix}"
+                save_metadata(orig_file_path, final_metadata)
 
         if temp_dir and temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)

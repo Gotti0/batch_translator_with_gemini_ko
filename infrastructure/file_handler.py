@@ -238,11 +238,36 @@ def get_metadata_file_path(input_file_path: Union[str, Path]) -> Path:
 
 def load_metadata(input_file_path: Union[str, Path]) -> Dict[str, Any]:
     metadata_path = get_metadata_file_path(input_file_path)
-    try:
-        return read_json_file(metadata_path)
-    except Exception as e:
-        logger.warning(f"메타데이터 로드 실패 ({metadata_path}): {e}. 새 메타데이터를 생성합니다.")
-        return {}
+    if metadata_path.exists():
+        try:
+            return read_json_file(metadata_path)
+        except Exception as e:
+            logger.warning(f"메타데이터 로드 실패 ({metadata_path}): {e}.")
+
+    # 📍 Fallback 1: 원문 파일 경로인데 _translated_metadata.json 만 존재하는 경우
+    p = Path(input_file_path)
+    if not p.stem.endswith('_translated'):
+        fallback_path = p.parent / f"{p.stem}_translated_metadata.json"
+        if fallback_path.exists():
+            try:
+                logger.info(f"대체 메타데이터 파일 발견: {fallback_path}")
+                return read_json_file(fallback_path)
+            except Exception as e:
+                logger.warning(f"대체 메타데이터 로드 실패 ({fallback_path}): {e}")
+
+    # 📍 Fallback 2: 번역 파일 경로(sample_translated.txt)인데 sample_metadata.json 만 존재하는 경우
+    if p.stem.endswith('_translated'):
+        orig_stem = p.stem[:-11]
+        fallback_path = p.parent / f"{orig_stem}_metadata.json"
+        if fallback_path.exists():
+            try:
+                logger.info(f"대체 메타데이터 파일 발견: {fallback_path}")
+                return read_json_file(fallback_path)
+            except Exception as e:
+                logger.warning(f"대체 메타데이터 로드 실패 ({fallback_path}): {e}")
+
+    logger.warning(f"메타데이터를 찾을 수 없음 ({metadata_path}). 새 메타데이터를 생성합니다.")
+    return {}
 
 def save_metadata(input_file_path: Union[str, Path], metadata: Dict[str, Any]) -> None:
     metadata_path = get_metadata_file_path(input_file_path)

@@ -9,8 +9,14 @@ class BaseReviewProvider(ABC):
     """
     def __init__(self, app_service):
         self.app_service = app_service
-        self.translation_service = app_service.translation_service
-        self.chunk_service = app_service.translation_service.chunk_service
+        self.translation_service = getattr(app_service, 'translation_service', None)
+        
+        from utils.chunk_service import ChunkService
+        chunk_svc = getattr(self.translation_service, 'chunk_service', None) if self.translation_service else None
+        if isinstance(chunk_svc, ChunkService):
+            self.chunk_service = chunk_svc
+        else:
+            self.chunk_service = ChunkService()
         self.quality_service = app_service.review_tab.quality_service if hasattr(app_service, 'review_tab') else None
         
         # fallback to direct import if needed

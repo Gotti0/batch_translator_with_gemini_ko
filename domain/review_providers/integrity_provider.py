@@ -6,6 +6,17 @@ from infrastructure.file_handler import load_metadata, read_text_file
 from domain.review_providers.base_provider import BaseReviewProvider
 
 class IntegrityReviewProvider(BaseReviewProvider):
+    def _resolve_paths(self, file_path: str) -> tuple[Path, Path]:
+        p = Path(file_path)
+        if p.stem.endswith("_translated"):
+            orig_stem = p.stem[:-11]
+            source_path = p.parent / f"{orig_stem}{p.suffix}"
+            translated_path = p
+        else:
+            source_path = p
+            translated_path = p.parent / f"{p.stem}_translated{p.suffix}"
+        return source_path, translated_path
+
     def load_metadata(self, file_path: str) -> Dict[str, Any]:
         return load_metadata(file_path)
 
@@ -16,19 +27,23 @@ class IntegrityReviewProvider(BaseReviewProvider):
         lines = content.splitlines()
         units = [TranslationUnit(id=str(i), text=line) for i, line in enumerate(lines)]
         
-        max_chunk_size = self.app_service.config.get("chunk_size", 6000)
-        max_items = self.app_service.config.get("integrity_max_items", 200)
+        config = getattr(self.app_service, "config", {}) or {}
+        max_chunk_size = config.get("chunk_size", 6000) if isinstance(config, dict) else 6000
+        max_items = config.get("integrity_max_items", 200) if isinstance(config, dict) else 200
+        if not isinstance(max_chunk_size, int):
+            max_chunk_size = 6000
+        if not isinstance(max_items, int):
+            max_items = 200
+
         return self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
 
     def load_source_chunks(self, file_path: str) -> Dict[int, str]:
-        chunks = self._get_chunked_units(file_path)
+        source_path, _ = self._resolve_paths(file_path)
+        chunks = self._get_chunked_units(str(source_path))
         return {i: "\n".join(u.text for u in chunk) for i, chunk in enumerate(chunks)}
 
     def load_translated_chunks(self, file_path: str) -> Dict[int, str]:
-        p = Path(file_path)
-        # 무결성 모드는 최종 결과물이 file_path의 translated 파일로 나옵니다.
-        # 원본과 1:1 라인 매핑이 되므로, 다시 청크 길이만큼 잘라서 반환합니다.
-        translated_path = p.parent / f"{p.stem}_translated{p.suffix}"
+        source_path, translated_path = self._resolve_paths(file_path)
         
         if not translated_path.exists():
             return {}
@@ -38,7 +53,7 @@ class IntegrityReviewProvider(BaseReviewProvider):
             return {}
             
         translated_lines = translated_content.splitlines()
-        chunks = self._get_chunked_units(file_path)
+        chunks = self._get_chunked_units(str(source_path))
         
         translated_chunks_map = {}
         line_idx = 0
@@ -86,8 +101,7 @@ class IntegrityReviewProvider(BaseReviewProvider):
         return "\n".join(result_lines)
 
     def save_translated_chunk(self, file_path: str, chunk_id: int, new_text: str, current_all_chunks: Dict[int, str]) -> None:
-        p = Path(file_path)
-        translated_path = p.parent / f"{p.stem}_translated{p.suffix}"
+        _, translated_path = self._resolve_paths(file_path)
         
         # 무결성은 모든 청크를 순서대로 합치면 최종 파일이 됩니다.
         final_lines = []

@@ -741,16 +741,16 @@ class AppService:
                 status_callback("무결성 번역 시작 (줄 단위 검증)...")
             try:
                 file_content = read_text_file(input_file_path_obj)
-                translated_text = await self.translation_service.translate_text_integrity(file_content, output_path_for_progress=final_output_file_path_obj)
+                translated_text = await self.translation_service.translate_text_integrity(
+                    file_content,
+                    output_path_for_progress=final_output_file_path_obj,
+                    progress_callback=progress_callback,
+                    status_callback=status_callback
+                )
                 write_text_file(final_output_file_path_obj, translated_text)
                 
                 if status_callback:
                     status_callback("무결성 번역 완료!")
-                if progress_callback:
-                    progress_callback(TranslationJobProgressDTO(
-                        total_chunks=1, processed_chunks=1, successful_chunks=1, failed_chunks=0,
-                        current_status_message="무결성 번역 완료"
-                    ))
                 return
             except Exception as e_int:
                 logger.error(f"무결성 번역 중 오류: {e_int}")
