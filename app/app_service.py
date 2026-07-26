@@ -726,6 +726,15 @@ class AppService:
             if status_callback:
                 status_callback("EPUB 번역 중...")
             await self.translation_service.translate_epub(input_file_path, output_file_path)
+            
+            # 메타데이터 영속화 (애플리케이션 레이어 처리)
+            epub_meta = {
+                "pipeline_type": "epub",
+                "status": "completed",
+                "last_updated": time.time()
+            }
+            save_metadata(input_file_path_obj, epub_meta)
+            
             if status_callback:
                 status_callback("EPUB 번역 완료!")
             if progress_callback:
@@ -740,15 +749,53 @@ class AppService:
             if status_callback:
                 status_callback("무결성 번역 시작 (줄 단위 검증)...")
             try:
+                metadata_file_path = get_metadata_file_path(input_file_path_obj)
+                
+                # 📍 메타데이터 핸들링 (애플리케이션 레이어)
+                loaded_metadata = load_metadata(input_file_path_obj) or {
+                    "pipeline_type": "integrity",
+                    "total_chunks": 0,
+                    "translated_chunks": {},
+                    "failed_chunks": {},
+                    "status": "in_progress",
+                    "last_updated": time.time()
+                }
+                loaded_metadata["pipeline_type"] = "integrity"
+                loaded_metadata["status"] = "in_progress"
+                loaded_metadata["last_updated"] = time.time()
+                save_metadata(metadata_file_path, loaded_metadata)
+
+                def integrity_progress_handler(dto: TranslationJobProgressDTO):
+                    # Progress DTO 수신 시 메타데이터 갱신 및 파일 저장 (애플리케이션 레이어 위임)
+                    loaded_metadata["total_chunks"] = dto.total_chunks
+                    translated_dict = loaded_metadata.get("translated_chunks", {})
+                    if not isinstance(translated_dict, dict):
+                        translated_dict = {}
+                    for idx in range(dto.successful_chunks):
+                        translated_dict[str(idx)] = {"status": "success"}
+                    loaded_metadata["translated_chunks"] = translated_dict
+                    loaded_metadata["status"] = "in_progress" if dto.processed_chunks < dto.total_chunks else "completed"
+                    loaded_metadata["last_updated"] = time.time()
+                    save_metadata(metadata_file_path, loaded_metadata)
+                    
+                    if progress_callback:
+                        progress_callback(dto)
+
                 file_content = read_text_file(input_file_path_obj)
                 translated_text = await self.translation_service.translate_text_integrity(
                     file_content,
                     output_path_for_progress=final_output_file_path_obj,
-                    progress_callback=progress_callback,
-                    status_callback=status_callback
+                    progress_callback=integrity_progress_handler,
+                    status_callback=status_callback,
+                    tqdm_file_stream=tqdm_file_stream
                 )
                 write_text_file(final_output_file_path_obj, translated_text)
                 
+                # 📍 완결 후 최종 상태 갱신
+                loaded_metadata["status"] = "completed"
+                loaded_metadata["last_updated"] = time.time()
+                save_metadata(metadata_file_path, loaded_metadata)
+
                 if status_callback:
                     status_callback("무결성 번역 완료!")
                 return

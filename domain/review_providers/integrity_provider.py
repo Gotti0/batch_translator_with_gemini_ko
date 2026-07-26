@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -6,7 +7,7 @@ from infrastructure.file_handler import load_metadata, read_text_file
 from domain.review_providers.base_provider import BaseReviewProvider
 
 class IntegrityReviewProvider(BaseReviewProvider):
-    def _resolve_paths(self, file_path: str) -> tuple[Path, Path]:
+    def _resolve_paths(self, file_path: str) -> tuple[Path, Path, Path]:
         p = Path(file_path)
         if p.stem.endswith("_translated"):
             orig_stem = p.stem[:-11]
@@ -15,7 +16,9 @@ class IntegrityReviewProvider(BaseReviewProvider):
         else:
             source_path = p
             translated_path = p.parent / f"{p.stem}_translated{p.suffix}"
-        return source_path, translated_path
+            
+        temp_dir = translated_path.parent / f"{translated_path.stem}_integrity_temp"
+        return source_path, translated_path, temp_dir
 
     def load_metadata(self, file_path: str) -> Dict[str, Any]:
         return load_metadata(file_path)
@@ -38,13 +41,33 @@ class IntegrityReviewProvider(BaseReviewProvider):
         return self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
 
     def load_source_chunks(self, file_path: str) -> Dict[int, str]:
-        source_path, _ = self._resolve_paths(file_path)
+        source_path, _, _ = self._resolve_paths(file_path)
         chunks = self._get_chunked_units(str(source_path))
         return {i: "\n".join(u.text for u in chunk) for i, chunk in enumerate(chunks)}
 
     def load_translated_chunks(self, file_path: str) -> Dict[int, str]:
-        source_path, translated_path = self._resolve_paths(file_path)
-        
+        source_path, translated_path, temp_dir = self._resolve_paths(file_path)
+        chunks = self._get_chunked_units(str(source_path))
+        translated_chunks_map = {}
+
+        # 📍 Primary: 임시 JSON 디렉터리(chunk_{i}.json)가 존재하는 경우 단위 ID 기반 로딩 (부분 완료 청크도 로드)
+        if temp_dir.exists():
+            for i, chunk in enumerate(chunks):
+                chunk_file = temp_dir / f"chunk_{i}.json"
+                if chunk_file.exists():
+                    try:
+                        with open(chunk_file, "r", encoding="utf-8") as f:
+                            chunk_data = json.load(f)
+                        if isinstance(chunk_data, dict):
+                            chunk_lines = [chunk_data.get(u.id, "") for u in chunk]
+                            translated_chunks_map[i] = "\n".join(chunk_lines)
+                    except Exception:
+                        pass
+
+            if translated_chunks_map:
+                return translated_chunks_map
+
+        # 📍 Fallback: 하위 호환성 (임시 JSON 디렉터리가 없는 기존/레거시 번역 파일)
         if not translated_path.exists():
             return {}
             
@@ -53,9 +76,7 @@ class IntegrityReviewProvider(BaseReviewProvider):
             return {}
             
         translated_lines = translated_content.splitlines()
-        chunks = self._get_chunked_units(str(source_path))
         
-        translated_chunks_map = {}
         line_idx = 0
         for i, chunk in enumerate(chunks):
             chunk_length = len(chunk)
@@ -101,9 +122,34 @@ class IntegrityReviewProvider(BaseReviewProvider):
         return "\n".join(result_lines)
 
     def save_translated_chunk(self, file_path: str, chunk_id: int, new_text: str, current_all_chunks: Dict[int, str]) -> None:
-        _, translated_path = self._resolve_paths(file_path)
+        source_path, translated_path, temp_dir = self._resolve_paths(file_path)
+        chunks = self._get_chunked_units(str(source_path))
         
-        # 무결성은 모든 청크를 순서대로 합치면 최종 파일이 됩니다.
+        # 1. 임시 JSON 디렉터리 동기화 (chunk_{chunk_id}.json)
+        if chunk_id < len(chunks):
+            target_chunk = chunks[chunk_id]
+            lines = new_text.splitlines()
+            chunk_data = {}
+            num_units = len(target_chunk)
+            if num_units > 0:
+                if len(lines) <= num_units:
+                    for idx, unit in enumerate(target_chunk):
+                        chunk_data[unit.id] = lines[idx] if idx < len(lines) else ""
+                else:
+                    # 개행 문자로 인해 라인 수가 더 많은 경우: 마지막 단위에 나머지 개행 라인 보존
+                    for idx in range(num_units - 1):
+                        chunk_data[target_chunk[idx].id] = lines[idx]
+                    chunk_data[target_chunk[-1].id] = "\n".join(lines[num_units - 1:])
+            
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            chunk_file = temp_dir / f"chunk_{chunk_id}.json"
+            try:
+                with open(chunk_file, "w", encoding="utf-8") as f:
+                    json.dump(chunk_data, f, ensure_ascii=False)
+            except Exception:
+                pass
+
+        # 2. 전체 파일(*_translated.txt) 합쳐서 저장
         final_lines = []
         for i in range(len(current_all_chunks)):
             if i in current_all_chunks:
@@ -116,3 +162,4 @@ class IntegrityReviewProvider(BaseReviewProvider):
         # 이미 save_translated_chunk에서 직접 덮어쓰므로 경로만 반환합니다.
         p = Path(file_path)
         return str(p.parent / f"{p.stem}_translated{p.suffix}")
+

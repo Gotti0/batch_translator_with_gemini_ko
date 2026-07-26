@@ -60,3 +60,63 @@ def test_integrity_review_provider_compatibility(tmp_path):
     assert "Line 1 text" in source_chunks_from_trans_path[0]
     assert len(trans_chunks_from_trans_path) == 1
     assert "1줄 번역" in trans_chunks_from_trans_path[0]
+
+def test_integrity_review_provider_temp_json_cache(tmp_path):
+    import json
+    source_file = tmp_path / "novel2.txt"
+    translated_file = tmp_path / "novel2_translated.txt"
+    temp_dir = tmp_path / "novel2_translated_integrity_temp"
+    temp_dir.mkdir()
+
+    source_lines = ["Line 1", "Line 2"]
+    source_file.write_text("\n".join(source_lines), encoding="utf-8")
+    translated_file.write_text("1줄 번역\n2줄 번역", encoding="utf-8")
+
+    # Create chunk_0.json inside temp_dir mapping unit IDs to translated lines
+    chunk_0_data = {"0": "1줄 번역 (JSON)", "1": "2줄 번역 (JSON)"}
+    (temp_dir / "chunk_0.json").write_text(json.dumps(chunk_0_data, ensure_ascii=False), encoding="utf-8")
+
+    mock_app_service = MagicMock()
+    mock_app_service.config = {"chunk_size": 6000, "integrity_max_items": 100}
+
+    provider = IntegrityReviewProvider(mock_app_service)
+    trans_chunks = provider.load_translated_chunks(str(source_file))
+
+    # Should prefer JSON cache over translated_file text
+    assert len(trans_chunks) == 1
+    assert trans_chunks[0] == "1줄 번역 (JSON)\n2줄 번역 (JSON)"
+
+    # Test saving modified chunk updates both JSON cache and translated_file
+    new_text = "1줄 수정\n2줄 수정"
+    trans_chunks[0] = new_text
+    provider.save_translated_chunk(str(source_file), 0, new_text, trans_chunks)
+    
+    updated_json = json.loads((temp_dir / "chunk_0.json").read_text(encoding="utf-8"))
+    assert updated_json["0"] == "1줄 수정"
+    assert updated_json["1"] == "2줄 수정"
+    assert translated_file.read_text(encoding="utf-8") == "1줄 수정\n2줄 수정"
+
+def test_integrity_review_provider_internal_newlines(tmp_path):
+    import json
+    source_file = tmp_path / "novel3.txt"
+    translated_file = tmp_path / "novel3_translated.txt"
+    temp_dir = tmp_path / "novel3_translated_integrity_temp"
+    temp_dir.mkdir()
+
+    source_lines = ["Line 1", "Line 2"]
+    source_file.write_text("\n".join(source_lines), encoding="utf-8")
+
+    # Unit 0 has internal newlines (\n\n)
+    chunk_0_data = {"0": "1줄 번역\n\n두번째 단락", "1": "2줄 번역"}
+    (temp_dir / "chunk_0.json").write_text(json.dumps(chunk_0_data, ensure_ascii=False), encoding="utf-8")
+
+    mock_app_service = MagicMock()
+    mock_app_service.config = {"chunk_size": 6000, "integrity_max_items": 100}
+
+    provider = IntegrityReviewProvider(mock_app_service)
+    trans_chunks = provider.load_translated_chunks(str(source_file))
+
+    assert len(trans_chunks) == 1
+    assert trans_chunks[0] == "1줄 번역\n\n두번째 단락\n2줄 번역"
+
+

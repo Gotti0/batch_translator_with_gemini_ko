@@ -29,9 +29,14 @@ class QtGuiLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            is_chunk_complete = "🎯" in msg and "전체 처리 완료" in msg
-            if "⚠️" not in msg and not is_chunk_complete and record.levelno < logging.ERROR:
+            # 주요 번역 진행상황 이모지 및 키워드 감지 (표준, 무결성, EPUB 파이프라인 통합)
+            progress_keywords = ("🎯", "📦", "⏭️", "✅", "⚠️", "무결성", "EPUB", "전체 처리 완료")
+            is_translation_progress = any(k in msg for k in progress_keywords)
+
+            # 경고/에러 레벨 이상이거나 주요 번역 진행 로그가 아니면 걸러냄
+            if record.levelno < logging.WARNING and not is_translation_progress:
                 return
+
             level_name = record.levelname
             self.emitter.message.emit(msg, level_name)
         except Exception:

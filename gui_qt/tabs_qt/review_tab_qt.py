@@ -554,13 +554,28 @@ class ReviewTabQt(QtWidgets.QWidget):
             if idx_str in translated_chunks:
                 info = translated_chunks[idx_str]
                 if isinstance(info, dict):
-                    src_len = str(info.get("source_length", "-"))
-                    trans_len = str(info.get("translated_length", "-"))
-                    r = info.get("ratio", "-")
-                    if isinstance(r, float):
-                        ratio = f"{r:.2f}"
+                    raw_src = info.get("source_length")
+                    raw_trans = info.get("translated_length")
+                    raw_ratio = info.get("ratio")
+                    
+                    if (raw_src is None or raw_src == "-") and i in self.source_chunks:
+                        raw_src = len(self.source_chunks[i])
+                    if (raw_trans is None or raw_trans == "-") and i in self.translated_chunks:
+                        raw_trans = len(self.translated_chunks[i])
+                    if (raw_ratio is None or raw_ratio == "-") and raw_src and raw_trans:
+                        try:
+                            s_val, t_val = int(raw_src), int(raw_trans)
+                            if s_val > 0:
+                                raw_ratio = t_val / s_val
+                        except (ValueError, TypeError):
+                            pass
+                            
+                    src_len = str(raw_src) if raw_src is not None else "-"
+                    trans_len = str(raw_trans) if raw_trans is not None else "-"
+                    if isinstance(raw_ratio, float):
+                        ratio = f"{raw_ratio:.2f}"
                     else:
-                        ratio = str(r)
+                        ratio = str(raw_ratio) if raw_ratio is not None else "-"
                 if i in suspicious_map:
                     issue = suspicious_map[i].get("issue_type", "")
                     z = suspicious_map[i].get("z_score", 0)

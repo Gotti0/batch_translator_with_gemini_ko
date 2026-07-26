@@ -18,7 +18,7 @@ try:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from infrastructure.file_handler import read_json_file, save_metadata
+    from infrastructure.file_handler import read_json_file
     from infrastructure.logger_config import setup_logger
     from core.exceptions import BtgTranslationException, BtgApiClientException
     from utils.chunk_service import ChunkService
@@ -43,7 +43,7 @@ except ImportError:
         GeminiInvalidRequestException,
         GeminiAllApiKeysExhaustedException 
     )
-    from infrastructure.file_handler import read_json_file, save_metadata  # type: ignore
+    from infrastructure.file_handler import read_json_file  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
     from core.exceptions import BtgTranslationException, BtgApiClientException  # type: ignore
     from utils.chunk_service import ChunkService  # type: ignore
@@ -669,7 +669,8 @@ class TranslationService:
         text: str, 
         output_path_for_progress: Optional[Union[str, Path]] = None,
         progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
-        status_callback: Optional[Callable[[str], None]] = None
+        status_callback: Optional[Callable[[str], None]] = None,
+        tqdm_file_stream: Optional[Any] = None
     ) -> str:
         """
         무결성 번역: 줄 단위로 분리하여 JSON 형태로 번역하고 누락을 검사합니다.
@@ -679,6 +680,7 @@ class TranslationService:
             output_path_for_progress: 진행 상황 저장을 위한 임시 폴더 생성 기준 경로
             progress_callback: 전체 작업 진행률 콜백
             status_callback: 현재 상세 상태 메시지 콜백
+            tqdm_file_stream: tqdm 프로그레스 바 출력을 위한 스트림 객체
             
         Returns:
             번역된 텍스트
@@ -699,33 +701,30 @@ class TranslationService:
 
         # 2. 청크 분할
         max_chunk_size = self.config.get("chunk_size", 6000)
-        max_items = self.config.get("integrity_max_items", 100) # 무결성 모드는 더 보수적으로 잡음
+        max_items = self.config.get("integrity_max_items", 200) # 무결성 모드 기본값 200
         chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
         total_chunks = len(chunks)
 
         translated_map: Dict[str, str] = {}
         
         temp_dir = None
-        metadata_path = None
-        metadata = {"translated_chunks": []}
         translated_chunk_indices = set()
         
         if output_path_for_progress:
             out_p = Path(output_path_for_progress)
             temp_dir = out_p.parent / f"{out_p.stem}_integrity_temp"
             temp_dir.mkdir(parents=True, exist_ok=True)
-            metadata_path = temp_dir / "integrity_metadata.json"
             
-            if metadata_path.exists():
-                try:
-                    with open(metadata_path, 'r', encoding='utf-8') as f:
-                        metadata = json.load(f)
-                    translated_chunk_indices = set(metadata.get("translated_chunks", []))
+            # 기존 저장된 임시 청크 파일들로부터 진행 상태 복원
+            if temp_dir.exists():
+                for f in temp_dir.glob("chunk_*.json"):
+                    try:
+                        chunk_idx = int(f.stem.split("_")[1])
+                        translated_chunk_indices.add(chunk_idx)
+                    except (IndexError, ValueError):
+                        pass
+                if translated_chunk_indices:
                     logger.info(f"기존 무결성 번역 진행 상태 로드됨: {len(translated_chunk_indices)}개 청크 완료")
-                except Exception as e:
-                    logger.warning(f"무결성 메타데이터 읽기 실패: {e}. 임시 폴더를 초기화합니다.")
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                    temp_dir.mkdir(parents=True, exist_ok=True)
 
         if progress_callback:
             progress_callback(TranslationJobProgressDTO(
@@ -736,62 +735,82 @@ class TranslationService:
                 current_status_message=f"무결성 번역 시작 ({len(translated_chunk_indices)}/{total_chunks} 청크 완료됨)"
             ))
 
-        for i, chunk in enumerate(chunks):
-            # 📍 중단 체크
-            if self.stop_check_callback and self.stop_check_callback():
-                raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 시작 전)")
+        pbar = None
+        if tqdm_file_stream:
+            try:
+                from tqdm import tqdm
+                pbar = tqdm(
+                    total=total_chunks,
+                    initial=len(translated_chunk_indices),
+                    desc="무결성 번역",
+                    unit="청크",
+                    file=tqdm_file_stream,
+                    ncols=100,
+                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                )
+            except Exception as pbar_e:
+                logger.debug(f"tqdm 초기화 실패: {pbar_e}")
 
-            status_msg = f"무결성 번역 청크 {i+1}/{total_chunks} 처리 중..."
-            if status_callback:
-                status_callback(status_msg)
+        try:
+            for i, chunk in enumerate(chunks):
+                # 📍 중단 체크
+                if self.stop_check_callback and self.stop_check_callback():
+                    raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 시작 전)")
 
-            logger.info(f"📦 무결성 번역 청크 {i+1}/{total_chunks} 처리 중 (항목: {len(chunk)}개)")
-            
-            if i in translated_chunk_indices and temp_dir:
-                try:
-                    chunk_file = temp_dir / f"chunk_{i}.json"
-                    with open(chunk_file, 'r', encoding='utf-8') as f:
-                        chunk_results = json.load(f)
-                    translated_map.update(chunk_results)
-                    logger.info(f"  ⏭️ 이미 번역된 청크 건너뜀")
-                    if progress_callback:
-                        progress_callback(TranslationJobProgressDTO(
-                            total_chunks=total_chunks,
-                            processed_chunks=i + 1,
-                            successful_chunks=len(translated_chunk_indices),
-                            failed_chunks=0,
-                            current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 건너뜀",
-                            current_chunk_processing=i + 1
-                        ))
-                    continue
-                except Exception as e:
-                    logger.warning(f"  ⚠️ 저장된 청크 읽기 실패, 재번역 시도: {e}")
+                status_msg = f"무결성 번역 청크 {i+1}/{total_chunks} 처리 중..."
+                if status_callback:
+                    status_callback(status_msg)
 
-            # 3. API 요청 및 검증 (재시도 포함)
-            chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
-            translated_map.update(chunk_results)
-            
-            if temp_dir and metadata_path:
-                try:
-                    chunk_file = temp_dir / f"chunk_{i}.json"
-                    with open(chunk_file, 'w', encoding='utf-8') as f:
-                        json.dump(chunk_results, f, ensure_ascii=False)
-                    translated_chunk_indices.add(i)
-                    metadata["translated_chunks"] = list(translated_chunk_indices)
-                    with open(metadata_path, 'w', encoding='utf-8') as f:
-                        json.dump(metadata, f, ensure_ascii=False)
-                except Exception as e:
-                    logger.error(f"  ❌ 무결성 진행 상태 저장 실패: {e}")
+                logger.info(f"📦 무결성 번역 청크 {i+1}/{total_chunks} 처리 중 (항목: {len(chunk)}개)")
+                
+                if i in translated_chunk_indices and temp_dir:
+                    try:
+                        chunk_file = temp_dir / f"chunk_{i}.json"
+                        with open(chunk_file, 'r', encoding='utf-8') as f:
+                            chunk_results = json.load(f)
+                        translated_map.update(chunk_results)
+                        logger.info(f"  ⏭️ 이미 번역된 청크 건너뜀")
+                        if progress_callback:
+                            progress_callback(TranslationJobProgressDTO(
+                                total_chunks=total_chunks,
+                                processed_chunks=i + 1,
+                                successful_chunks=len(translated_chunk_indices),
+                                failed_chunks=0,
+                                current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 건너뜀",
+                                current_chunk_processing=i + 1
+                            ))
+                        continue
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ 저장된 청크 읽기 실패, 재번역 시도: {e}")
 
-            if progress_callback:
-                progress_callback(TranslationJobProgressDTO(
-                    total_chunks=total_chunks,
-                    processed_chunks=i + 1,
-                    successful_chunks=len(translated_chunk_indices),
-                    failed_chunks=0,
-                    current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 완료",
-                    current_chunk_processing=i + 1
-                ))
+                # 3. API 요청 및 검증 (재시도 포함)
+                chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
+                translated_map.update(chunk_results)
+                
+                if temp_dir:
+                    try:
+                        chunk_file = temp_dir / f"chunk_{i}.json"
+                        with open(chunk_file, 'w', encoding='utf-8') as f:
+                            json.dump(chunk_results, f, ensure_ascii=False)
+                        translated_chunk_indices.add(i)
+                    except Exception as e:
+                        logger.error(f"  ❌ 무결성 임시 청크 저장 실패: {e}")
+
+                if pbar:
+                    pbar.update(1)
+
+                if progress_callback:
+                    progress_callback(TranslationJobProgressDTO(
+                        total_chunks=total_chunks,
+                        processed_chunks=i + 1,
+                        successful_chunks=len(translated_chunk_indices),
+                        failed_chunks=0,
+                        current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 완료",
+                        current_chunk_processing=i + 1
+                    ))
+        finally:
+            if pbar:
+                pbar.close()
 
         # 4. 조립
         result_lines = []
@@ -803,25 +822,8 @@ class TranslationService:
             with open(output_path_for_progress, "w", encoding="utf-8") as f:
                 f.write("\n".join(result_lines))
 
-            # 성공 시 메타데이터 영구 보존 (Review 탭 다형성 지원용)
-            # 일반 번역처럼 메타데이터를 저장하되, pipeline_type을 명시
-            final_metadata = {
-                "pipeline_type": "integrity",
-                "total_chunks": len(chunks),
-                "translated_chunks": {str(i): {"status": "success"} for i in range(len(chunks))},
-                "failed_chunks": {},
-            }
-            # 파일 핸들러를 이용해 번역 파일 및 원문 파일 기준 메타데이터 모두 저장
-            save_metadata(output_path_for_progress, final_metadata)
-
-            out_p = Path(output_path_for_progress)
-            if out_p.stem.endswith("_translated"):
-                orig_stem = out_p.stem[:-11]
-                orig_file_path = out_p.parent / f"{orig_stem}{out_p.suffix}"
-                save_metadata(orig_file_path, final_metadata)
-
         if temp_dir and temp_dir.exists():
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            logger.info(f"무결성 검수 캐시 및 진행 상태 파일 보존: {temp_dir}")
 
         return "\n".join(result_lines)
 
@@ -940,7 +942,10 @@ class TranslationService:
                 except Exception:
                     continue
             
-            translated_map = {u.id: u.translated_text for u in translated_units}
+            translated_map = {
+                u.id: (u.translated_text if u.translated_text else "")
+                for u in translated_units
+            }
             requested_ids = {u.id for u in chunk}
             received_ids = set(translated_map.keys())
             missing_ids = requested_ids - received_ids
@@ -1051,7 +1056,7 @@ class TranslationService:
                                     
                                     # 청크 분할 및 번역 요청
                                     max_chunk_size = self.config.get("chunk_size", 6000)
-                                    max_items = self.config.get("integrity_max_items", 100)
+                                    max_items = self.config.get("integrity_max_items", 200)
                                     chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
                                     
                                     translated_map: Dict[str, str] = {}
@@ -1093,10 +1098,7 @@ class TranslationService:
                             else:
                                 zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
 
-            # 성공적으로 완료되면 메타데이터를 영구 보존하고 임시 디렉토리 삭제
-            metadata["pipeline_type"] = "epub"
-            save_metadata(epub_path, metadata)
-            
+            # 성공적으로 완료되면 임시 디렉토리 삭제
             shutil.rmtree(temp_dir, ignore_errors=True)
             logger.info(f"✅ EPUB 번역 완료: {output_path.name}")
 
