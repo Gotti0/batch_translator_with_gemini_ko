@@ -45,8 +45,7 @@ config.json
 
 배치_번역기.spec
 
-gen-lang-client-0390376538-c7594c7326a2.json
-gemini-api-3-476202-3ca90c673e7f.json
+
 /prompt_libaray
 *.log
 .\d+
@@ -58,3 +57,4 @@ main_gui_backup.py
 
 DESIGN.md
 IMPLEMENTATION.md
+.agents/

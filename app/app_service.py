@@ -405,6 +405,33 @@ class AppService:
             for t in [extraction_task, cancel_watch_task]:
                 if not t.done(): t.cancel()
 
+    def extract_text_from_file(self, file_path: Union[str, Path]) -> str:
+        """
+        파일 확장자에 따라 알맞은 방식으로 텍스트 내용을 추출합니다.
+        - .epub: EpubReviewProvider를 통해 모든 텍스트 노드를 파싱하여 추출
+        - 기타 (.txt 등): read_text_file을 통한 UTF-8 텍스트 로드
+        """
+        path = Path(file_path)
+        if not path.exists():
+            logger.error(f"파일을 찾을 수 없습니다: {file_path}")
+            raise FileNotFoundError(f"파일을 찾을 수 없습니다: {file_path}")
+
+        ext = path.suffix.lower()
+        if ext == '.epub':
+            try:
+                from domain.review_providers.epub_provider import EpubReviewProvider
+                provider = EpubReviewProvider(self)
+                source_chunks = provider.load_source_chunks(str(path))
+                if not source_chunks:
+                    logger.warning(f"EPUB 파일에서 텍스트 노드를 추출하지 못했습니다: {file_path}")
+                    return ""
+                return "\n\n".join(source_chunks.values())
+            except Exception as e:
+                logger.error(f"EPUB 텍스트 추출 중 오류 발생 ({file_path}): {e}", exc_info=True)
+                raise
+        else:
+            return read_text_file(path)
+
     async def _do_glossary_extraction_async(
         self,
         input_file_path: Union[str, Path],
@@ -418,7 +445,7 @@ class AppService:
         all_extracted_entries = []
         seed_entries = []
         try:
-            file_content = read_text_file(input_file_path)
+            file_content = self.extract_text_from_file(input_file_path)
             if not file_content:
                 logger.warning("입력 파일이 비어 있어 작업을 중단합니다.")
                 return Path(input_file_path)
