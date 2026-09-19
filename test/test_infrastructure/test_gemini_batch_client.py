@@ -7,13 +7,21 @@ from unittest.mock import patch, MagicMock, mock_open
 mock_genai = MagicMock()
 mock_genai.types = MagicMock()
 
-# 모듈 경로에 가짜 모듈을 등록
+# 모듈 경로에 가짜 모듈을 등록하되, 대상 모듈을 임포트한 뒤에는 원래대로 되돌린다.
+# 되돌리지 않으면 같은 세션에서 뒤에 수집되는 테스트가 가짜 google.genai를 쓰게 된다.
 import sys
+_saved_modules = {name: sys.modules.get(name) for name in ('google.genai', 'google.genai.types')}
 sys.modules['google.genai'] = mock_genai
 sys.modules['google.genai.types'] = mock_genai.types
-
-# 이제 테스트 대상 클래스를 임포트합니다.
-from infrastructure.gemini_batch_client import GeminiBatchClient
+try:
+    # 이제 테스트 대상 클래스를 임포트합니다.
+    from infrastructure.gemini_batch_client import GeminiBatchClient
+finally:
+    for _name, _module in _saved_modules.items():
+        if _module is None:
+            sys.modules.pop(_name, None)
+        else:
+            sys.modules[_name] = _module
 
 @pytest.fixture(autouse=True)
 def reset_mocks():
