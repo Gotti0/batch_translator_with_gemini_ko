@@ -29,11 +29,13 @@ try:
     from .key_pool import KeyPool
     from .error_classifier import classify, ErrorKind
     from .retry_policy import Action, RetryPolicy
+    from .circuit_breaker import CircuitBreaker
 except ImportError:
     from infrastructure.request_scheduler import RequestScheduler
     from infrastructure.key_pool import KeyPool
     from infrastructure.error_classifier import classify, ErrorKind
     from infrastructure.retry_policy import Action, RetryPolicy
+    from infrastructure.circuit_breaker import CircuitBreaker
 logger = setup_logger(__name__)
 
 class GeminiApiException(Exception):
@@ -64,6 +66,14 @@ class GeminiRetriesExhaustedException(GeminiAllApiKeysExhaustedException):
     재시도는 같은 키로만 하므로 키가 소진된 것은 아니다. 그래도 호출부가 작업을 멈추도록
     GeminiAllApiKeysExhaustedException을 상속한다. 이전에는 이 상황에서 모든 키를 돈 뒤 같은
     예외로 작업이 멈췄으므로, 중단 동작은 유지하고 시도 횟수만 줄인다.
+    """
+    pass
+
+class GeminiServiceUnavailableException(GeminiApiException):
+    """503 과부하로 재시도(요청당 1회)까지 실패한 경우.
+
+    키 문제가 아니므로 작업 전체를 멈추지 않고 이 요청(청크)만 실패로 끝낸다. 실패한 청크는 이어하기로
+    다시 처리된다. 과부하가 이어지면 서킷브레이커가 다음 요청들을 멈춘다.
     """
     pass
 
@@ -169,7 +179,10 @@ class GeminiClient:
                  location: Optional[str] = None,
                  requests_per_minute: Optional[float] = None,
                  api_timeout: float = 500.0,
-                 scheduler: Optional[RequestScheduler] = None):
+                 scheduler: Optional[RequestScheduler] = None,
+                 overload_pause_threshold: int = 3,
+                 overload_pause_seconds: float = 300.0,
+                 overload_max_pause_seconds: float = 1800.0):
         
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
         
@@ -195,6 +208,11 @@ class GeminiClient:
         # RPM control: 시작 간격과 동시 진행 1개를 스케줄러가 보장한다 (재시도·list_models 포함)
         self.requests_per_minute = requests_per_minute or 140.0
         self._scheduler = scheduler or RequestScheduler(self.requests_per_minute)
+        # 연속 503이면 모든 요청을 잠시 멈춘다. 스케줄러가 슬롯을 내주기 전에 확인한다
+        if self._scheduler.breaker is None:
+            self._scheduler.breaker = CircuitBreaker(overload_pause_threshold, overload_pause_seconds,
+                                                     overload_max_pause_seconds, clock=self._scheduler.clock)
+        self._breaker = self._scheduler.breaker
 
         # Determine authentication mode and process credentials
         service_account_info: Optional[Dict[str, Any]] = None
@@ -652,25 +670,28 @@ class GeminiClient:
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
                 
                     text_content_from_api: Optional[str] = None
+                    # API 호출 결과(성공·503·기타)를 서킷브레이커에 기록한다
                     if stream:
-                        response_stream = await sdk_client.aio.models.generate_content_stream(
-                            model=effective_model_name,
-                            contents=final_sdk_contents,
-                            config=sdk_generation_config
-                        )
-                        aggregated_parts = []
-                        async for chunk_response in response_stream:
-                            if hasattr(chunk_response, 'text') and chunk_response.text:
-                                aggregated_parts.append(chunk_response.text)
-                            if self._is_content_safety_error(response=chunk_response):
-                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림 응답 차단")
+                        with self._breaker.observe():
+                            response_stream = await sdk_client.aio.models.generate_content_stream(
+                                model=effective_model_name,
+                                contents=final_sdk_contents,
+                                config=sdk_generation_config
+                            )
+                            aggregated_parts = []
+                            async for chunk_response in response_stream:
+                                if hasattr(chunk_response, 'text') and chunk_response.text:
+                                    aggregated_parts.append(chunk_response.text)
+                                if self._is_content_safety_error(response=chunk_response):
+                                    raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림 응답 차단")
                         text_content_from_api = "".join(aggregated_parts)
                     else:
-                        response = await sdk_client.aio.models.generate_content(
-                            model=effective_model_name,
-                            contents=final_sdk_contents,
-                            config=sdk_generation_config,
-                        )
+                        with self._breaker.observe():
+                            response = await sdk_client.aio.models.generate_content(
+                                model=effective_model_name,
+                                contents=final_sdk_contents,
+                                config=sdk_generation_config,
+                            )
                     
                         if sdk_generation_config and sdk_generation_config.response_schema and \
                            sdk_generation_config.response_mime_type == "application/json" and \
@@ -728,6 +749,11 @@ class GeminiClient:
                 if decision.action is Action.FAIL_SAFETY:
                     raise GeminiContentSafetyException(
                         f"콘텐츠 안전 문제로 판단: 같은 요청에서 500 오류가 연속 발생 ({error_message})"
+                    ) from e
+
+                if decision.action is Action.FAIL_OVERLOADED:
+                    raise GeminiServiceUnavailableException(
+                        f"모델 과부하(503)로 {key_id}에서 {policy.attempt + 1}회 시도했으나 실패: {error_message}"
                     ) from e
 
                 if decision.action is Action.FAIL_RETRIES_EXHAUSTED:

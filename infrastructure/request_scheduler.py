@@ -10,12 +10,15 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Optional
 
 try:
     from .logger_config import setup_logger
 except ImportError:
     from infrastructure.logger_config import setup_logger
+
+if TYPE_CHECKING:
+    from .circuit_breaker import CircuitBreaker
 
 logger = setup_logger(__name__)
 
@@ -24,7 +27,7 @@ class RequestScheduler:
     """시작 간격(60/RPM)과 동시 진행 1개를 함께 보장한다.
 
     다음 요청의 시작 시각은 max(이전 요청의 종료 시각, 이전 요청의 시작 시각 + 간격)이다.
-    기다리는 요청은 도착 순서대로 슬롯을 받는다.
+    기다리는 요청은 도착 순서대로 슬롯을 받는다. 서킷브레이커가 열려 있으면 닫힐 때까지 슬롯을 내주지 않는다.
     """
 
     def __init__(
@@ -33,6 +36,7 @@ class RequestScheduler:
         *,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        breaker: Optional["CircuitBreaker"] = None,
     ):
         self.requests_per_minute = requests_per_minute
         self.interval = 60.0 / requests_per_minute if requests_per_minute and requests_per_minute > 0 else 0.0
@@ -41,6 +45,7 @@ class RequestScheduler:
         self._sleep = sleep
         self._in_flight = asyncio.Lock()
         self._last_start: Optional[float] = None
+        self.breaker = breaker
 
     @asynccontextmanager
     async def slot(self) -> AsyncIterator[None]:
@@ -49,9 +54,18 @@ class RequestScheduler:
         대기 중에 취소되면 슬롯을 소비하지 않는다.
         """
         async with self._in_flight:
+            await self._wait_for_breaker()
             await self._wait_for_interval()
             self._last_start = self._clock()
             yield
+
+    async def _wait_for_breaker(self) -> None:
+        if self.breaker is None:
+            return
+        while (wait := self.breaker.seconds_until_ready()) > 0:
+            resume_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() + wait))
+            logger.info(f"과부하 정지 중: {wait:.0f}초 뒤 재개합니다. (재개 예정: {resume_at})")
+            await self._sleep(wait)
 
     async def _wait_for_interval(self) -> None:
         if self._last_start is None or self.interval <= 0:

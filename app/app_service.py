@@ -209,7 +209,10 @@ class AppService:
                         project=project_to_pass_to_client,
                         location=gcp_location,
                         requests_per_minute=rpm_value,
-                        api_timeout=api_timeout_value
+                        api_timeout=api_timeout_value,
+                        overload_pause_threshold=self.config.get("overload_pause_threshold", 3),
+                        overload_pause_seconds=self.config.get("overload_pause_seconds", 300.0),
+                        overload_max_pause_seconds=self.config.get("overload_max_pause_seconds", 1800.0),
                     )
                 except GeminiInvalidRequestException as e_inv:
                     logger.error(f"GeminiClient 초기화 실패: {e_inv}")

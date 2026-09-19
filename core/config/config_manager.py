@@ -177,6 +177,11 @@ class ConfigManager:
 
             # API 설정
             "api_timeout": 1000.0, # API 호출 타임아웃 (초)
+            # 과부하(503) 서킷브레이커: 연속 503이 threshold회면 pause초 동안 요청을 멈추고,
+            # 정지 뒤 첫 요청도 503이면 정지 시간을 두 배로(최대 max_pause초) 늘린다. 503도 하루 한도를 쓴다.
+            "overload_pause_threshold": 3,
+            "overload_pause_seconds": 300.0,
+            "overload_max_pause_seconds": 1800.0,
         }
 
     def load_config(self, use_default_if_missing: bool = True) -> Dict[str, Any]:
