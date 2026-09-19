@@ -741,7 +741,10 @@ class GeminiClient:
                         ]
                     ]
                     final_generation_config_params['safety_settings'] = forced_safety_settings
-                    
+
+                    # function calling을 쓰지 않으므로 AFC를 끈다 (SDK 2.x의 AFC 경고·호출마다 찍히는 INFO 로그 방지)
+                    final_generation_config_params['automatic_function_calling'] = genai_types.AutomaticFunctionCallingConfig(disable=True)
+
                     sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
                     
                     text_content_from_api: Optional[str] = None
