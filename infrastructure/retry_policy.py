@@ -2,7 +2,9 @@
 """
 한 요청의 재시도 상태를 들고, 분류된 오류마다 다음 행동을 정한다.
 
-- 일시 오류(503, timeout 등): 같은 키로 요청당 max_retries회까지 백오프 후 재시도
+- 503 과부하: 같은 키로 요청당 1회만 재시도. 503도 하루 한도를 쓰므로 반복하지 않는다(과부하가 이어지면
+  서킷브레이커가 요청을 멈춘다)
+- 그 밖의 일시 오류(timeout 등): 같은 키로 요청당 max_retries회까지 백오프 후 재시도
 - 500: 같은 요청에서 처음이면 재시도, 연속 두 번째면 검열로 판정한다. Gemini는 검열 응답을 500으로
   보내기도 하고, 오류 본문으로는 진짜 서버 오류와 구별되지 않는다(사용자 실측). 같은 청크에서 반복되는지만이
   남은 단서다.
@@ -49,6 +51,7 @@ class Action(Enum):
     SWITCH_KEY = "switch_key"
     FAIL_SAFETY = "fail_safety"
     FAIL_RETRIES_EXHAUSTED = "fail_retries_exhausted"
+    FAIL_OVERLOADED = "fail_overloaded"  # 503 재시도까지 실패. 이 요청만 실패로 끝내고 작업은 계속한다
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class Decision:
 class RetryPolicy:
     MINUTE_QUOTA_DEFAULT_COOLDOWN = 60.0
     UNKNOWN_QUOTA_COOLDOWN = 100.0
+    OVERLOADED_RETRY_LIMIT = 1
 
     def __init__(
         self,
@@ -79,6 +83,7 @@ class RetryPolicy:
         self._jitter = jitter
         self._wall_clock = wall_clock
         self._last_was_500 = False
+        self._overloaded_retries = 0
 
     def on_error(self, error: ClassifiedError) -> Decision:
         was_500, self._last_was_500 = self._last_was_500, error.kind is ErrorKind.SERVER_500
@@ -95,6 +100,10 @@ class RetryPolicy:
             return Decision(Action.SWITCH_KEY, cooldown_seconds=self.UNKNOWN_QUOTA_COOLDOWN)
         if error.kind is ErrorKind.SERVER_500 and was_500:
             return Decision(Action.FAIL_SAFETY)
+        if error.kind is ErrorKind.OVERLOADED:
+            if self._overloaded_retries >= self.OVERLOADED_RETRY_LIMIT or self.attempt >= self.max_retries:
+                return Decision(Action.FAIL_OVERLOADED)
+            self._overloaded_retries += 1
         return self._retry_or_give_up()
 
     def _retry_or_give_up(self) -> Decision:

@@ -27,7 +27,7 @@ E = ClassifiedError
 
 def test_transient_retries_with_capped_backoff_then_gives_up():
     p = policy(max_retries=3)
-    decisions = [p.on_error(E(ErrorKind.OVERLOADED)) for _ in range(4)]
+    decisions = [p.on_error(E(ErrorKind.TRANSIENT)) for _ in range(4)]
     assert [d.action for d in decisions] == [Action.RETRY_SAME_KEY] * 3 + [Action.FAIL_RETRIES_EXHAUSTED]
     assert [d.delay for d in decisions[:3]] == [2.0, 4.0, 5.0]
     assert p.attempt == 3

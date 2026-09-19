@@ -22,6 +22,7 @@ from infrastructure.gemini_client import (
     GeminiClient,
     GeminiContentSafetyException,
     GeminiRetriesExhaustedException,
+    GeminiServiceUnavailableException,
 )
 from infrastructure.request_scheduler import RequestScheduler
 from test.test_infrastructure.virtual_clock import T0, VirtualClock
@@ -52,6 +53,10 @@ def err_503():
 
 def err_500():
     return _server_error(500, "INTERNAL", "An internal error has occurred.")
+
+
+def err_timeout():
+    return TimeoutError("The read operation timed out")
 
 
 def err_400_bad_key():
@@ -274,13 +279,12 @@ def test_queued_requests_pick_keys_when_sent(env):
 
 
 def test_transient_errors_retry_on_same_key_then_fail(env):
-    """503이 계속되면 같은 키로 (max_retries+1)회만 시도하고 GeminiRetriesExhaustedException으로 끝난다.
+    """timeout 같은 일시 오류가 계속되면 같은 키로 (max_retries+1)회만 시도하고 GeminiRetriesExhaustedException으로 끝난다.
 
     T4에서 뒤집혔다: 이전에는 키마다 (max_retries+1)회씩 모든 키를 돌았다(키 3개면 9회).
     예외는 GeminiAllApiKeysExhaustedException을 상속해 호출부의 작업 중단 동작은 유지된다.
-    T5b에서 503 재시도는 1회로 줄어든다.
     """
-    client, api = env.build(lambda k, n: err_503(), rpm=60.0)
+    client, api = env.build(lambda k, n: err_timeout(), rpm=60.0)
 
     with pytest.raises(GeminiRetriesExhaustedException) as exc_info:
         asyncio.run(env.clock.run(_gen(client, max_retries=2)))
@@ -288,6 +292,20 @@ def test_transient_errors_retry_on_same_key_then_fail(env):
     assert isinstance(exc_info.value, GeminiAllApiKeysExhaustedException)
     assert api.keys() == [KEYS[0]] * 3
     assert api.starts() == [0.0, 1.0, 2.0]
+
+
+def test_503_retries_once_then_fails_only_this_request(env):
+    """503은 같은 키로 1회만 재시도하고, 그래도 503이면 이 요청만 실패로 끝낸다(작업 중단 예외가 아니다).
+
+    T5b에서 뒤집혔다: 이전에는 max_retries회까지 재시도한 뒤 작업 중단 예외로 끝났다.
+    """
+    client, api = env.build(lambda k, n: err_503(), rpm=60.0)
+
+    with pytest.raises(GeminiServiceUnavailableException) as exc_info:
+        asyncio.run(env.clock.run(_gen(client, max_retries=5)))
+
+    assert not isinstance(exc_info.value, GeminiAllApiKeysExhaustedException)
+    assert api.keys() == [KEYS[0]] * 2
 
 
 def test_retry_keeps_key_even_after_other_requests(env):
@@ -443,3 +461,75 @@ def test_consecutive_500_leads_to_chunk_splitting_in_translation_service(env):
     assert "번역" in result
     assert "실패" not in result and "오류" not in result
     assert len(api.keys()) > 3  # 원 청크 2회(500) + 분할된 서브 청크들
+
+
+# ---------------------------------------------------------------------------
+# 서킷브레이커 (T5b: 연속 503 3회면 5분 정지, 정지 뒤 첫 요청이 또 503이면 두 배로)
+# ---------------------------------------------------------------------------
+
+def _sequential(client, n, **kw):
+    async def scenario():
+        results = []
+        for _ in range(n):
+            try:
+                results.append(await _gen(client, **kw))
+            except GeminiServiceUnavailableException:
+                results.append("503")
+        return results
+    return scenario()
+
+
+def test_three_consecutive_503_pause_all_requests_for_five_minutes(env):
+    """요청 A가 503 두 번(재시도 포함)으로 실패하고, 요청 B의 첫 503이 연속 세 번째가 되어 브레이커가 열린다.
+    B의 재시도는 5분 뒤에야 나가고, 그 사이 API 호출은 없다."""
+    calls = iter([err_503(), err_503(), err_503(), ok_response()])
+    client, api = env.build(lambda k, n: next(calls), rpm=60.0)
+
+    results = asyncio.run(env.clock.run(_sequential(client, 2)))
+
+    assert results == ["503", "ok"]
+    # A: 0.0, 1.0 / B: 2.0(503, 2.1에 열림) → 재시도는 2.1 + 300
+    assert api.starts() == [0.0, 1.0, 2.0, 302.1]
+
+
+def test_non_503_response_resets_the_streak(env):
+    calls = iter([err_503(), err_503(), ok_response(), err_503(), ok_response()])
+    client, api = env.build(lambda k, n: next(calls), rpm=60.0)
+
+    results = asyncio.run(env.clock.run(_sequential(client, 3)))
+
+    assert results == ["503", "ok", "ok"]
+    assert api.starts() == [0.0, 1.0, 2.0, 3.0, 4.0]  # 정지 없음
+
+
+def test_503_after_pause_doubles_the_pause(env):
+    """정지가 끝난 뒤 첫 요청도 503이면 정지 시간을 두 배(10분)로 늘린다."""
+    calls = iter([err_503(), err_503(), err_503(), err_503(), ok_response()])
+    client, api = env.build(lambda k, n: next(calls), rpm=60.0)
+
+    async def scenario():
+        results = []
+        for _ in range(3):
+            try:
+                results.append(await _gen(client))
+            except GeminiServiceUnavailableException:
+                results.append("503")
+        return results
+
+    results = asyncio.run(env.clock.run(scenario()))
+
+    # A: 0, 1 실패 / B: 2(열림, 2.1~302.1) → B 재시도 302.1 → 503(302.2에 600초로 다시 열림) → B 실패
+    # C: 302.2 + 600 = 902.2
+    assert results == ["503", "503", "ok"]
+    assert api.starts() == pytest.approx([0.0, 1.0, 2.0, 302.1, 902.2])
+
+
+def test_quota_and_500_errors_do_not_open_the_breaker(env):
+    """503이 아닌 오류(할당량, 500)는 연속 횟수를 끊는다."""
+    calls = iter([err_503(), err_503(), err_429_quota(), ok_response(), err_503(), ok_response()])
+    client, api = env.build(lambda k, n: next(calls), rpm=60.0)
+
+    results = asyncio.run(env.clock.run(_sequential(client, 3)))
+
+    assert results == ["503", "ok", "ok"]
+    assert max(b - a for a, b in zip(api.starts(), api.starts()[1:])) == 1.0  # 정지 없음
