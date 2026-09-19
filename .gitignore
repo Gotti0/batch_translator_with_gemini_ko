@@ -52,7 +52,12 @@ config.json
 /logs
 
 48개_api.zip
-/docs
+# docs는 개인 문서라 제외하되, WORKLOG 항목 원본(docs/worklog/entries)은 코드와 함께 커밋한다.
+# 생성물 docs/WORKLOG.md는 계속 제외한다.
+/docs/*
+!/docs/worklog/
+/docs/worklog/*
+!/docs/worklog/entries/
 main_gui_backup.py
 
 DESIGN.md
