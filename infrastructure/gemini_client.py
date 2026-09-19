@@ -24,6 +24,10 @@ try:
     from ..infrastructure.logger_config import setup_logger # Relative import if logger_config is in the same parent package
 except ImportError:
     from infrastructure.logger_config import setup_logger # Absolute for fallback or direct run
+try:
+    from .request_scheduler import RequestScheduler
+except ImportError:
+    from infrastructure.request_scheduler import RequestScheduler
 logger = setup_logger(__name__)
 
 class GeminiApiException(Exception):
@@ -164,7 +168,8 @@ class GeminiClient:
                  project: Optional[str] = None,
                  location: Optional[str] = None,
                  requests_per_minute: Optional[float] = None,
-                 api_timeout: float = 500.0):
+                 api_timeout: float = 500.0,
+                 scheduler: Optional[RequestScheduler] = None):
         
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
         
@@ -189,11 +194,9 @@ class GeminiClient:
         timeout_ms = int(api_timeout * 1000)
         self.http_options = genai_types.HttpOptions(timeout=timeout_ms)
         
-        # RPM control
+        # RPM control: 시작 간격과 동시 진행 1개를 스케줄러가 보장한다 (재시도·list_models 포함)
         self.requests_per_minute = requests_per_minute or 140.0
-        self.delay_between_requests = 60.0 / self.requests_per_minute  # 요청 간 지연 시간 계산
-        self.last_request_timestamp = 0.0
-        self._rpm_lock = asyncio.Lock()
+        self._scheduler = scheduler or RequestScheduler(self.requests_per_minute)
 
         # Determine authentication mode and process credentials
         service_account_info: Optional[Dict[str, Any]] = None
@@ -369,35 +372,6 @@ class GeminiClient:
         logger.info(f"Vertex AI용 Client 초기화 시도: {client_options}")
 
 
-    async def _apply_rpm_delay(self):
-        """요청 속도 제어를 위한 지연 적용 (동시성 개선) - Async"""
-        if self.delay_between_requests <= 0:
-            return
-
-        sleep_time = 0
-        async with self._rpm_lock:
-            current_time = time.time()
-            
-            # 다음 요청이 가능한 가장 빠른 시간을 계산합니다.
-            # (이전 요청 예약 시간 + 딜레이)와 현재 시간 중 더 나중의 시간을 선택하여,
-            # 여러 스레드가 동시에 요청할 때 순차적으로 실행되도록 예약합니다.
-            next_slot = max(self.last_request_timestamp + self.delay_between_requests, current_time)
-            
-            sleep_time = next_slot - current_time
-            
-            # 현재 요청이 실행될 예약 시간을 다음 요청을 위해 기록합니다.
-            self.last_request_timestamp = next_slot
-
-        if sleep_time > 0:
-            # [[가이드]] sleep_time이 1초 이상일 경우, INFO 레벨로 로깅하여 지연 상황을 쉽게 인지하도록 함
-            log_level = logging.INFO if sleep_time >= 1.0 else logging.DEBUG
-            
-            # 예약된 시작 시간 로깅 추가
-            scheduled_start_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.last_request_timestamp))
-            
-            logger.log(log_level, f"RPM({self.requests_per_minute}) 제어: 다음 요청까지 {sleep_time:.3f}초 대기합니다. (예약된 시작: {scheduled_start_time_str})")
-            await asyncio.sleep(sleep_time)
-
     def _is_rate_limit_error(self, error_obj: Any) -> bool:
         from google.api_core import exceptions as gapi_exceptions
     
@@ -503,33 +477,33 @@ class GeminiClient:
 
         while attempted_keys_for_list_models < total_keys_for_list:
             try:
-                await self._apply_rpm_delay() 
-                logger.info(f"사용 가능한 모델 목록 조회 중 (현재 API 키 인덱스: {self.current_api_key_index if self.auth_mode == 'API_KEY' else 'N/A'})...")
-                models_info = []
-                if not self.client: 
-                    raise GeminiApiException("list_models_async: 루프 내에서 Client가 유효하지 않음.")
+                async with self._scheduler.slot():
+                    logger.info(f"사용 가능한 모델 목록 조회 중 (현재 API 키 인덱스: {self.current_api_key_index if self.auth_mode == 'API_KEY' else 'N/A'})...")
+                    models_info = []
+                    if not self.client: 
+                        raise GeminiApiException("list_models_async: 루프 내에서 Client가 유효하지 않음.")
 
-                # client.aio.models.list() returns an async iterator
-                async for m in await self.client.aio.models.list(): 
-                    full_model_name = m.name
-                    short_model_name = ""
-                    if isinstance(full_model_name, str):
-                        short_model_name = full_model_name.split('/')[-1] if '/' in full_model_name else full_model_name
-                    else: 
-                        short_model_name = str(full_model_name)
+                    # client.aio.models.list() returns an async iterator
+                    async for m in await self.client.aio.models.list(): 
+                        full_model_name = m.name
+                        short_model_name = ""
+                        if isinstance(full_model_name, str):
+                            short_model_name = full_model_name.split('/')[-1] if '/' in full_model_name else full_model_name
+                        else: 
+                            short_model_name = str(full_model_name)
                     
-                    models_info.append({
-                        "name": full_model_name,
-                        "short_name": short_model_name, 
-                        "base_model_id": getattr(m, "base_model_id", ""), 
-                        "version": getattr(m, "version", ""), 
-                        "display_name": m.display_name,
-                        "description": m.description,
-                        "input_token_limit": getattr(m, "input_token_limit", 0), 
-                        "output_token_limit": getattr(m, "output_token_limit", 0), 
-                    })
-                logger.info(f"{len(models_info)}개의 모델을 찾았습니다.")
-                return models_info
+                        models_info.append({
+                            "name": full_model_name,
+                            "short_name": short_model_name, 
+                            "base_model_id": getattr(m, "base_model_id", ""), 
+                            "version": getattr(m, "version", ""), 
+                            "display_name": m.display_name,
+                            "description": m.description,
+                            "input_token_limit": getattr(m, "input_token_limit", 0), 
+                            "output_token_limit": getattr(m, "output_token_limit", 0), 
+                        })
+                    logger.info(f"{len(models_info)}개의 모델을 찾았습니다.")
+                    return models_info
 
             except (GoogleAuthError, Exception) as e: 
                 error_message = str(e)
@@ -686,124 +660,124 @@ class GeminiClient:
             
             while current_retry_for_this_key <= max_retries:
                 try:
-                    # RPM 속도 제한 적용 (비동기 버전)
-                    await self._apply_rpm_delay()
+                    # 슬롯은 요청이 끝날 때까지 쥔다. 실패 후 백오프는 슬롯 밖(except)에서 기다린다.
+                    async with self._scheduler.slot():
                     
-                    logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
+                        logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
                     
-                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
-                    if 'http_options' not in final_generation_config_params:
-                        final_generation_config_params['http_options'] = self.http_options
+                        final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
+                        if 'http_options' not in final_generation_config_params:
+                            final_generation_config_params['http_options'] = self.http_options
                     
-                    if system_instruction_text and system_instruction_text.strip():
-                        final_generation_config_params['system_instruction'] = system_instruction_text
+                        if system_instruction_text and system_instruction_text.strip():
+                            final_generation_config_params['system_instruction'] = system_instruction_text
                     
-                    # 항상 OFF으로 안전 설정 강제 적용
-                    if safety_settings_list_of_dicts:
-                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
+                        # 항상 OFF으로 안전 설정 강제 적용
+                        if safety_settings_list_of_dicts:
+                            logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
                     
-                    # Thinking config 관련 필드를 미리 제거 (GenerateContentConfig에서 허용되지 않음)
-                    thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
-                    thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
+                        # Thinking config 관련 필드를 미리 제거 (GenerateContentConfig에서 허용되지 않음)
+                        thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
+                        thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
                     
-                    # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
-                    check_name = effective_model_name.lower()
-                    thinking_config = None
+                        # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
+                        check_name = effective_model_name.lower()
+                        thinking_config = None
                     
-                    if "gemini-3" in check_name:
-                        # Gemini 3.0: thinking_level만 사용
-                        # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
-                        # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
-                        level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
-                        thinking_config = genai_types.ThinkingConfig(thinking_level=level)
-                        logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
+                        if "gemini-3" in check_name:
+                            # Gemini 3.0: thinking_level만 사용
+                            # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
+                            # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
+                            level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
+                            thinking_config = genai_types.ThinkingConfig(thinking_level=level)
+                            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
                         
-                    elif "gemini-2.5" in check_name:
-                        # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
-                        if thinking_budget is not None:
-                            budget = thinking_budget
-                        else:
-                            budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
-                        thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
-                        logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
+                        elif "gemini-2.5" in check_name:
+                            # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
+                            if thinking_budget is not None:
+                                budget = thinking_budget
+                            else:
+                                budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
+                            thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
+                            logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
                         
-                    if thinking_config:
-                        final_generation_config_params['thinking_config'] = thinking_config
+                        if thinking_config:
+                            final_generation_config_params['thinking_config'] = thinking_config
                     
-                    forced_safety_settings = [
-                        genai_types.SafetySetting(category=c, threshold=genai_types.HarmBlockThreshold.BLOCK_NONE)
-                        for c in [
-                            genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                        forced_safety_settings = [
+                            genai_types.SafetySetting(category=c, threshold=genai_types.HarmBlockThreshold.BLOCK_NONE)
+                            for c in [
+                                genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                                genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                                genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                                genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                                genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                            ]
                         ]
-                    ]
-                    final_generation_config_params['safety_settings'] = forced_safety_settings
+                        final_generation_config_params['safety_settings'] = forced_safety_settings
 
-                    # function calling을 쓰지 않으므로 AFC를 끈다 (SDK 2.x의 AFC 경고·호출마다 찍히는 INFO 로그 방지)
-                    final_generation_config_params['automatic_function_calling'] = genai_types.AutomaticFunctionCallingConfig(disable=True)
+                        # function calling을 쓰지 않으므로 AFC를 끈다 (SDK 2.x의 AFC 경고·호출마다 찍히는 INFO 로그 방지)
+                        final_generation_config_params['automatic_function_calling'] = genai_types.AutomaticFunctionCallingConfig(disable=True)
 
-                    sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
+                        sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
                     
-                    text_content_from_api: Optional[str] = None
-                    if stream:
-                        response_stream = await self.client.aio.models.generate_content_stream(
-                            model=effective_model_name,
-                            contents=final_sdk_contents,
-                            config=sdk_generation_config
-                        )
-                        aggregated_parts = []
-                        async for chunk_response in response_stream:
-                            if hasattr(chunk_response, 'text') and chunk_response.text:
-                                aggregated_parts.append(chunk_response.text)
-                            if self._is_content_safety_error(response=chunk_response):
-                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림 응답 차단")
-                        text_content_from_api = "".join(aggregated_parts)
-                    else:
-                        response = await self.client.aio.models.generate_content(
-                            model=effective_model_name,
-                            contents=final_sdk_contents,
-                            config=sdk_generation_config,
-                        )
-                        
-                        if sdk_generation_config and sdk_generation_config.response_schema and \
-                           sdk_generation_config.response_mime_type == "application/json" and \
-                           hasattr(response, 'parsed') and response.parsed is not None:
-                            return response.parsed
-                        
-                        if self._is_content_safety_error(response=response):
-                            raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
-                        
-                        if hasattr(response, 'text') and response.text is not None:
-                            text_content_from_api = response.text
-                        elif hasattr(response, 'candidates') and response.candidates:
-                            for candidate in response.candidates:
-                                if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
-                                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts'):
-                                        text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
-                                        break
-                            if text_content_from_api is None:
-                                text_content_from_api = ""
-                    
-                    if text_content_from_api is not None:
-                        is_json_response_expected = generation_config_dict and \
-                                                    generation_config_dict.get("response_mime_type") == "application/json"
-                        if is_json_response_expected:
-                            try:
-                                cleaned_json_str = re.sub(r'^```json\s*', '', text_content_from_api.strip(), flags=re.IGNORECASE)
-                                cleaned_json_str = re.sub(r'\s*```$', '', cleaned_json_str, flags=re.IGNORECASE)
-                                return json.loads(cleaned_json_str.strip())
-                            except json.JSONDecodeError as e_parse:
-                                logger.warning(f"JSON 응답 파싱 실패: {e_parse}")
-                                return text_content_from_api
+                        text_content_from_api: Optional[str] = None
+                        if stream:
+                            response_stream = await self.client.aio.models.generate_content_stream(
+                                model=effective_model_name,
+                                contents=final_sdk_contents,
+                                config=sdk_generation_config
+                            )
+                            aggregated_parts = []
+                            async for chunk_response in response_stream:
+                                if hasattr(chunk_response, 'text') and chunk_response.text:
+                                    aggregated_parts.append(chunk_response.text)
+                                if self._is_content_safety_error(response=chunk_response):
+                                    raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림 응답 차단")
+                            text_content_from_api = "".join(aggregated_parts)
                         else:
-                            if not text_content_from_api.strip():
-                                raise GeminiContentSafetyException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
-                            return text_content_from_api
+                            response = await self.client.aio.models.generate_content(
+                                model=effective_model_name,
+                                contents=final_sdk_contents,
+                                config=sdk_generation_config,
+                            )
+                        
+                            if sdk_generation_config and sdk_generation_config.response_schema and \
+                               sdk_generation_config.response_mime_type == "application/json" and \
+                               hasattr(response, 'parsed') and response.parsed is not None:
+                                return response.parsed
+                        
+                            if self._is_content_safety_error(response=response):
+                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
+                        
+                            if hasattr(response, 'text') and response.text is not None:
+                                text_content_from_api = response.text
+                            elif hasattr(response, 'candidates') and response.candidates:
+                                for candidate in response.candidates:
+                                    if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
+                                        if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts'):
+                                            text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
+                                            break
+                                if text_content_from_api is None:
+                                    text_content_from_api = ""
                     
-                    raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
+                        if text_content_from_api is not None:
+                            is_json_response_expected = generation_config_dict and \
+                                                        generation_config_dict.get("response_mime_type") == "application/json"
+                            if is_json_response_expected:
+                                try:
+                                    cleaned_json_str = re.sub(r'^```json\s*', '', text_content_from_api.strip(), flags=re.IGNORECASE)
+                                    cleaned_json_str = re.sub(r'\s*```$', '', cleaned_json_str, flags=re.IGNORECASE)
+                                    return json.loads(cleaned_json_str.strip())
+                                except json.JSONDecodeError as e_parse:
+                                    logger.warning(f"JSON 응답 파싱 실패: {e_parse}")
+                                    return text_content_from_api
+                            else:
+                                if not text_content_from_api.strip():
+                                    raise GeminiContentSafetyException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
+                                return text_content_from_api
+                    
+                        raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
                 
                 except GeminiContentSafetyException:
                     raise

@@ -22,6 +22,7 @@ from infrastructure.gemini_client import (
     GeminiClient,
     GeminiContentSafetyException,
 )
+from infrastructure.request_scheduler import RequestScheduler
 from test.test_infrastructure.virtual_clock import T0, VirtualClock
 
 KEYS = ["key-AAAAAAAA", "key-BBBBBBBB", "key-CCCCCCCC"]
@@ -109,7 +110,7 @@ class FakeApi:
 
 @pytest.fixture
 def env():
-    """가상 시계를 gemini_client 모듈의 time·asyncio.sleep에 연결하고, 백오프의 난수를 0으로 고정한다."""
+    """가상 시계를 스케줄러와 gemini_client 모듈의 time·asyncio.sleep(백오프)에 연결하고, 백오프의 난수를 0으로 고정한다."""
     clock = VirtualClock()
     holder = {}
 
@@ -117,7 +118,8 @@ def env():
         api = FakeApi(clock, script, latency)
         holder["api"] = api
         with patch.object(gc_module.genai, "Client", side_effect=api.make_client):
-            client = GeminiClient(auth_credentials=list(keys), requests_per_minute=rpm)
+            scheduler = RequestScheduler(rpm, clock=clock.time, sleep=clock.sleep)
+            client = GeminiClient(auth_credentials=list(keys), requests_per_minute=rpm, scheduler=scheduler)
         return client, api
 
     patches = [
@@ -179,10 +181,10 @@ def test_retry_after_503_waits_for_next_rpm_slot(env):
     assert api.starts() == [0.0, 1.0]
 
 
-def test_slow_requests_overlap_in_flight(env):
-    """현재는 시작 간격만 제어하므로, 응답이 간격보다 느리면 요청이 동시에 진행된다.
+def test_slow_requests_never_overlap_in_flight(env):
+    """응답이 간격보다 느려도 두 번째 요청은 첫 요청이 끝난 뒤에 시작한다.
 
-    T2(RequestScheduler, in-flight 1)에서 뒤집힌다: 두 번째 요청은 첫 요청이 끝난 뒤 시작해야 한다.
+    T3에서 뒤집혔다: 이전에는 시작 간격만 제어해 느린 요청이 동시에 진행됐다(시작 1.0초, 겹침).
     """
     client, api = env.build(lambda k, n: ok_response(), rpm=60.0, latency=5.0)
 
@@ -192,8 +194,22 @@ def test_slow_requests_overlap_in_flight(env):
     asyncio.run(env.clock.run(scenario()))
 
     (_, s1, e1, _), (_, s2, _, _) = sorted(api.calls, key=lambda c: c[1])
-    assert s2 - T0 == 1.0
-    assert s2 < e1  # 겹침
+    assert s2 == e1  # 앞 요청 종료(5.0초) 직후 시작, 겹침 없음
+
+
+def test_backoff_happens_outside_the_slot(env):
+    """실패한 요청이 백오프로 기다리는 동안에는 슬롯을 놓아, 다른 요청이 먼저 나간다."""
+    client, api = env.build(lambda k, n: err_503() if n == 0 else ok_response(), rpm=60.0)
+
+    async def scenario():
+        failing = _gen(client, initial_backoff=5.0)  # 0.1초에 503, 5.1초까지 백오프
+        other = _gen(client)
+        return await asyncio.gather(failing, other)
+
+    asyncio.run(env.clock.run(scenario()))
+
+    # 첫 요청 0.0 → 두 번째 요청이 백오프 중에 1.0 → 첫 요청의 재시도가 5.1
+    assert api.starts() == [0.0, 1.0, 5.1]
 
 
 def test_list_models_consumes_a_slot(env):
