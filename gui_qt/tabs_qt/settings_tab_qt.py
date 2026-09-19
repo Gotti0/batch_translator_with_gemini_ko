@@ -439,7 +439,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.load_config_btn.clicked.connect(self._on_load_config_clicked)
         self.progress_signal.connect(self._on_progress)
         self.status_signal.connect(self._on_status)
-        self.completion_signal.connect(self._on_completion)
+        self.completion_signal.connect(self._on_completion, QtCore.Qt.QueuedConnection)
 
         self.use_vertex_check.stateChanged.connect(self._on_vertex_toggle)
         self.model_name_combo.currentTextChanged.connect(self._on_model_changed)
@@ -715,6 +715,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         )
         try:
             await self._translation_task
+        except asyncio.CancelledError:
+            pass
         finally:
             self._translation_task = None
 
