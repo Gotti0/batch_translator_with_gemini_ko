@@ -28,7 +28,7 @@ try:
         save_merged_chunks_to_file
     )
     from ..core.config.config_manager import ConfigManager, DEFAULT_REQUESTS_PER_MINUTE
-    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
+    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException, GeminiServiceUnavailableException
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
     from ..utils.chunk_service import ChunkService
@@ -48,7 +48,7 @@ except ImportError:
         save_merged_chunks_to_file
     )
     from core.config.config_manager import ConfigManager, DEFAULT_REQUESTS_PER_MINUTE
-    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
+    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException, GeminiServiceUnavailableException
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
     from utils.chunk_service import ChunkService
@@ -479,30 +479,68 @@ class AppService:
                         segment, user_override_glossary_extraction_prompt, stop_check
                     )
 
-            # 3. 작업 실행 (순차 생성, 병렬 처리)
-            tasks = [asyncio.create_task(run_extract(s)) for s in sample_segments]
-            processed_count = 0
-            
-            for task in asyncio.as_completed(tasks):
+            async def run_indexed(idx: int, segment: str):
+                """세그먼트 하나를 처리해 (번호, 추출 항목, 오류)를 돌려준다. 취소는 그대로 전파한다."""
                 try:
-                    entries = await task
-                    if entries: all_extracted_entries.extend(entries)
+                    return idx, await run_extract(segment), None
                 except asyncio.CancelledError:
-                    for t in tasks: 
-                        if not t.done(): t.cancel()
                     raise
                 except Exception as e:
-                    logger.error(f"세그먼트 처리 실패: {e}")
-                finally:
-                    processed_count += 1
-                    if progress_callback:
-                        progress_callback(GlossaryExtractionProgressDTO(
-                            num_samples, processed_count, 
-                            f"추출 중 ({processed_count}/{num_samples})",
-                            len(all_extracted_entries) + len(seed_entries)
-                        ))
+                    return idx, None, e
+
+            async def run_pass(indexed_segments, label: str):
+                """세그먼트들을 처리해 추출 항목을 모으고, 실패한 세그먼트를 {번호: 예외}로 돌려준다."""
+                tasks = [asyncio.create_task(run_indexed(idx, seg)) for idx, seg in indexed_segments]
+                failures = {}
+                done_count = 0
+                try:
+                    for next_done in asyncio.as_completed(tasks):
+                        idx, entries, error = await next_done
+                        done_count += 1
+                        if error is not None:
+                            failures[idx] = error
+                            logger.error(f"세그먼트 처리 실패: {error}")
+                        elif entries:
+                            all_extracted_entries.extend(entries)
+                        if progress_callback:
+                            progress_callback(GlossaryExtractionProgressDTO(
+                                num_samples, done_count if label == "추출" else num_samples,
+                                f"{label} 중 ({done_count}/{len(tasks)})",
+                                len(all_extracted_entries) + len(seed_entries)
+                            ))
+                except asyncio.CancelledError:
+                    for t in tasks:
+                        if not t.done(): t.cancel()
+                    raise
+                return failures
+
+            # 3. 작업 실행 (순차 생성, 병렬 처리)
+            failures = await run_pass(list(enumerate(sample_segments)), "추출")
+
+            # 3-1. 과부하(503)로 실패한 세그먼트는 끝에 한 번 더 시도한다. 503 재시도는 요청당 1회라
+            #      과부하 순간에 걸린 세그먼트가 결과에서 조용히 빠질 수 있다. 과부하가 이어지는 중이면
+            #      서킷브레이커가 요청을 멈춰 두므로 이 재시도가 쿼터를 낭비하지 않는다.
+            #      검열·요청 오류 등은 다시 보내도 결과가 같을 가능성이 높아 재시도하지 않는다.
+            overloaded = [(i, sample_segments[i]) for i, e in failures.items() if self._is_overload_failure(e)]
+            if overloaded:
+                logger.info(f"과부하로 실패한 세그먼트 {len(overloaded)}개를 다시 시도합니다.")
+                retry_failures = await run_pass(overloaded, "과부하 세그먼트 재시도")
+                failures = {i: e for i, e in failures.items() if not self._is_overload_failure(e)}
+                failures.update(retry_failures)
+
+            if failures:
+                missing = sorted(failures)
+                logger.warning(
+                    f"용어집 추출: 세그먼트 {len(missing)}/{num_samples}개가 실패해 결과에서 빠졌습니다 "
+                    f"(세그먼트 번호 {[i + 1 for i in missing]}). 해당 부분의 용어가 누락됐을 수 있습니다."
+                )
 
             # 4. 마무리 (도메인 서비스 활용)
+            if progress_callback:
+                status = f"완료 (세그먼트 {len(failures)}개 누락)" if failures else "완료"
+                progress_callback(GlossaryExtractionProgressDTO(
+                    num_samples, num_samples, status, len(all_extracted_entries) + len(seed_entries)
+                ))
             final_entries = self.glossary_service.finalize_glossary(all_extracted_entries, seed_entries)
             output_path = self.glossary_service.get_glossary_output_path(input_file_path)
             self.glossary_service.save_glossary_to_json(final_entries, output_path)
@@ -522,6 +560,17 @@ class AppService:
         except Exception as e:
             logger.error(f"_do_glossary_extraction_async 내부 오류: {e}")
             raise
+
+    @staticmethod
+    def _is_overload_failure(error: BaseException) -> bool:
+        """예외 사슬(original_exception, __cause__)에 503 과부하 실패가 있는지."""
+        seen = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, GeminiServiceUnavailableException):
+                return True
+            error = getattr(error, "original_exception", None) or error.__cause__
+        return False
 
     async def cancel_glossary_async(self) -> None:
         """용어집 추출 즉시 취소 요청"""
