@@ -224,7 +224,7 @@ class GlossaryTabQt(QtWidgets.QWidget):
         self.stop_btn.clicked.connect(self._on_stop_clicked)
         self.progress_signal.connect(self._on_progress)
         self.status_signal.connect(self._on_status)
-        self.completion_signal.connect(self._on_completion)
+        self.completion_signal.connect(self._on_completion, QtCore.Qt.QueuedConnection)
         self.edit_prefill_btn.clicked.connect(self._open_prefill_editor)
         self.load_glossary_btn.clicked.connect(self._load_glossary_to_display)
         self.copy_glossary_btn.clicked.connect(self._copy_glossary_json)
@@ -312,9 +312,21 @@ class GlossaryTabQt(QtWidgets.QWidget):
         )
         try:
             result_path = await self._extraction_task
-            self.completion_signal.emit(True, "용어집 추출 완료", result_path)
+            was_cancelled = (
+                getattr(self.app_service, "cancel_glossary_event", None) is not None
+                and self.app_service.cancel_glossary_event.is_set()
+            )
+            if was_cancelled:
+                self.completion_signal.emit(False, "사용자에 의해 추출이 중단되었습니다 (부분 저장됨).", result_path)
+            else:
+                self.completion_signal.emit(True, "용어집 추출 완료", result_path)
         except asyncio.CancelledError:
-            self.completion_signal.emit(False, "취소됨", None)
+            output_path = None
+            if self.glossary_path_edit.text().strip():
+                p = Path(self.glossary_path_edit.text().strip())
+                if p.exists():
+                    output_path = p
+            self.completion_signal.emit(False, "취소됨", output_path)
         except Exception as e:
             self.completion_signal.emit(False, f"오류: {e}", None)
         finally:
@@ -324,12 +336,9 @@ class GlossaryTabQt(QtWidgets.QWidget):
     async def _on_stop_clicked(self) -> None:
         """중지 버튼 클릭 시 호출"""
         self.stop_btn.setEnabled(False)
-        # 즉시 취소 이벤트를 발생시켜 경합에서 승리하게 함
-        await self.app_service.cancel_glossary_async()
-        
-        # 내부 태스크도 취소 (안전 장치)
-        if self._extraction_task:
-            self._extraction_task.cancel()
+        self.progress_label.setText("중지 요청 중... (현재까지의 결과 저장)")
+        if self.app_service:
+            await self.app_service.cancel_glossary_async()
 
     # ---------- slots ----------
     @QtCore.Slot(object)
@@ -348,21 +357,27 @@ class GlossaryTabQt(QtWidgets.QWidget):
     def _on_completion(self, success: bool, msg: str, result_path: Optional[Path]) -> None:
         self.extract_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.progress_label.setText(msg)
+
+        if result_path and Path(result_path).exists():
+            self.glossary_path_edit.setText(str(result_path))
+            try:
+                with open(result_path, "r", encoding="utf-8") as f:
+                    self._display_glossary_content(f.read())
+            except Exception:
+                pass
+
         if success:
-            self.progress_label.setText(msg)
-            if result_path:
-                self.glossary_path_edit.setText(str(result_path))
-                try:
-                    with open(result_path, "r", encoding="utf-8") as f:
-                        self._display_glossary_content(f.read())
-                except Exception:
-                    pass
             QtWidgets.QMessageBox.information(
                 self, "완료", f"용어집 추출이 완료되었습니다.\n{result_path or ''}"
             )
         else:
-            self.progress_label.setText(msg)
-            QtWidgets.QMessageBox.warning(self, "실패", msg)
+            if result_path and Path(result_path).exists():
+                QtWidgets.QMessageBox.information(
+                    self, "중단됨", f"{msg}\n\n현재까지 추출된 파일:\n{result_path}"
+                )
+            else:
+                QtWidgets.QMessageBox.warning(self, "중단 또는 실패", msg)
 
     def _display_glossary_content(self, content: str) -> None:
         self.glossary_display.setReadOnly(False)
