@@ -27,7 +27,7 @@ try:
         _hash_config_for_metadata,
         save_merged_chunks_to_file
     )
-    from ..core.config.config_manager import ConfigManager
+    from ..core.config.config_manager import ConfigManager, DEFAULT_REQUESTS_PER_MINUTE
     from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
@@ -47,7 +47,7 @@ except ImportError:
         _hash_config_for_metadata,
         save_merged_chunks_to_file
     )
-    from core.config.config_manager import ConfigManager
+    from core.config.config_manager import ConfigManager, DEFAULT_REQUESTS_PER_MINUTE
     from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
@@ -465,36 +465,22 @@ class AppService:
                 return output_path
 
             # 2. 루프 실행 설정
+            # 세마포어는 동시에 떠 있는 작업 수만 제한한다. API 요청 간격과 동시 진행 1개는
+            # GeminiClient의 스케줄러가 보장하므로 여기서 RPM을 계산하지 않는다.
             max_workers = self.config.get("max_workers", 4)
-            rpm = self.config.get("requests_per_minute", 60)
             semaphore = asyncio.Semaphore(max_workers)
-            request_interval = 60.0 / rpm if rpm > 0 else 0
-            last_request_time = 0
-            
-            async def rate_limited_extract(segment: str):
-                nonlocal last_request_time
+
+            async def run_extract(segment: str):
                 if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
-                
+
                 async with semaphore:
                     if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
-                    
-                    # RPM 제한
-                    current_time = asyncio.get_event_loop().time()
-                    elapsed = current_time - last_request_time
-                    if elapsed < request_interval:
-                        try:
-                            await asyncio.sleep(request_interval - elapsed)
-                        except asyncio.CancelledError: raise
-                    
-                    if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
-                    
-                    last_request_time = asyncio.get_event_loop().time()
                     return await self.glossary_service._extract_glossary_entries_from_segment_via_api_async(
                         segment, user_override_glossary_extraction_prompt, stop_check
                     )
 
             # 3. 작업 실행 (순차 생성, 병렬 처리)
-            tasks = [asyncio.create_task(rate_limited_extract(s)) for s in sample_segments]
+            tasks = [asyncio.create_task(run_extract(s)) for s in sample_segments]
             processed_count = 0
             
             for task in asyncio.as_completed(tasks):
@@ -1103,16 +1089,13 @@ class AppService:
             return
         
         max_workers = self.config.get("max_workers", 4)
-        rpm = self.config.get("requests_per_minute", 60)
-        
+        rpm = self.config.get("requests_per_minute", DEFAULT_REQUESTS_PER_MINUTE)
+
         logger.info(f"비동기 청크 병렬 처리 시작: {len(chunks)} 청크 (동시 작업: {max_workers}, RPM: {rpm})")
-        
-        # 세마포어: 동시 실행 수 제한
+
+        # 세마포어: 동시에 떠 있는 작업 수만 제한한다. API 요청 간격과 동시 진행 1개는
+        # GeminiClient의 스케줄러가 보장하므로 여기서 RPM을 계산하지 않는다.
         semaphore = asyncio.Semaphore(max_workers)
-        
-        # RPM 속도 제한
-        request_interval = 60.0 / rpm if rpm > 0 else 0
-        last_request_time = 0
         
         # tqdm 진행률 표시 (비동기 환경에서도 사용 가능)
         pbar = None
@@ -1134,8 +1117,7 @@ class AppService:
                 logger.error(f"tqdm 초기화 중 오류: {tqdm_init_e}. 진행률 표시를 건너뜁니다.")
         
         async def rate_limited_translate(chunk_index: int, chunk_text: str) -> bool:
-            """RPM 제한을 고려한 번역 함수"""
-            nonlocal last_request_time
+            """세마포어로 동시 작업 수를 제한하는 번역 함수 (요청 속도는 GeminiClient가 제어)"""
             
             # ✅ 취소 신호 확인 (세마포어 진입 전에 즉시 반응)
             if self.cancel_event.is_set():
@@ -1148,24 +1130,6 @@ class AppService:
                 if self.cancel_event.is_set():
                     logger.info(f"청크 {chunk_index + 1} 세마포어 대기 중 취소 신호 감지")
                     raise asyncio.CancelledError("취소 신호 감지")
-                
-                # RPM 속도 제한 적용
-                current_time = asyncio.get_event_loop().time()
-                elapsed = current_time - last_request_time
-                if elapsed < request_interval:
-                    # ✅ asyncio.sleep도 취소에 반응하도록 설정
-                    try:
-                        await asyncio.sleep(request_interval - elapsed)
-                    except asyncio.CancelledError:
-                        logger.info(f"청크 {chunk_index + 1} RPM 대기 중 취소됨")
-                        raise
-                
-                # ✅ RPM 지연 후 취소 신호 재확인
-                if self.cancel_event.is_set():
-                    logger.info(f"청크 {chunk_index + 1} RPM 지연 후 취소 신호 감지")
-                    raise asyncio.CancelledError("취소 신호 감지")
-                
-                last_request_time = asyncio.get_event_loop().time()
                 
                 return await self._translate_and_save_chunk_async(
                     chunk_index,

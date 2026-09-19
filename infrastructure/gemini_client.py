@@ -206,7 +206,8 @@ class GeminiClient:
         self.http_options = genai_types.HttpOptions(timeout=timeout_ms)
         
         # RPM control: 시작 간격과 동시 진행 1개를 스케줄러가 보장한다 (재시도·list_models 포함)
-        self.requests_per_minute = requests_per_minute or 140.0
+        # 0 또는 None이면 간격 제한이 없다(설정·GUI·CLI 문서와 같음). 동시 진행 1개는 유지한다.
+        self.requests_per_minute = requests_per_minute
         self._scheduler = scheduler or RequestScheduler(self.requests_per_minute)
         # 연속 503이면 모든 요청을 잠시 멈춘다. 스케줄러가 슬롯을 내주기 전에 확인한다
         if self._scheduler.breaker is None:
