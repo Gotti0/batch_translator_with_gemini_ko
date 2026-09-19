@@ -26,8 +26,10 @@ except ImportError:
     from infrastructure.logger_config import setup_logger # Absolute for fallback or direct run
 try:
     from .request_scheduler import RequestScheduler
+    from .key_pool import KeyPool
 except ImportError:
     from infrastructure.request_scheduler import RequestScheduler
+    from infrastructure.key_pool import KeyPool
 logger = setup_logger(__name__)
 
 class GeminiApiException(Exception):
@@ -50,6 +52,15 @@ class GeminiInvalidRequestException(GeminiApiException):
 
 class GeminiAllApiKeysExhaustedException(GeminiApiException):
     """모든 API 키가 소진되거나 유효하지 않을 때 발생하는 예외"""
+    pass
+
+class GeminiRetriesExhaustedException(GeminiAllApiKeysExhaustedException):
+    """일시 오류(503, 분당 한도 429, timeout 등)로 한 요청의 재시도를 모두 쓴 경우.
+
+    재시도는 같은 키로만 하므로 키가 소진된 것은 아니다. 그래도 호출부가 작업을 멈추도록
+    GeminiAllApiKeysExhaustedException을 상속한다. 이전에는 이 상황에서 모든 키를 돈 뒤 같은
+    예외로 작업이 멈췄으므로, 중단 동작은 유지하고 시도 횟수만 줄인다.
+    """
     pass
 
 # Vertex AI 공식 API 오류 기준 추가 예외 클래스들
@@ -124,7 +135,6 @@ class GeminiClient:
     ]
 
     _VERTEX_AI_SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
-    _QUOTA_COOLDOWN_SECONDS = 100 # 100초
 
 
     def _get_api_key_identifier(self, api_key: str) -> str:
@@ -180,9 +190,7 @@ class GeminiClient:
         self.current_api_key_index: int = 0
         self.current_api_key: Optional[str] = None
         self.client_pool: Dict[str, genai.Client] = {}
-        self._key_rotation_lock = asyncio.Lock()
-        self.key_quota_failure_times: Dict[str, float] = {}
-        
+
         # Vertex AI related attributes
         self.vertex_credentials: Optional[Any] = None
         self.vertex_project: Optional[str] = None
@@ -281,6 +289,11 @@ class GeminiClient:
         except Exception as e:
             logger.error(f"클라이언트 초기화 실패: {e}", exc_info=True)
             raise
+
+        # 키 선택: 새 요청은 가장 오래 쉰 키, 재시도는 같은 키, 할당량 소진 시에만 다른 키로 전환한다.
+        # 쿨다운은 스케줄러와 같은 시간축을 쓴다.
+        self._key_pool = KeyPool(self.api_keys_list if self.auth_mode == "API_KEY" else [],
+                                 clock=self._scheduler.clock)
 
     def _setup_api_key_mode(self):
         """API 키 모드 설정"""
@@ -425,46 +438,23 @@ class GeminiClient:
     # Use generate_text_async instead.
 
 
-    async def _rotate_api_key_and_reconfigure(self) -> bool:
-        logger.debug("API 키 회전: 락 획득 대기 중...")
-        async with self._key_rotation_lock:
-            logger.debug("API 키 회전: 락 획득.")
-            if not self.api_keys_list or len(self.api_keys_list) <= 1: # No keys or only one successful key
-                logger.warning("API 키 목록이 비어있거나 단일 유효 키만 있어 회전할 수 없습니다.")
-                # If only one key, and it failed, there's nothing to rotate to.
-                # If it's the only key and it's causing issues, this method shouldn't be called
-                # or it should indicate no other options.
-                self.client = None # Mark that no valid client is available after attempting rotation
-                return False
+    def _acquire_key(self, exclude: Iterable[str] = ()) -> Optional[str]:
+        """새 요청(또는 키 전환)에 쓸 키를 골라 사용 표시한다. Vertex 모드는 키가 없으므로 None."""
+        if self.auth_mode != "API_KEY":
+            return None
+        key = self._key_pool.acquire(exclude=exclude)
+        if key is None:
+            raise GeminiAllApiKeysExhaustedException("사용 가능한 API 키가 없습니다 (모두 쿨다운 중이거나 이 요청에서 실패).")
+        self._key_pool.mark_used(key)
+        self.current_api_key = key
+        self.current_api_key_index = self.api_keys_list.index(key) if key in self.api_keys_list else 0
+        self.client = self.client_pool.get(key, self.client)
+        return key
 
-            original_index = self.current_api_key_index
-            for i in range(len(self.api_keys_list)): # Iterate once through all available successful keys
-                self.current_api_key_index = (original_index + 1 + i) % len(self.api_keys_list)
-                next_key = self.api_keys_list[self.current_api_key_index]
-
-                # 키가 할당량 소진으로 쿨다운 중인지 확인
-                last_failure = self.key_quota_failure_times.get(next_key)
-                if last_failure and (time.time() - last_failure) < self._QUOTA_COOLDOWN_SECONDS:
-                    key_id = self._get_api_key_identifier(next_key)
-                    logger.info(f"API {key_id}는 최근 할당량 소진으로 인해 건너뜁니다 (쿨다운 중).")
-                    continue  # 쿨다운 중인 키는 건너뛰고 다음 키를 시도
-                
-                # Check if a client for this key exists in our pool
-                if next_key in self.client_pool:
-                    self.current_api_key = next_key
-                    self.client = self.client_pool[self.current_api_key]
-                    
-                    key_id = self._get_api_key_identifier(self.current_api_key)
-                    logger.info(f"API 키를 {key_id}로 성공적으로 회전하고 클라이언트를 업데이트했습니다.")
-                    return True
-                else:
-                    key_id = self._get_api_key_identifier(next_key)
-                    logger.warning(f"회전 시도 중 API {key_id}에 대한 클라이언트를 풀에서 찾을 수 없습니다.")
-            
-            logger.error("유효한 다음 API 키로 회전하지 못했습니다. 모든 풀의 클라이언트가 유효하지 않을 수 있습니다.")
-            self.client = None # No valid client found after trying all pooled keys
-            logger.debug("API 키 회전: 락 해제.")
-            return False
+    def _client_for_key(self, key: Optional[str]):
+        if key is None:
+            return self.client
+        return self.client_pool.get(key, self.client)
 
     async def list_models_async(self) -> List[Dict[str, Any]]:
         """비동기 모델 목록 조회"""
@@ -472,19 +462,22 @@ class GeminiClient:
              logger.error("list_models_async: self.client가 초기화되지 않았습니다.")
              raise GeminiApiException("모델 목록 조회 실패: 클라이언트가 유효하지 않습니다.")
 
-        total_keys_for_list = len(self.api_keys_list) if self.auth_mode == "API_KEY" and self.api_keys_list else 1
-        attempted_keys_for_list_models = 0
+        tried_keys: set = set()
 
-        while attempted_keys_for_list_models < total_keys_for_list:
+        while True:
             try:
                 async with self._scheduler.slot():
+                    key = self._acquire_key(exclude=tried_keys)
+                    if key is not None:
+                        tried_keys.add(key)
                     logger.info(f"사용 가능한 모델 목록 조회 중 (현재 API 키 인덱스: {self.current_api_key_index if self.auth_mode == 'API_KEY' else 'N/A'})...")
                     models_info = []
-                    if not self.client: 
+                    sdk_client = self._client_for_key(key)
+                    if not sdk_client:
                         raise GeminiApiException("list_models_async: 루프 내에서 Client가 유효하지 않음.")
 
                     # client.aio.models.list() returns an async iterator
-                    async for m in await self.client.aio.models.list(): 
+                    async for m in await sdk_client.aio.models.list(): 
                         full_model_name = m.name
                         short_model_name = ""
                         if isinstance(full_model_name, str):
@@ -505,6 +498,9 @@ class GeminiClient:
                     logger.info(f"{len(models_info)}개의 모델을 찾았습니다.")
                     return models_info
 
+            except GeminiAllApiKeysExhaustedException:
+                logger.error("모든 API 키를 사용하여 모델 목록 조회에 실패했습니다.")
+                raise
             except (GoogleAuthError, Exception) as e: 
                 error_message = str(e)
                 logger.warning(f"모델 목록 조회 중 API/인증 오류 발생: {type(e).__name__} - {error_message}")
@@ -513,23 +509,13 @@ class GeminiClient:
                     raise GeminiInvalidRequestException(f"OAuth 범위 문제로 모델 목록 조회 실패: {error_message}") from e
 
                 if self.auth_mode == "API_KEY" and self.api_keys_list and len(self.api_keys_list) > 1:
-                    attempted_keys_for_list_models += 1 
-                    if attempted_keys_for_list_models >= total_keys_for_list: 
-                        logger.error("모든 API 키를 사용하여 모델 목록 조회에 실패했습니다.")
-                        raise GeminiAllApiKeysExhaustedException("모든 API 키로 모델 목록 조회에 실패했습니다.") from e
-                    
-                    logger.info("다음 API 키로 회전하여 모델 목록 조회 재시도...")
-                    if not await self._rotate_api_key_and_reconfigure():
-                        logger.error("API 키 회전 또는 클라이언트 재설정 실패 (list_models_async).")
-                        raise GeminiAllApiKeysExhaustedException("API 키 회전 중 문제 발생 또는 모든 키 시도됨 (list_models_async).") from e
-                    if not self.client: 
-                        logger.error("API 키 회전 후 유효한 클라이언트가 없습니다 (list_models_async).")
-                        raise GeminiAllApiKeysExhaustedException("API 키 회전 후 유효한 클라이언트를 찾지 못했습니다 (list_models_async).")
+                    # 메타데이터 조회라 쿼터와 무관하다. 이 조회에서 아직 안 쓴 키로 한 번씩 다시 시도한다.
+                    logger.info("다음 API 키로 모델 목록 조회 재시도...")
+                    continue
                 else: 
                     logger.error(f"모델 목록 조회 실패 (키 회전 불가 또는 Vertex 모드): {error_message}")
                     raise GeminiApiException(f"모델 목록 조회 실패: {error_message}") from e
-        
-        raise GeminiApiException("모델 목록 조회에 실패했습니다 (알 수 없는 내부 오류).")
+
 
 
     def _is_quota_exhausted_error(self, error_obj: Any) -> bool:
@@ -638,198 +624,190 @@ class GeminiClient:
         else:
             raise ValueError("프롬프트는 문자열 또는 Content 객체의 리스트여야 합니다.")
 
-        total_keys = len(self.api_keys_list) if self.auth_mode == "API_KEY" and self.api_keys_list else 1
-        attempted_keys_count = 0
+        # 키는 실제로 보내는 순간(슬롯 안)에 고른다. 대기 중에 미리 고르면 대기열의 요청이 모두
+        # 같은 키를 집는다. 재시도는 같은 키로 보내고, 키 전환은 할당량 소진·요청 오류 때만 한다.
+        key: Optional[str] = None
+        need_key = True
+        switched_from: Optional[str] = None
+        tried_keys: set = set()
+        attempt = 0
+        current_backoff = initial_backoff
 
-        while attempted_keys_count < total_keys:
-            current_retry_for_this_key = 0
-            current_backoff = initial_backoff
-            
-            if self.auth_mode == "API_KEY":
-                key_id = self._get_api_key_identifier(self.current_api_key)
-                logger.info(f"API {key_id}로 작업 시도.")
-            elif self.auth_mode == "VERTEX_AI":
-                logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")
-            
-            if not self.client:
-                logger.error("generate_text_async: self.client가 유효하지 않습니다.")
-                if self.auth_mode == "API_KEY":
-                    break
-                else:
-                    raise GeminiApiException("클라이언트가 유효하지 않으며 복구할 수 없습니다 (Vertex).")
-            
-            while current_retry_for_this_key <= max_retries:
-                try:
-                    # 슬롯은 요청이 끝날 때까지 쥔다. 실패 후 백오프는 슬롯 밖(except)에서 기다린다.
-                    async with self._scheduler.slot():
-                    
-                        logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {current_retry_for_this_key + 1}/{max_retries + 1})")
-                    
-                        final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
-                        if 'http_options' not in final_generation_config_params:
-                            final_generation_config_params['http_options'] = self.http_options
-                    
-                        if system_instruction_text and system_instruction_text.strip():
-                            final_generation_config_params['system_instruction'] = system_instruction_text
-                    
-                        # 항상 OFF으로 안전 설정 강제 적용
-                        if safety_settings_list_of_dicts:
-                            logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
-                    
-                        # Thinking config 관련 필드를 미리 제거 (GenerateContentConfig에서 허용되지 않음)
-                        thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
-                        thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
-                    
-                        # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
-                        check_name = effective_model_name.lower()
-                        thinking_config = None
-                    
-                        if "gemini-3" in check_name:
-                            # Gemini 3.0: thinking_level만 사용
-                            # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
-                            # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
-                            level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
-                            thinking_config = genai_types.ThinkingConfig(thinking_level=level)
-                            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
-                        
-                        elif "gemini-2.5" in check_name:
-                            # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
-                            if thinking_budget is not None:
-                                budget = thinking_budget
-                            else:
-                                budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
-                            thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
-                            logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
-                        
-                        if thinking_config:
-                            final_generation_config_params['thinking_config'] = thinking_config
-                    
-                        forced_safety_settings = [
-                            genai_types.SafetySetting(category=c, threshold=genai_types.HarmBlockThreshold.BLOCK_NONE)
-                            for c in [
-                                genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                                genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                                genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                                genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                                genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                            ]
-                        ]
-                        final_generation_config_params['safety_settings'] = forced_safety_settings
+        while True:
+            try:
+                # 슬롯은 요청이 끝날 때까지 쥔다. 실패 후 백오프는 슬롯 밖(except)에서 기다린다.
+                async with self._scheduler.slot():
+                    if need_key:
+                        key = self._acquire_key(exclude=tried_keys)
+                        need_key = False
+                        if key is not None:
+                            tried_keys.add(key)
+                            key_id = self._get_api_key_identifier(key)
+                            if switched_from is not None:
+                                logger.info(f"키 전환: {self._get_api_key_identifier(switched_from)} → {key_id}")
+                            logger.info(f"API {key_id}로 작업 시도.")
+                        elif self.auth_mode == "VERTEX_AI":
+                            logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")
+                    elif key is not None:
+                        self._key_pool.mark_used(key)
+                    sdk_client = self._client_for_key(key)
+                    if not sdk_client:
+                        raise GeminiApiException("Gemini 클라이언트가 유효하지 않습니다.")
 
-                        # function calling을 쓰지 않으므로 AFC를 끈다 (SDK 2.x의 AFC 경고·호출마다 찍히는 INFO 로그 방지)
-                        final_generation_config_params['automatic_function_calling'] = genai_types.AutomaticFunctionCallingConfig(disable=True)
-
-                        sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
-                    
-                        text_content_from_api: Optional[str] = None
-                        if stream:
-                            response_stream = await self.client.aio.models.generate_content_stream(
-                                model=effective_model_name,
-                                contents=final_sdk_contents,
-                                config=sdk_generation_config
-                            )
-                            aggregated_parts = []
-                            async for chunk_response in response_stream:
-                                if hasattr(chunk_response, 'text') and chunk_response.text:
-                                    aggregated_parts.append(chunk_response.text)
-                                if self._is_content_safety_error(response=chunk_response):
-                                    raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림 응답 차단")
-                            text_content_from_api = "".join(aggregated_parts)
-                        else:
-                            response = await self.client.aio.models.generate_content(
-                                model=effective_model_name,
-                                contents=final_sdk_contents,
-                                config=sdk_generation_config,
-                            )
-                        
-                            if sdk_generation_config and sdk_generation_config.response_schema and \
-                               sdk_generation_config.response_mime_type == "application/json" and \
-                               hasattr(response, 'parsed') and response.parsed is not None:
-                                return response.parsed
-                        
-                            if self._is_content_safety_error(response=response):
-                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
-                        
-                            if hasattr(response, 'text') and response.text is not None:
-                                text_content_from_api = response.text
-                            elif hasattr(response, 'candidates') and response.candidates:
-                                for candidate in response.candidates:
-                                    if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
-                                        if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts'):
-                                            text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
-                                            break
-                                if text_content_from_api is None:
-                                    text_content_from_api = ""
-                    
-                        if text_content_from_api is not None:
-                            is_json_response_expected = generation_config_dict and \
-                                                        generation_config_dict.get("response_mime_type") == "application/json"
-                            if is_json_response_expected:
-                                try:
-                                    cleaned_json_str = re.sub(r'^```json\s*', '', text_content_from_api.strip(), flags=re.IGNORECASE)
-                                    cleaned_json_str = re.sub(r'\s*```$', '', cleaned_json_str, flags=re.IGNORECASE)
-                                    return json.loads(cleaned_json_str.strip())
-                                except json.JSONDecodeError as e_parse:
-                                    logger.warning(f"JSON 응답 파싱 실패: {e_parse}")
-                                    return text_content_from_api
-                            else:
-                                if not text_content_from_api.strip():
-                                    raise GeminiContentSafetyException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
-                                return text_content_from_api
-                    
-                        raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
+                    logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {attempt + 1}/{max_retries + 1})")
                 
-                except GeminiContentSafetyException:
-                    raise
-                except asyncio.CancelledError:
-                    logger.info(f"비동기 API 호출이 취소됨: {effective_model_name}")
-                    raise
-                except Exception as e:
-                    error_message = str(e)
-                    logger.warning(f"API 관련 오류 발생: {type(e).__name__} - {error_message}")
+                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
+                    if 'http_options' not in final_generation_config_params:
+                        final_generation_config_params['http_options'] = self.http_options
+                
+                    if system_instruction_text and system_instruction_text.strip():
+                        final_generation_config_params['system_instruction'] = system_instruction_text
+                
+                    # 항상 OFF으로 안전 설정 강제 적용
+                    if safety_settings_list_of_dicts:
+                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
+                
+                    # Thinking config 관련 필드를 미리 제거 (GenerateContentConfig에서 허용되지 않음)
+                    thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
+                    thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
+                
+                    # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
+                    check_name = effective_model_name.lower()
+                    thinking_config = None
+                
+                    if "gemini-3" in check_name:
+                        # Gemini 3.0: thinking_level만 사용
+                        # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
+                        # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
+                        level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
+                        thinking_config = genai_types.ThinkingConfig(thinking_level=level)
+                        logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
                     
-                    if self._is_invalid_request_error(e):
-                        if self.auth_mode == "API_KEY":
-                            break
+                    elif "gemini-2.5" in check_name:
+                        # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
+                        if thinking_budget is not None:
+                            budget = thinking_budget
                         else:
-                            raise GeminiInvalidRequestException(f"복구 불가능한 요청 오류: {error_message}") from e
-                    elif self._is_rate_limit_error(e):
-                        if self._is_quota_exhausted_error(e):
-                            if self.current_api_key:
-                                self.key_quota_failure_times[self.current_api_key] = time.time()
-                            break
-                        if current_retry_for_this_key < max_retries:
-                            await asyncio.sleep(current_backoff + random.uniform(0,1))
-                            current_retry_for_this_key += 1
-                            current_backoff = min(current_backoff * 2, max_backoff)
-                            continue
-                        else:
-                            break
-                    elif "timeout" in error_message.lower() or "timed out" in error_message.lower():
-                        if current_retry_for_this_key < max_retries:
-                            await asyncio.sleep(current_backoff + random.uniform(0,1))
-                            current_retry_for_this_key += 1
-                            current_backoff = min(current_backoff * 2, max_backoff)
-                            continue
-                        else:
-                            break
-                    else:
-                        if current_retry_for_this_key < max_retries:
-                            await asyncio.sleep(current_backoff + random.uniform(0,1))
-                            current_retry_for_this_key += 1
-                            current_backoff = min(current_backoff * 2, max_backoff)
-                            continue
-                        else:
-                            break
-            
-            attempted_keys_count += 1
-            if attempted_keys_count < total_keys and self.auth_mode == "API_KEY":
-                if not await self._rotate_api_key_and_reconfigure():
-                    raise GeminiAllApiKeysExhaustedException("유효한 다음 API 키로 전환할 수 없습니다.")
-            elif self.auth_mode == "VERTEX_AI":
-                raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.")
+                            budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
+                        thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
+                        logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
+                    
+                    if thinking_config:
+                        final_generation_config_params['thinking_config'] = thinking_config
+                
+                    forced_safety_settings = [
+                        genai_types.SafetySetting(category=c, threshold=genai_types.HarmBlockThreshold.BLOCK_NONE)
+                        for c in [
+                            genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                        ]
+                    ]
+                    final_generation_config_params['safety_settings'] = forced_safety_settings
 
-        raise GeminiAllApiKeysExhaustedException("모든 API 키를 사용한 시도 후에도 텍스트 생성에 최종 실패했습니다.")
+                    # function calling을 쓰지 않으므로 AFC를 끈다 (SDK 2.x의 AFC 경고·호출마다 찍히는 INFO 로그 방지)
+                    final_generation_config_params['automatic_function_calling'] = genai_types.AutomaticFunctionCallingConfig(disable=True)
+
+                    sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
+                
+                    text_content_from_api: Optional[str] = None
+                    if stream:
+                        response_stream = await sdk_client.aio.models.generate_content_stream(
+                            model=effective_model_name,
+                            contents=final_sdk_contents,
+                            config=sdk_generation_config
+                        )
+                        aggregated_parts = []
+                        async for chunk_response in response_stream:
+                            if hasattr(chunk_response, 'text') and chunk_response.text:
+                                aggregated_parts.append(chunk_response.text)
+                            if self._is_content_safety_error(response=chunk_response):
+                                raise GeminiContentSafetyException("콘텐츠 안전 문제로 스트림 응답 차단")
+                        text_content_from_api = "".join(aggregated_parts)
+                    else:
+                        response = await sdk_client.aio.models.generate_content(
+                            model=effective_model_name,
+                            contents=final_sdk_contents,
+                            config=sdk_generation_config,
+                        )
+                    
+                        if sdk_generation_config and sdk_generation_config.response_schema and \
+                           sdk_generation_config.response_mime_type == "application/json" and \
+                           hasattr(response, 'parsed') and response.parsed is not None:
+                            return response.parsed
+                    
+                        if self._is_content_safety_error(response=response):
+                            raise GeminiContentSafetyException("콘텐츠 안전 문제로 응답 차단")
+                    
+                        if hasattr(response, 'text') and response.text is not None:
+                            text_content_from_api = response.text
+                        elif hasattr(response, 'candidates') and response.candidates:
+                            for candidate in response.candidates:
+                                if hasattr(candidate, 'finish_reason') and candidate.finish_reason == FinishReason.STOP:
+                                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts'):
+                                        text_content_from_api = "".join(part.text for part in candidate.content.parts if hasattr(part, "text") and part.text)
+                                        break
+                            if text_content_from_api is None:
+                                text_content_from_api = ""
+                
+                    if text_content_from_api is not None:
+                        is_json_response_expected = generation_config_dict and \
+                                                    generation_config_dict.get("response_mime_type") == "application/json"
+                        if is_json_response_expected:
+                            try:
+                                cleaned_json_str = re.sub(r'^```json\s*', '', text_content_from_api.strip(), flags=re.IGNORECASE)
+                                cleaned_json_str = re.sub(r'\s*```$', '', cleaned_json_str, flags=re.IGNORECASE)
+                                return json.loads(cleaned_json_str.strip())
+                            except json.JSONDecodeError as e_parse:
+                                logger.warning(f"JSON 응답 파싱 실패: {e_parse}")
+                                return text_content_from_api
+                        else:
+                            if not text_content_from_api.strip():
+                                raise GeminiContentSafetyException("모델로부터 유효한 텍스트 응답을 받지 못했습니다 (빈 응답).")
+                            return text_content_from_api
+                
+                    raise GeminiApiException("모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
+            
+            except (GeminiContentSafetyException, GeminiAllApiKeysExhaustedException):
+                raise
+            except asyncio.CancelledError:
+                logger.info(f"비동기 API 호출이 취소됨: {effective_model_name}")
+                raise
+            except Exception as e:
+                error_message = str(e)
+                logger.warning(f"API 관련 오류 발생: {type(e).__name__} - {error_message}")
+
+                if self._is_invalid_request_error(e):
+                    if self.auth_mode != "API_KEY":
+                        raise GeminiInvalidRequestException(f"복구 불가능한 요청 오류: {error_message}") from e
+                    # 잘못된 키일 수 있으므로 이 요청에서 아직 안 쓴 키로 넘어간다 (T5에서 재분류)
+                    switched_from, need_key = key, True
+                    continue
+
+                if self._is_rate_limit_error(e) and self._is_quota_exhausted_error(e):
+                    if self.auth_mode != "API_KEY" or key is None:
+                        raise GeminiApiException(f"할당량 소진: {error_message}") from e
+                    self._key_pool.mark_exhausted(key)
+                    logger.warning(f"할당량 소진: {self._get_api_key_identifier(key)} (쿨다운 후 다시 사용)")
+                    # 키 전환은 일시 오류 재시도 예산을 쓰지 않는다
+                    switched_from, need_key = key, True
+                    continue
+
+                # 일시 오류(503, 분당 한도 429, timeout 등): 같은 키로 요청당 max_retries회까지 재시도
+                if attempt < max_retries:
+                    await asyncio.sleep(current_backoff + random.uniform(0, 1))
+                    attempt += 1
+                    current_backoff = min(current_backoff * 2, max_backoff)
+                    continue
+
+                if self.auth_mode == "VERTEX_AI":
+                    raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.") from e
+                raise GeminiRetriesExhaustedException(
+                    f"{self._get_api_key_identifier(key) if key else '클라이언트'}로 {attempt + 1}회 시도했으나 실패: "
+                    f"{type(e).__name__} - {error_message}"
+                ) from e
 
 
 if __name__ == '__main__':

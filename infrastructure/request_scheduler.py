@@ -36,6 +36,7 @@ class RequestScheduler:
     ):
         self.requests_per_minute = requests_per_minute
         self.interval = 60.0 / requests_per_minute if requests_per_minute and requests_per_minute > 0 else 0.0
+        self.clock = clock  # 같은 시간축을 써야 하는 부품(키 쿨다운 등)이 공유한다
         self._clock = clock
         self._sleep = sleep
         self._in_flight = asyncio.Lock()
