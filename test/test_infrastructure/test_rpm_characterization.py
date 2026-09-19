@@ -21,6 +21,7 @@ from infrastructure.gemini_client import (
     GeminiAllApiKeysExhaustedException,
     GeminiClient,
     GeminiContentSafetyException,
+    GeminiRetriesExhaustedException,
 )
 from infrastructure.request_scheduler import RequestScheduler
 from test.test_infrastructure.virtual_clock import T0, VirtualClock
@@ -51,6 +52,10 @@ def err_503():
 
 def err_500():
     return _server_error(500, "INTERNAL", "An internal error has occurred.")
+
+
+def err_400_bad_key():
+    return _server_error(400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key.")
 
 
 def err_429_quota():
@@ -199,7 +204,7 @@ def test_slow_requests_never_overlap_in_flight(env):
 
 def test_backoff_happens_outside_the_slot(env):
     """실패한 요청이 백오프로 기다리는 동안에는 슬롯을 놓아, 다른 요청이 먼저 나간다."""
-    client, api = env.build(lambda k, n: err_503() if n == 0 else ok_response(), rpm=60.0)
+    client, api = env.build(lambda k, n: err_503() if (k, n) == (KEYS[0], 0) else ok_response(), rpm=60.0)
 
     async def scenario():
         failing = _gen(client, initial_backoff=5.0)  # 0.1초에 503, 5.1초까지 백오프
@@ -227,41 +232,98 @@ def test_list_models_consumes_a_slot(env):
 
 
 # ---------------------------------------------------------------------------
-# 재시도와 키 순환
+# 재시도와 키 선택 (T4: 새 요청은 가장 오래 쉰 키, 재시도는 같은 키, 소진 시에만 전환)
 # ---------------------------------------------------------------------------
 
-def test_503_retries_on_same_key_then_rotates_through_all_keys(env):
-    """503이 계속되면 키마다 (max_retries+1)회씩 시도하고 다음 키로 넘어가 전 키를 소진한다.
+def test_new_requests_use_least_recently_used_key(env):
+    """새 요청마다 가장 오래 쉰 키를 고른다.
 
-    T4·T5b에서 뒤집힌다: 503 재시도는 같은 키로 1회뿐이고, 503으로는 키를 바꾸지 않는다.
+    T4에서 뒤집혔다: 이전에는 성공하는 동안 같은 키를 계속 썼다(sticky).
+    """
+    client, api = env.build(lambda k, n: ok_response(), rpm=60.0)
+
+    async def scenario():
+        for _ in range(4):
+            await _gen(client)
+
+    asyncio.run(env.clock.run(scenario()))
+
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[2], KEYS[0]]
+
+
+def test_queued_requests_pick_keys_when_sent(env):
+    """동시에 대기하던 요청도 보내는 순간에 키를 골라 고르게 나뉜다."""
+    client, api = env.build(lambda k, n: ok_response(), rpm=60.0)
+
+    async def scenario():
+        return await asyncio.gather(*[_gen(client) for _ in range(4)])
+
+    asyncio.run(env.clock.run(scenario()))
+
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[2], KEYS[0]]
+
+
+def test_transient_errors_retry_on_same_key_then_fail(env):
+    """503이 계속되면 같은 키로 (max_retries+1)회만 시도하고 GeminiRetriesExhaustedException으로 끝난다.
+
+    T4에서 뒤집혔다: 이전에는 키마다 (max_retries+1)회씩 모든 키를 돌았다(키 3개면 9회).
+    예외는 GeminiAllApiKeysExhaustedException을 상속해 호출부의 작업 중단 동작은 유지된다.
+    T5b에서 503 재시도는 1회로 줄어든다.
     """
     client, api = env.build(lambda k, n: err_503(), rpm=60.0)
 
-    with pytest.raises(GeminiAllApiKeysExhaustedException):
+    with pytest.raises(GeminiRetriesExhaustedException) as exc_info:
         asyncio.run(env.clock.run(_gen(client, max_retries=2)))
 
-    assert api.keys() == [KEYS[0]] * 3 + [KEYS[1]] * 3 + [KEYS[2]] * 3
-    assert api.starts() == [float(i) for i in range(9)]
+    assert isinstance(exc_info.value, GeminiAllApiKeysExhaustedException)
+    assert api.keys() == [KEYS[0]] * 3
+    assert api.starts() == [0.0, 1.0, 2.0]
 
 
-def test_quota_exhaustion_rotates_to_next_key_immediately(env):
-    """할당량 소진(429 RESOURCE_EXHAUSTED)은 재시도 없이 다음 키로 넘어가고 소진 시각을 기록한다."""
+def test_retry_keeps_key_even_after_other_requests(env):
+    """다른 요청이 사이에 끼어도 재시도는 처음 고른 키로 보낸다."""
+    client, api = env.build(lambda k, n: err_503() if (k, n) == (KEYS[0], 0) else ok_response(), rpm=60.0)
+
+    async def scenario():
+        failing = _gen(client, initial_backoff=5.0)
+        other = _gen(client)
+        return await asyncio.gather(failing, other)
+
+    asyncio.run(env.clock.run(scenario()))
+
+    # 첫 요청 A(503) → 다른 요청은 B → A의 재시도는 다시 A
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[0]]
+
+
+def test_quota_exhaustion_switches_key_and_cools_down(env):
+    """할당량 소진(429 RESOURCE_EXHAUSTED)은 재시도 없이 다른 키로 넘어가고, 소진 키는 쿨다운에 들어간다."""
     client, api = env.build(lambda k, n: err_429_quota() if k == KEYS[0] else ok_response(), rpm=60.0)
 
     result = asyncio.run(env.clock.run(_gen(client)))
 
     assert result == "ok"
     assert api.keys() == [KEYS[0], KEYS[1]]
-    assert KEYS[0] in client.key_quota_failure_times
+    assert client._key_pool.is_cooling_down(KEYS[0])
     assert client.current_api_key == KEYS[1]
 
 
-def test_key_stays_sticky_across_successful_requests(env):
-    """성공하는 동안에는 새 요청도 같은 키를 계속 쓴다.
+def test_quota_switch_does_not_consume_retry_budget(env):
+    """키 전환 뒤에도 일시 오류 재시도 예산은 그대로다."""
+    def script(k, n):
+        if k == KEYS[0]:
+            return err_429_quota()
+        return err_503() if n == 0 else ok_response()
 
-    T4에서 뒤집힌다: 새 요청마다 가장 오래 쉰 키를 고른다.
-    """
-    client, api = env.build(lambda k, n: ok_response(), rpm=60.0)
+    client, api = env.build(script, rpm=60.0)
+
+    result = asyncio.run(env.clock.run(_gen(client, max_retries=1)))
+
+    assert result == "ok"
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[1]]
+
+
+def test_cooling_down_key_is_skipped_by_new_requests(env):
+    client, api = env.build(lambda k, n: err_429_quota() if k == KEYS[0] else ok_response(), rpm=60.0)
 
     async def scenario():
         for _ in range(3):
@@ -269,11 +331,33 @@ def test_key_stays_sticky_across_successful_requests(env):
 
     asyncio.run(env.clock.run(scenario()))
 
-    assert api.keys() == [KEYS[0]] * 3
+    # 1: A 소진 → B, 2: C, 3: A는 쿨다운이라 B
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[2], KEYS[1]]
+
+
+def test_all_keys_exhausted_raises(env):
+    client, api = env.build(lambda k, n: err_429_quota(), rpm=60.0)
+
+    with pytest.raises(GeminiAllApiKeysExhaustedException) as exc_info:
+        asyncio.run(env.clock.run(_gen(client)))
+
+    assert not isinstance(exc_info.value, GeminiRetriesExhaustedException)
+    assert api.keys() == KEYS
+
+
+def test_invalid_key_error_moves_to_unused_key_without_cooldown(env):
+    """잘못된 키 같은 요청 오류는 이 요청에서 아직 안 쓴 키로 넘어가되, 쿨다운에 넣지 않는다 (T5에서 재분류)."""
+    client, api = env.build(lambda k, n: err_400_bad_key() if k == KEYS[0] else ok_response(), rpm=60.0)
+
+    result = asyncio.run(env.clock.run(_gen(client)))
+
+    assert result == "ok"
+    assert api.keys() == [KEYS[0], KEYS[1]]
+    assert not client._key_pool.is_cooling_down(KEYS[0])
 
 
 def test_500_exception_is_retried_as_generic_error_not_safety(env):
-    """SDK가 500을 예외로 던지면 안전 차단으로 분류되지 않고 일반 오류로 재시도·키 순환된다.
+    """SDK가 500을 예외로 던지면 안전 차단으로 분류되지 않고 일반 오류로 재시도된다.
 
     T5에서 뒤집힌다: 같은 요청에서 500이 연속 2회면 GeminiContentSafetyException이어야 한다.
     """
