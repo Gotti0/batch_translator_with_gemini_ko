@@ -27,9 +27,13 @@ except ImportError:
 try:
     from .request_scheduler import RequestScheduler
     from .key_pool import KeyPool
+    from .error_classifier import classify, ErrorKind
+    from .retry_policy import Action, RetryPolicy
 except ImportError:
     from infrastructure.request_scheduler import RequestScheduler
     from infrastructure.key_pool import KeyPool
+    from infrastructure.error_classifier import classify, ErrorKind
+    from infrastructure.retry_policy import Action, RetryPolicy
 logger = setup_logger(__name__)
 
 class GeminiApiException(Exception):
@@ -114,24 +118,10 @@ class ContentFilterException(GeminiContentSafetyException):
 
 
 class GeminiClient:
-    _RATE_LIMIT_PATTERNS = [
-        "rateLimitExceeded", "429", "Too Many Requests", "QUOTA_EXCEEDED",
-        "The model is overloaded", "503", "Service Unavailable", 
-        "Resource has been exhausted", "RESOURCE_EXHAUSTED"
-    ]
-
     _CONTENT_SAFETY_PATTERNS = [
         "PROHIBITED_CONTENT", "SAFETY", "response was blocked",
         "BLOCKED_PROMPT", "SAFETY_BLOCKED", "blocked due to safety",
         "INTERNAL", "500", "504", "DEADLINE_EXCEEDED"
-    ]
-
-    _INVALID_REQUEST_PATTERNS = [
-        "Invalid API key", "API key not valid", "Permission denied",
-        "Invalid model name", "model is not found", "400 Bad Request",
-        "Invalid JSON payload", "Could not find model", 
-        "Publisher Model .* not found", "invalid_scope", "INVALID_ARGUMENT",
-        "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND"
     ]
 
     _VERTEX_AI_SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
@@ -385,20 +375,6 @@ class GeminiClient:
         logger.info(f"Vertex AI용 Client 초기화 시도: {client_options}")
 
 
-    def _is_rate_limit_error(self, error_obj: Any) -> bool:
-        from google.api_core import exceptions as gapi_exceptions
-    
-        if isinstance(error_obj, (
-            gapi_exceptions.ResourceExhausted,
-            gapi_exceptions.DeadlineExceeded,
-            gapi_exceptions.TooManyRequests
-        )):
-            return True
-            
-        return any(re.search(pattern, str(error_obj), re.IGNORECASE) 
-                for pattern in self._RATE_LIMIT_PATTERNS)
-
-
     def _is_content_safety_error(self, response: Optional[Any] = None, error_obj: Optional[Any] = None) -> bool:
         if response:
             if hasattr(response, 'prompt_feedback') and response.prompt_feedback and response.prompt_feedback.block_reason:
@@ -416,33 +392,18 @@ class GeminiClient:
         return any(re.search(pattern, str(error_obj), re.IGNORECASE) for pattern in self._CONTENT_SAFETY_PATTERNS)
 
 
-    def _is_invalid_request_error(self, error_obj: Any) -> bool:
-    # Google API Core의 표준 예외들 사용
-        from google.api_core import exceptions as gapi_exceptions
-        
-        if isinstance(error_obj, (
-            gapi_exceptions.InvalidArgument,
-            gapi_exceptions.NotFound, 
-            gapi_exceptions.PermissionDenied,
-            gapi_exceptions.FailedPrecondition,
-            gapi_exceptions.Unauthenticated
-        )):
-            return True
-        
-        return any(re.search(pattern, str(error_obj), re.IGNORECASE) 
-                for pattern in self._INVALID_REQUEST_PATTERNS)
-
-
-
     # NOTE: Synchronous generate_text removed as part of async migration.
     # Use generate_text_async instead.
 
 
-    def _acquire_key(self, exclude: Iterable[str] = ()) -> Optional[str]:
-        """새 요청(또는 키 전환)에 쓸 키를 골라 사용 표시한다. Vertex 모드는 키가 없으므로 None."""
+    def _acquire_key(self, exclude: Iterable[str] = (), model: Optional[str] = None) -> Optional[str]:
+        """새 요청(또는 키 전환)에 쓸 키를 골라 사용 표시한다. Vertex 모드는 키가 없으므로 None.
+
+        model을 주면 그 모델의 하루 한도가 소진된 키는 건너뛴다.
+        """
         if self.auth_mode != "API_KEY":
             return None
-        key = self._key_pool.acquire(exclude=exclude)
+        key = self._key_pool.acquire(exclude=exclude, model=model)
         if key is None:
             raise GeminiAllApiKeysExhaustedException("사용 가능한 API 키가 없습니다 (모두 쿨다운 중이거나 이 요청에서 실패).")
         self._key_pool.mark_used(key)
@@ -517,30 +478,6 @@ class GeminiClient:
                     raise GeminiApiException(f"모델 목록 조회 실패: {error_message}") from e
 
 
-
-    def _is_quota_exhausted_error(self, error_obj: Any) -> bool:
-        """
-        할당량 소진(RESOURCE_EXHAUSTED, QUOTA_EXCEEDED) 오류를 구체적으로 감지합니다.
-        이런 오류의 경우 즉시 다음 API 키로 회전해야 합니다.
-        """
-        from google.api_core import exceptions as gapi_exceptions
-        
-        # Google API Core의 ResourceExhausted 예외 체크
-        if isinstance(error_obj, gapi_exceptions.ResourceExhausted):
-            return True
-        
-        # 특정 할당량 관련 패턴 체크
-        quota_patterns = [
-            "RESOURCE_EXHAUSTED", 
-            "QUOTA_EXCEEDED",
-            "Quota exceeded",
-            "quota.*exceeded",
-            "Resource has been exhausted",
-            "resource.*exhausted"
-        ]
-        
-        error_str = str(error_obj).lower()
-        return any(re.search(pattern.lower(), error_str) for pattern in quota_patterns)
 
     # ============================================================================
     # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
@@ -630,15 +567,17 @@ class GeminiClient:
         need_key = True
         switched_from: Optional[str] = None
         tried_keys: set = set()
-        attempt = 0
-        current_backoff = initial_backoff
+        quota_model = effective_model_name.split("/")[-1]
+        # 백오프 난수와 현재 시각은 이 모듈의 random·time을 통해 읽는다(테스트에서 바꿔 끼울 수 있게)
+        policy = RetryPolicy(max_retries, initial_backoff, max_backoff,
+                             jitter=lambda: random.uniform(0, 1), wall_clock=lambda: time.time())
 
         while True:
             try:
                 # 슬롯은 요청이 끝날 때까지 쥔다. 실패 후 백오프는 슬롯 밖(except)에서 기다린다.
                 async with self._scheduler.slot():
                     if need_key:
-                        key = self._acquire_key(exclude=tried_keys)
+                        key = self._acquire_key(exclude=tried_keys, model=quota_model)
                         need_key = False
                         if key is not None:
                             tried_keys.add(key)
@@ -654,7 +593,7 @@ class GeminiClient:
                     if not sdk_client:
                         raise GeminiApiException("Gemini 클라이언트가 유효하지 않습니다.")
 
-                    logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {attempt + 1}/{max_retries + 1})")
+                    logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {policy.attempt + 1}/{max_retries + 1})")
                 
                     final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
                     if 'http_options' not in final_generation_config_params:
@@ -778,36 +717,38 @@ class GeminiClient:
             except Exception as e:
                 error_message = str(e)
                 logger.warning(f"API 관련 오류 발생: {type(e).__name__} - {error_message}")
+                classified = classify(e)
+                decision = policy.on_error(classified)
+                key_id = self._get_api_key_identifier(key) if key else "클라이언트"
 
-                if self._is_invalid_request_error(e):
-                    if self.auth_mode != "API_KEY":
+                if decision.action is Action.RETRY_SAME_KEY:
+                    await asyncio.sleep(decision.delay)
+                    continue
+
+                if decision.action is Action.FAIL_SAFETY:
+                    raise GeminiContentSafetyException(
+                        f"콘텐츠 안전 문제로 판단: 같은 요청에서 500 오류가 연속 발생 ({error_message})"
+                    ) from e
+
+                if decision.action is Action.FAIL_RETRIES_EXHAUSTED:
+                    if self.auth_mode == "VERTEX_AI":
+                        raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.") from e
+                    raise GeminiRetriesExhaustedException(
+                        f"{key_id}로 {policy.attempt + 1}회 시도했으나 실패: {type(e).__name__} - {error_message}"
+                    ) from e
+
+                # SWITCH_KEY: 요청 오류 또는 할당량 소진. 키 전환은 일시 오류 재시도 예산을 쓰지 않는다
+                if self.auth_mode != "API_KEY" or key is None:
+                    if classified.kind is ErrorKind.INVALID_REQUEST:
                         raise GeminiInvalidRequestException(f"복구 불가능한 요청 오류: {error_message}") from e
-                    # 잘못된 키일 수 있으므로 이 요청에서 아직 안 쓴 키로 넘어간다 (T5에서 재분류)
-                    switched_from, need_key = key, True
-                    continue
-
-                if self._is_rate_limit_error(e) and self._is_quota_exhausted_error(e):
-                    if self.auth_mode != "API_KEY" or key is None:
-                        raise GeminiApiException(f"할당량 소진: {error_message}") from e
-                    self._key_pool.mark_exhausted(key)
-                    logger.warning(f"할당량 소진: {self._get_api_key_identifier(key)} (쿨다운 후 다시 사용)")
-                    # 키 전환은 일시 오류 재시도 예산을 쓰지 않는다
-                    switched_from, need_key = key, True
-                    continue
-
-                # 일시 오류(503, 분당 한도 429, timeout 등): 같은 키로 요청당 max_retries회까지 재시도
-                if attempt < max_retries:
-                    await asyncio.sleep(current_backoff + random.uniform(0, 1))
-                    attempt += 1
-                    current_backoff = min(current_backoff * 2, max_backoff)
-                    continue
-
-                if self.auth_mode == "VERTEX_AI":
-                    raise GeminiApiException("Vertex AI 요청이 최대 재시도 후에도 실패했습니다.") from e
-                raise GeminiRetriesExhaustedException(
-                    f"{self._get_api_key_identifier(key) if key else '클라이언트'}로 {attempt + 1}회 시도했으나 실패: "
-                    f"{type(e).__name__} - {error_message}"
-                ) from e
+                    raise GeminiApiException(f"할당량 소진: {error_message}") from e
+                if decision.cooldown_seconds is not None:
+                    self._key_pool.mark_exhausted(key, decision.cooldown_seconds, model=decision.cooldown_model)
+                    scope = f"모델 {decision.cooldown_model}" if decision.cooldown_model else "모든 모델"
+                    label = {ErrorKind.QUOTA_DAILY: "하루 한도", ErrorKind.QUOTA_MINUTE: "분당 한도"}.get(classified.kind, "할당량")
+                    logger.warning(f"{label} 소진: {key_id}, {scope}에 대해 {decision.cooldown_seconds:.0f}초 쿨다운")
+                switched_from, need_key = key, True
+                continue
 
 
 if __name__ == '__main__':

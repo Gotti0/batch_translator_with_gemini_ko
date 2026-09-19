@@ -6,11 +6,15 @@ API 키 선택과 쿨다운을 맡는 키 풀.
 쓰므로 여기서 다루지 않는다. 사용자가 어느 키를 소진했는지 알 수 있어야 하기 때문이다.
 """
 import time
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 
 class KeyPool:
-    """키별 마지막 사용 순번과 쿨다운 만료 시각만 안다."""
+    """키별 마지막 사용 순번과 쿨다운 만료 시각만 안다.
+
+    쿨다운은 키 전체에 걸거나 특정 모델에만 걸 수 있다. 무료 티어 한도는 (키, 모델) 단위라
+    한 모델의 하루 한도를 다 써도 같은 키로 다른 모델은 쓸 수 있다.
+    """
 
     DEFAULT_COOLDOWN_SECONDS = 100.0
 
@@ -26,19 +30,19 @@ class KeyPool:
         self._cooldown_seconds = cooldown_seconds
         self._use_seq = 0
         self._last_used: Dict[str, int] = {}
-        self._cooldown_until: Dict[str, float] = {}
+        self._cooldown_until: Dict[Tuple[str, Optional[str]], float] = {}
 
     @property
     def keys(self) -> List[str]:
         return list(self._keys)
 
-    def acquire(self, exclude: Iterable[str] = ()) -> Optional[str]:
+    def acquire(self, exclude: Iterable[str] = (), model: Optional[str] = None) -> Optional[str]:
         """쿨다운이 아니고 exclude에 없는 키 중 가장 오래 쉰 키. 한 번도 안 쓴 키가 먼저, 동률이면 등록 순서."""
         excluded = set(exclude)
         candidates = [
             (self._last_used.get(key, -1), index, key)
             for index, key in enumerate(self._keys)
-            if key not in excluded and not self.is_cooling_down(key)
+            if key not in excluded and not self.is_cooling_down(key, model)
         ]
         return min(candidates)[2] if candidates else None
 
@@ -46,12 +50,18 @@ class KeyPool:
         self._use_seq += 1
         self._last_used[key] = self._use_seq
 
-    def mark_exhausted(self, key: str, cooldown_seconds: Optional[float] = None) -> None:
+    def mark_exhausted(self, key: str, cooldown_seconds: Optional[float] = None, model: Optional[str] = None) -> None:
+        """키를 쿨다운에 넣는다. model을 주면 그 모델에 대해서만 쿨다운한다."""
         duration = self._cooldown_seconds if cooldown_seconds is None else cooldown_seconds
-        self._cooldown_until[key] = self._clock() + duration
+        until = self._clock() + duration
+        slot = (key, model)
+        self._cooldown_until[slot] = max(until, self._cooldown_until.get(slot, float("-inf")))
 
-    def is_cooling_down(self, key: str) -> bool:
-        return self._cooldown_until.get(key, float("-inf")) > self._clock()
+    def is_cooling_down(self, key: str, model: Optional[str] = None) -> bool:
+        """키 전체 쿨다운 또는 (model을 주면) 그 모델의 쿨다운 중인지."""
+        now = self._clock()
+        slots = [(key, None)] + ([(key, model)] if model is not None else [])
+        return any(self._cooldown_until.get(slot, float("-inf")) > now for slot in slots)
 
     def next_available_at(self) -> Optional[float]:
         """쿨다운 중인 키 가운데 가장 먼저 풀리는 시각. 쿨다운 중인 키가 없으면 None."""

@@ -2,6 +2,7 @@
 tqdm>=4.65.0
 python-dotenv>=0.21.0
 google-genai>=2.24.0
+tzdata  # Windows에서 zoneinfo가 태평양 시간(RPD 리셋 시각)을 찾는 데 필요
 concurrent-log-handler>=0.9.25
 google-api-core
 
