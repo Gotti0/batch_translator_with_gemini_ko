@@ -58,6 +58,16 @@ def err_400_bad_key():
     return _server_error(400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key.")
 
 
+def err_429_quota_with(quota_id, retry_delay="20s", model="gemini-test"):
+    body = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "You exceeded your current quota.",
+                      "details": [
+                          {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                           "violations": [{"quotaId": quota_id, "quotaDimensions": {"model": model}}]},
+                          {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": retry_delay},
+                      ]}}
+    return genai_errors.ClientError(429, body)
+
+
 def err_429_quota():
     return _server_error(429, "RESOURCE_EXHAUSTED", "You exceeded your current quota.")
 
@@ -356,15 +366,80 @@ def test_invalid_key_error_moves_to_unused_key_without_cooldown(env):
     assert not client._key_pool.is_cooling_down(KEYS[0])
 
 
-def test_500_exception_is_retried_as_generic_error_not_safety(env):
-    """SDK가 500을 예외로 던지면 안전 차단으로 분류되지 않고 일반 오류로 재시도된다.
+def test_consecutive_500_is_treated_as_content_safety(env):
+    """같은 요청에서 500이 연속 2회면 검열로 판정해 GeminiContentSafetyException을 던진다(상위의 청크 분할로 이어짐).
 
-    T5에서 뒤집힌다: 같은 요청에서 500이 연속 2회면 GeminiContentSafetyException이어야 한다.
+    T5에서 뒤집혔다: 이전에는 500 예외가 일반 오류로 재시도되다 전 키 소진으로 끝나 청크 분할이 일어나지 않았다.
     """
     client, api = env.build(lambda k, n: err_500(), rpm=60.0, keys=KEYS[:1])
 
-    with pytest.raises(GeminiAllApiKeysExhaustedException) as exc_info:
-        asyncio.run(env.clock.run(_gen(client, max_retries=1)))
+    with pytest.raises(GeminiContentSafetyException):
+        asyncio.run(env.clock.run(_gen(client, max_retries=5)))
 
-    assert not isinstance(exc_info.value, GeminiContentSafetyException)
     assert api.keys() == [KEYS[0]] * 2
+
+
+def test_single_500_then_success_is_not_safety(env):
+    client, api = env.build(lambda k, n: err_500() if n == 0 else ok_response(), rpm=60.0)
+
+    assert asyncio.run(env.clock.run(_gen(client))) == "ok"
+    assert api.keys() == [KEYS[0]] * 2
+
+
+def test_500_then_503_then_500_is_not_consecutive(env):
+    outcomes = [err_500(), err_503(), err_500(), ok_response()]
+    client, api = env.build(lambda k, n: outcomes[n], rpm=60.0, keys=KEYS[:1])
+
+    assert asyncio.run(env.clock.run(_gen(client))) == "ok"
+    assert len(api.keys()) == 4
+
+
+def test_daily_quota_cools_key_until_pacific_midnight_for_that_model(env):
+    """하루 한도 소진 키는 태평양 시간 자정까지 그 모델에 쓰이지 않는다. retryDelay(20초)는 무시한다.
+
+    가상 시계 T0(1970-01-12 13:46:40 UTC)는 PST 05:46:40이라 자정까지 18시간 13분 20초(+여유 60초).
+    """
+    daily = "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+    client, api = env.build(lambda k, n: err_429_quota_with(daily) if (k, n) == (KEYS[0], 0) else ok_response(),
+                            rpm=60.0)
+    pool = client._key_pool
+
+    asyncio.run(env.clock.run(_gen(client)))
+
+    assert api.keys() == [KEYS[0], KEYS[1]]
+    assert pool.is_cooling_down(KEYS[0], "gemini-test")
+    assert not pool.is_cooling_down(KEYS[0], "other-model")  # 다른 모델에는 쓸 수 있다
+    reset_at = T0 + 18 * 3600 + 13 * 60 + 20 + 60  # PST 자정 + 여유 60초
+    env.clock.now = reset_at - 1
+    assert pool.is_cooling_down(KEYS[0], "gemini-test")
+    env.clock.now = reset_at
+    assert not pool.is_cooling_down(KEYS[0], "gemini-test")
+
+
+def test_minute_quota_cools_key_for_server_retry_delay(env):
+    minute = "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"
+    client, api = env.build(lambda k, n: err_429_quota_with(minute, "7s") if (k, n) == (KEYS[0], 0) else ok_response(),
+                            rpm=60.0)
+    pool = client._key_pool
+
+    asyncio.run(env.clock.run(_gen(client)))
+
+    assert api.keys() == [KEYS[0], KEYS[1]]
+    assert pool.is_cooling_down(KEYS[0], "gemini-test")
+    env.clock.now += 7
+    assert not pool.is_cooling_down(KEYS[0], "gemini-test")
+
+
+def test_consecutive_500_leads_to_chunk_splitting_in_translation_service(env):
+    """연속 500 → GeminiContentSafetyException → TranslationService의 청크 분할 재번역까지 이어진다."""
+    from domain.translation_service import TranslationService
+
+    client, api = env.build(lambda k, n: err_500() if n < 2 else ok_response("번역"), rpm=60.0, keys=KEYS[:1])
+    service = TranslationService(client, {"model_name": "gemini-test", "chunk_size": 1000})
+    text = "\n".join(f"문장 {i}입니다. 충분히 긴 줄을 만들기 위해 내용을 덧붙입니다." for i in range(20))
+
+    result = asyncio.run(env.clock.run(service.translate_text_with_content_safety_retry_async(text, min_chunk_size=50)))
+
+    assert "번역" in result
+    assert "실패" not in result and "오류" not in result
+    assert len(api.keys()) > 3  # 원 청크 2회(500) + 분할된 서브 청크들
