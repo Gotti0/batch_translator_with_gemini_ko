@@ -585,83 +585,44 @@ class TranslationService:
             logger.error("청크 분할 실패. 번역 포기.")
             return f"[분할 불가능한 오류 발생 콘텐츠: {text_chunk[:30]}...]"
         
-        logger.info(f"   🔄 {len(sub_chunks)}개 서브 청크를 병렬 처리합니다 (비동기).")
-        
-        # 어플리케이션 전역 설정의 max_workers를 준수하여 동시 요청 수 제어
-        max_parallel = self.config.get("max_workers", 3) if self.config else 3
-        semaphore = asyncio.Semaphore(max_parallel)
-        
-        # 비동기 작업 래퍼 함수
-        async def translate_sub_chunk_with_check(sub_chunk: str, idx: int) -> tuple[int, str]:
-            """개별 서브 청크 번역 (취소 확인 포함)"""
-            async with semaphore:
-                # 📍 취소 확인 1: 작업 시작 전
-                if self.stop_check_callback and self.stop_check_callback():
-                    raise asyncio.CancelledError(f"서브 청크 {idx+1} 번역 중단 요청됨 (작업 시작 전)")
-                # ✨ 방어적 체크포인트
-                await asyncio.sleep(0)
-                if not sub_chunk.strip():
-                    logger.warning(f"   ⚠️ 서브 청크 {idx+1}/{len(sub_chunks)} 빈 청크 감지. 스킵.")
-                    return (idx, "")
-                
-                try:
-                    # 📍 취소 확인 2: API 호출 직전
-                    if self.stop_check_callback and self.stop_check_callback():
-                        raise asyncio.CancelledError(f"서브 청크 {idx+1} 번역 중단 요청됨 (API 호출 직전)")
-                    
-                    translated = await self.translate_text_async(sub_chunk)
-                    logger.info(f"   ✅ 서브 청크 {idx+1}/{len(sub_chunks)} 번역 완료")
-                    return (idx, translated)
-                    
-                except asyncio.CancelledError:
-                    logger.info(f"   🛑 서브 청크 {idx+1} 취소됨")
-                    raise
-                except BtgTranslationException as e_sub:
-                    if "콘텐츠 안전 문제" in str(e_sub) and current_attempt < max_split_attempts:
-                        logger.warning(f"   🛡️ 서브 청크 {idx+1} 콘텐츠 안전 오류. 재귀 분할 시도.")
-                        recursive_result = await self._translate_with_recursive_splitting_async(
-                            sub_chunk, max_split_attempts, min_chunk_size, current_attempt + 1
-                        )
-                        return (idx, recursive_result)
-                    else:
-                        error_marker = f"[서브 청크 {idx+1} 번역 실패: {str(e_sub)[:50]}]"
-                        logger.error(f"   ❌ 서브 청크 {idx+1} 번역 실패: {str(e_sub)[:100]}")
-                        return (idx, error_marker)
-                except Exception as e_general:
-                    logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_general}")
-                    return (idx, f"[서브 청크 {idx+1} 번역 오류]")
-        
-        # 작업 생성 (순차적으로 취소 확인하며 생성)
-        tasks = []
-        for i, sub_chunk in enumerate(sub_chunks):
-            # 📍 취소 확인: 작업 생성 전
+        # 서브 청크는 순서대로 처리한다. 동시 작업 수는 가장 바깥 진입점(앱 번역 루프, 검수 탭)이 제한하고,
+        # API 요청은 GeminiClient의 스케줄러가 한 번에 하나씩 보내므로 여기서 병렬로 띄워도 빨라지지 않는다.
+        # 예전에는 여기와 재귀 분할마다 세마포어를 새로 열어 동시 작업이 층마다 곱으로 늘었다.
+        logger.info(f"   🔄 {len(sub_chunks)}개 서브 청크를 순서대로 처리합니다.")
+
+        translated_parts = []
+        for idx, sub_chunk in enumerate(sub_chunks):
+            # 📍 취소 확인: 서브 청크마다 API 호출 전
             if self.stop_check_callback and self.stop_check_callback():
-                logger.warning(f"중단 요청 감지됨. {i}/{len(sub_chunks)}개 서브 청크 작업 생성 중 중단.")
-                break
-            
-            task = asyncio.create_task(translate_sub_chunk_with_check(sub_chunk, i))
-            tasks.append(task)
-        
-        # 생성된 작업들을 병렬 처리
-        results = []
-        for task in tasks:
-            try:
-                idx, translated = await task
-                results.append((idx, translated))
-            except asyncio.CancelledError:
-                logger.info("서브 청크 번역 취소됨. 나머지 작업 취소 중...")
-                # 나머지 작업들도 취소
-                for remaining_task in tasks:
-                    if not remaining_task.done():
-                        remaining_task.cancel()
+                logger.info(f"   🛑 서브 청크 {idx+1}/{len(sub_chunks)} 앞에서 중단 요청 감지")
                 raise BtgTranslationException("서브 청크 번역이 취소되었습니다.")
-        
-        # 결과를 원래 순서대로 정렬하여 결합
-        results.sort(key=lambda x: x[0])
-        translated_parts = [text for _, text in results]
-        
-        logger.info(f"   📊 병렬 처리 완료: {len(results)}/{len(sub_chunks)}개 서브 청크 처리됨")
-        
+            if not sub_chunk.strip():
+                logger.warning(f"   ⚠️ 서브 청크 {idx+1}/{len(sub_chunks)} 빈 청크 감지. 스킵.")
+                translated_parts.append("")
+                continue
+
+            try:
+                translated = await self.translate_text_async(sub_chunk)
+                logger.info(f"   ✅ 서브 청크 {idx+1}/{len(sub_chunks)} 번역 완료")
+                translated_parts.append(translated)
+            except asyncio.CancelledError:
+                logger.info(f"   🛑 서브 청크 {idx+1} 취소됨")
+                raise
+            except BtgTranslationException as e_sub:
+                if "콘텐츠 안전 문제" in str(e_sub) and current_attempt < max_split_attempts:
+                    logger.warning(f"   🛡️ 서브 청크 {idx+1} 콘텐츠 안전 오류. 재귀 분할 시도.")
+                    translated_parts.append(await self._translate_with_recursive_splitting_async(
+                        sub_chunk, max_split_attempts, min_chunk_size, current_attempt + 1
+                    ))
+                else:
+                    logger.error(f"   ❌ 서브 청크 {idx+1} 번역 실패: {str(e_sub)[:100]}")
+                    translated_parts.append(f"[서브 청크 {idx+1} 번역 실패: {str(e_sub)[:50]}]")
+            except Exception as e_general:
+                logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_general}")
+                translated_parts.append(f"[서브 청크 {idx+1} 번역 오류]")
+
+        logger.info(f"   📊 서브 청크 처리 완료: {len(translated_parts)}/{len(sub_chunks)}개")
+
         return "\n\n".join(translated_parts)
 
     async def translate_text_integrity(

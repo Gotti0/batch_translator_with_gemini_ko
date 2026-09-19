@@ -115,19 +115,17 @@ class EpubReviewProvider(BaseReviewProvider):
         else:
             sub_chunks = [units]
             
-        import asyncio
-        max_parallel = self.app_service.config.get("max_workers", 3) if self.app_service else 3
-        semaphore = asyncio.Semaphore(max_parallel)
-        
-        async def translate_sub_chunk(sub_chunk):
-            async with semaphore:
-                return await self.translation_service._translate_integrity_chunk_with_retry(sub_chunk)
-        
-        tasks = [translate_sub_chunk(c) for c in sub_chunks if c]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+        # 서브 청크는 순서대로 처리한다. 동시 작업 수는 검수 탭이 제한하고, API 요청은 GeminiClient의
+        # 스케줄러가 한 번에 하나씩 보낸다. 한 서브 청크가 실패해도 나머지는 계속하고, 실패한 줄은 원문으로 둔다.
         result_map = {}
-        for res in results:
+        for sub_chunk in sub_chunks:
+            if not sub_chunk:
+                continue
+            try:
+                res = await self.translation_service._translate_integrity_chunk_with_retry(sub_chunk)
+            except Exception as e_sub:
+                logger.warning(f"EPUB 서브 청크 재번역 실패, 원문 유지: {e_sub}")
+                continue
             if isinstance(res, dict):
                 result_map.update(res)
         
