@@ -17,6 +17,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from qasync import asyncSlot
 
 from core.dtos import TranslationJobProgressDTO
+from core.config.config_manager import DEFAULT_REQUESTS_PER_MINUTE
 from infrastructure.logger_config import setup_logger
 from gui_qt.components_qt.tooltip_qt import TooltipQt
 
@@ -586,11 +587,11 @@ class SettingsTabQt(QtWidgets.QWidget):
         max_workers = cfg.get("max_workers", defaults.get("max_workers", 4))
         if isinstance(max_workers, int):
             self.max_workers_spin.setValue(max_workers)
-        rpm = cfg.get("requests_per_minute", defaults.get("requests_per_minute", 60))
+        rpm = cfg.get("requests_per_minute", defaults.get("requests_per_minute", DEFAULT_REQUESTS_PER_MINUTE))
         try:
             self.rpm_spin.setValue(float(rpm))
         except Exception:
-            self.rpm_spin.setValue(60.0)
+            self.rpm_spin.setValue(DEFAULT_REQUESTS_PER_MINUTE)
 
         self.novel_lang_edit.setText(str(cfg.get("novel_language", defaults.get("novel_language", "auto"))))
         self.novel_fallback_edit.setText(str(cfg.get("novel_language_fallback", defaults.get("novel_language_fallback", "ja"))))

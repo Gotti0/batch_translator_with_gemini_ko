@@ -16,6 +16,9 @@ except ImportError:
 
 
 DEFAULT_CONFIG_FILENAME = "config.json"
+# 분당 요청 수 기본값. 무료 티어 키 여러 개를 돌려 쓰는 사용자가 많아 의도적으로 낮게 둔다.
+# 0 또는 None이면 요청 간격 제한이 없다(동시 진행 1개는 유지).
+DEFAULT_REQUESTS_PER_MINUTE = 2.0
 
 class ConfigManager:
     """
@@ -95,7 +98,7 @@ class ConfigManager:
                 }
             ],
             # "system_instruction": "You are a helpful translation assistant.", # 일반 시스템 지침 제거
-            "requests_per_minute": 2.0, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
+            "requests_per_minute": DEFAULT_REQUESTS_PER_MINUTE, # 분당 요청 수 제한 (0 또는 None이면 제한 없음)
             "novel_language": "auto", # 로어북 추출 및 번역 출발 언어 (자동 감지)
             "novel_language_fallback": "zh", # 자동 감지 실패 시 사용할 폴백 언어
             "model_name": "gemini-2.0-flash",
@@ -337,7 +340,7 @@ if __name__ == '__main__':
     assert config1["novel_language"] == "auto" # Changed from ko to auto to match new default
     assert config1["novel_language_fallback"] == "ja"
     assert config1["max_workers"] == (os.cpu_count() or 1) # max_workers 기본값 확인
-    assert config1["requests_per_minute"] == 60.0 # RPM 기본값 확인
+    assert config1["requests_per_minute"] == DEFAULT_REQUESTS_PER_MINUTE # RPM 기본값 확인
     assert config1["thinking_budget"] is None # thinking_budget 기본값 확인
     assert config1["enable_dynamic_glossary_injection"] is False
     assert config1["max_glossary_entries_per_chunk_injection"] == 3
