@@ -474,10 +474,29 @@ class AppService:
                 if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
 
                 async with semaphore:
-                    if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
-                    return await self.glossary_service._extract_glossary_entries_from_segment_via_api_async(
-                        segment, user_override_glossary_extraction_prompt, stop_check
-                    )
+                    # 과부하(503)는 이 세그먼트가 성공할 때까지 다시 시도한다. 무결성 번역 청크와
+                    # 같은 방침이다. 건너뛰면 그 부분의 용어가 최종 용어집에서 조용히 빠지는데,
+                    # 과부하는 대개 일시적이라 기다리면 풀린다. 상한을 두지 않으므로 과부하가
+                    # 풀리지 않으면 무한히 머물며, 멈추는 판단은 취소 요청에 맡긴다.
+                    # 시도 간격은 서킷브레이커의 정지와 스케줄러의 RPM 간격이 잡는다.
+                    overload_attempts = 0
+                    while True:
+                        if self.cancel_glossary_event.is_set(): raise asyncio.CancelledError()
+                        try:
+                            return await self.glossary_service._extract_glossary_entries_from_segment_via_api_async(
+                                segment, user_override_glossary_extraction_prompt, stop_check
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            # 검열·파싱 오류 등은 다시 보내도 결과가 같을 가능성이 높아 그대로 올린다.
+                            if not self._is_overload_failure(e):
+                                raise
+                            overload_attempts += 1
+                            logger.warning(
+                                f"세그먼트 과부하로 실패해 다시 시도합니다 "
+                                f"(재시도 {overload_attempts}회째): {e}"
+                            )
 
             async def run_indexed(idx: int, segment: str):
                 """세그먼트 하나를 처리해 (번호, 추출 항목, 오류)를 돌려준다. 취소는 그대로 전파한다."""
@@ -488,7 +507,7 @@ class AppService:
                 except Exception as e:
                     return idx, None, e
 
-            async def run_pass(indexed_segments, label: str):
+            async def run_pass(indexed_segments):
                 """세그먼트들을 처리해 추출 항목을 모으고, 실패한 세그먼트를 {번호: 예외}로 돌려준다."""
                 tasks = [asyncio.create_task(run_indexed(idx, seg)) for idx, seg in indexed_segments]
                 failures = {}
@@ -504,8 +523,8 @@ class AppService:
                             all_extracted_entries.extend(entries)
                         if progress_callback:
                             progress_callback(GlossaryExtractionProgressDTO(
-                                num_samples, done_count if label == "추출" else num_samples,
-                                f"{label} 중 ({done_count}/{len(tasks)})",
+                                num_samples, done_count,
+                                f"추출 중 ({done_count}/{len(tasks)})",
                                 len(all_extracted_entries) + len(seed_entries)
                             ))
                 except asyncio.CancelledError:
@@ -515,18 +534,7 @@ class AppService:
                 return failures
 
             # 3. 작업 실행 (순차 생성, 병렬 처리)
-            failures = await run_pass(list(enumerate(sample_segments)), "추출")
-
-            # 3-1. 과부하(503)로 실패한 세그먼트는 끝에 한 번 더 시도한다. 503 재시도는 요청당 1회라
-            #      과부하 순간에 걸린 세그먼트가 결과에서 조용히 빠질 수 있다. 과부하가 이어지는 중이면
-            #      서킷브레이커가 요청을 멈춰 두므로 이 재시도가 쿼터를 낭비하지 않는다.
-            #      검열·요청 오류 등은 다시 보내도 결과가 같을 가능성이 높아 재시도하지 않는다.
-            overloaded = [(i, sample_segments[i]) for i, e in failures.items() if self._is_overload_failure(e)]
-            if overloaded:
-                logger.info(f"과부하로 실패한 세그먼트 {len(overloaded)}개를 다시 시도합니다.")
-                retry_failures = await run_pass(overloaded, "과부하 세그먼트 재시도")
-                failures = {i: e for i, e in failures.items() if not self._is_overload_failure(e)}
-                failures.update(retry_failures)
+            failures = await run_pass(list(enumerate(sample_segments)))
 
             if failures:
                 missing = sorted(failures)
