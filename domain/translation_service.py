@@ -904,7 +904,7 @@ class TranslationService:
                 if not self.config.get("use_content_safety_retry", True):
                     logger.warning(f"무결성 번역 JSON 파싱 실패 (split_depth {split_depth}). 분할 재시도가 꺼져 있어 원문 유지.")
                     return {u.id: u.text for u in chunk}
-                if split_depth >= self.config.get("max_integrity_retry_depth", 2):
+                if split_depth >= self._integrity_split_limit():
                     logger.error(f"무결성 번역 JSON 파싱 실패 (split_depth {split_depth}). 분할 한도 도달, 원문 유지.")
                     return {u.id: u.text for u in chunk}
                 logger.warning(f"무결성 번역 JSON 파싱 실패 (split_depth {split_depth}). Binary Split 시도.")
@@ -956,10 +956,23 @@ class TranslationService:
             logger.warning(f"무결성 청크 검열 감지 (split_depth {split_depth}): {e_safety}")
             if not self.config.get("use_content_safety_retry", True):
                 raise
-            if split_depth < self.config.get("max_integrity_retry_depth", 2):
+            if split_depth < self._integrity_split_limit():
                 return await self._binary_split_integrity_retry(chunk, split_depth, retry_depth)
             # 최후의 수단: 실패 시 원문 유지
             return {u.id: u.text for u in chunk}
+
+    def _integrity_split_limit(self) -> int:
+        """무결성 분할 깊이. GUI '최대 분할 시도' 스핀박스와 같은 설정을 쓴다."""
+        return self.config.get("max_content_safety_split_attempts", 2)
+
+    def _integrity_chunk_too_small_to_split(self, chunk: List[TranslationUnit]) -> bool:
+        """GUI '최소 청크 크기'를 무결성 청크에도 적용한다.
+
+        무결성 청크는 항목 리스트지만 항목마다 본문이 있으므로, 본문 길이의 합을 레거시 경로와
+        같은 글자 수 단위로 재서 비교한다. 항목 수로 재면 단위가 달라 같은 설정값의 뜻이 어긋난다.
+        """
+        min_size = self.config.get("min_content_safety_chunk_size", 100)
+        return sum(len(u.text) for u in chunk) < min_size
 
     async def _binary_split_integrity_retry(
         self, chunk: List[TranslationUnit], split_depth: int, retry_depth: int = 0
@@ -972,6 +985,10 @@ class TranslationService:
         if len(chunk) <= 1:
             logger.error("더 이상 나눌 수 없는 단일 항목 무결성 번역 실패.")
             return {chunk[0].id: chunk[0].text} if chunk else {}
+
+        if self._integrity_chunk_too_small_to_split(chunk):
+            logger.warning(f"최소 청크 크기에 도달해 분할을 멈춘다 (항목 {len(chunk)}개). 원문 유지.")
+            return {u.id: u.text for u in chunk}
 
         mid = len(chunk) // 2
         left_chunk = chunk[:mid]

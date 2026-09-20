@@ -389,11 +389,21 @@ class SettingsTabQt(QtWidgets.QWidget):
         )
         self.max_split_spin = NoWheelSpinBox()
         self.max_split_spin.setRange(1, 10)
-        TooltipQt(self.max_split_spin, "최대 분할 시도 횟수입니다.")
+        TooltipQt(
+            self.max_split_spin,
+            "최대 분할 시도 횟수입니다.\n"
+            "무결성 모드에서는 청크를 쪼갤 최대 깊이로 쓰입니다.\n"
+            "한 단계마다 조각 수가 두 배가 되므로 요청 수도 함께 늘어납니다.",
+        )
         self.min_chunk_spin = NoWheelSpinBox()
         self.min_chunk_spin.setRange(50, 5000)
         self.min_chunk_spin.setSingleStep(50)
-        TooltipQt(self.min_chunk_spin, "분할 시 최소 청크 크기입니다.")
+        TooltipQt(
+            self.min_chunk_spin,
+            "분할 시 최소 청크 크기입니다(글자 수).\n"
+            "무결성 모드에서는 청크에 담긴 본문 길이의 합으로 잽니다.\n"
+            "이 크기보다 작아지면 더 쪼개지 않고 원문을 남깁니다.",
+        )
         safety_form.addRow(self.use_content_safety_check)
         safety_form.addRow("최대 분할 시도", self.max_split_spin)
         safety_form.addRow("최소 청크 크기", self.min_chunk_spin)

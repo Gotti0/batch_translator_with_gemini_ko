@@ -24,7 +24,8 @@ def _units(count):
 def _service(side_effect, **config):
     client = MagicMock()
     client.generate_text_async = AsyncMock(side_effect=side_effect)
-    base = {"model_name": "gemini-test"}
+    # 깊이를 재는 테스트가 최소 크기에 먼저 걸리지 않도록 0으로 둔다.
+    base = {"model_name": "gemini-test", "min_content_safety_chunk_size": 0}
     base.update(config)
     return TranslationService(gemini_client=client, config=base)
 
@@ -140,3 +141,33 @@ def test_non_censorship_errors_are_not_split(error):
         asyncio.run(service._translate_integrity_chunk_with_retry(_units(8)))
 
     assert len(calls) == 1  # 분할 없이 한 번에 끝난다
+
+
+def test_min_chunk_size_stops_the_split():
+    """GUI '최소 청크 크기'가 무결성 분할에도 듣는다."""
+    calls = []
+
+    async def respond(**kwargs):
+        calls.append(kwargs)
+        raise GeminiContentSafetyException("censored")
+
+    # 8항목 x "line0" 5글자 = 40글자. 최소 크기 100에 걸려 쪼개기 전에 멈춘다.
+    service = _service(respond, min_content_safety_chunk_size=100)
+    result = asyncio.run(service._translate_integrity_chunk_with_retry(_units(8)))
+
+    assert len(calls) == 1
+    assert all(result[str(i)] == f"line{i}" for i in range(8))
+
+
+def test_max_split_attempts_setting_drives_integrity_depth():
+    """GUI '최대 분할 시도'가 무결성 분할 깊이를 정한다."""
+    calls = []
+
+    async def respond(**kwargs):
+        calls.append(kwargs)
+        raise GeminiContentSafetyException("censored")
+
+    service = _service(respond, max_content_safety_split_attempts=1)
+    asyncio.run(service._translate_integrity_chunk_with_retry(_units(8)))
+
+    assert len(calls) == 3  # 1 + 2, 깊이 1에서 멈춘다
