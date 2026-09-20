@@ -2,6 +2,7 @@ import pytest
 import asyncio
 import os
 import json
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 from app.app_service import AppService
@@ -65,74 +66,85 @@ def app_service(mock_gemini_client, tmp_path):
         
     return service
 
+
+@pytest.fixture
+def text_input(tmp_path):
+    """입력 파일은 테스트마다 새로 만든다.
+
+    이전 판은 저장소 루트의 `sample_input.txt`를 쓰고 지우지 않아, 남은 메타데이터 때문에
+    두 번째 실행부터 이어하기로 들어가 출력 파일을 만들지 않았다. 저장소도 더럽혔다.
+    """
+    path = tmp_path / "sample_input.txt"
+    path.write_text("Line 1\nLine 2", encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def epub_input(tmp_path):
+    """챕터 하나짜리 최소 EPUB.
+
+    이전 판은 없는 `scripts.generate_sample_epub`을 불러 항상 실패했다. 파이프라인은
+    mimetype과 .xhtml 항목만 보므로 OPF나 container.xml 없이도 검증할 수 있다.
+    """
+    path = tmp_path / "sample_input.epub"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        z.writestr(
+            "OEBPS/chapter1.xhtml",
+            "<?xml version='1.0' encoding='utf-8'?>"
+            "<html xmlns='http://www.w3.org/1999/xhtml'><body>"
+            "<p>First paragraph.</p><p>Second paragraph.</p>"
+            "</body></html>",
+        )
+    return path
+
+
 @pytest.mark.asyncio
-async def test_standard_pipeline_integration(app_service, tmp_path):
+async def test_standard_pipeline_integration(app_service, text_input, tmp_path):
     """표준(Standard) 파이프라인 종합 테스트"""
-    input_file = Path("sample_input.txt")
-    if not input_file.exists():
-        input_file.write_text("Line 1\nLine 2")
-        
     output_file = tmp_path / "sample_output_standard.txt"
-    
     app_service.config["translation_mode"] = "standard"
-    
+
     await app_service.start_translation_async(
-        input_file_path=str(input_file),
-        output_file_path=str(output_file)
+        input_file_path=str(text_input),
+        output_file_path=str(output_file),
     )
-    
+
     assert output_file.exists()
-    content = output_file.read_text(encoding='utf-8')
-    assert "Translated:" in content
-    print("\n✅ Standard Pipeline Test Passed")
+    assert "Translated:" in output_file.read_text(encoding="utf-8")
+
 
 @pytest.mark.asyncio
-async def test_integrity_pipeline_integration(app_service, tmp_path):
+async def test_integrity_pipeline_integration(app_service, text_input, tmp_path):
     """무결성(Integrity) 파이프라인 종합 테스트"""
-    input_file = Path("sample_input.txt")
     output_file = tmp_path / "sample_output_integrity.txt"
-    
     app_service.config["translation_mode"] = "integrity"
-    
+
     await app_service.start_translation_async(
-        input_file_path=str(input_file),
-        output_file_path=str(output_file)
+        input_file_path=str(text_input),
+        output_file_path=str(output_file),
     )
-    
+
     assert output_file.exists()
-    content = output_file.read_text(encoding='utf-8')
-    # 무결성 모드에서는 줄 수가 유지되어야 함
-    original_lines = input_file.read_text(encoding='utf-8').splitlines()
-    output_lines = content.splitlines()
-    assert len(original_lines) == len(output_lines)
+    content = output_file.read_text(encoding="utf-8")
+    # 무결성 모드에서는 줄 수가 유지되어야 한다.
+    assert len(text_input.read_text(encoding="utf-8").splitlines()) == len(content.splitlines())
     assert "번역됨:" in content
-    print("✅ Integrity Pipeline Test Passed")
+
 
 @pytest.mark.asyncio
-async def test_epub_pipeline_integration(app_service, tmp_path):
+async def test_epub_pipeline_integration(app_service, epub_input, tmp_path):
     """EPUB 파이프라인 종합 테스트"""
-    input_file = Path("sample_input.epub")
-    # EPUB 파일이 없으면 생성 스크립트 실행 (이미 실행했으므로 존재할 것)
-    if not input_file.exists():
-         from scripts.generate_sample_epub import create_sample_epub
-         create_sample_epub(str(input_file))
-         
     output_file = tmp_path / "sample_output.epub"
-    
     app_service.config["translation_mode"] = "epub"
-    
+
     await app_service.start_translation_async(
-        input_file_path=str(input_file),
-        output_file_path=str(output_file)
+        input_file_path=str(epub_input),
+        output_file_path=str(output_file),
     )
-    
+
     assert output_file.exists()
-    # Zip 구조 확인
-    import zipfile
-    with zipfile.ZipFile(output_file, 'r') as z:
+    with zipfile.ZipFile(output_file, "r") as z:
         assert "mimetype" in z.namelist()
         assert "OEBPS/chapter1.xhtml" in z.namelist()
-        # 내용에 번역된 텍스트가 포함되어 있는지 확인
-        chapter_content = z.read("OEBPS/chapter1.xhtml").decode('utf-8')
-        assert "번역됨:" in chapter_content
-    print("✅ EPUB Pipeline Test Passed")
+        assert "번역됨:" in z.read("OEBPS/chapter1.xhtml").decode("utf-8")
