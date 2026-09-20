@@ -122,6 +122,10 @@ class ConfigManager:
             "max_content_safety_split_attempts": 5,
             "min_content_safety_chunk_size": 100,
             "content_safety_split_by_sentences": True,
+            # 무결성 모드에서 검열·JSON 파싱 실패로 청크를 분할할 최대 깊이
+            "max_integrity_retry_depth": 2,
+            # 응답에서 누락된 항목만 다시 요청하는 Targeted Retry의 최대 횟수
+            "max_integrity_targeted_retry_depth": 1,
             "max_workers": 1,
             "chunk_size": 10000,
             "enable_post_processing": True,

@@ -9,7 +9,7 @@ async def test_integrity_progress_callbacks():
     mock_gemini = MagicMock()
     # mock response for _translate_integrity_chunk_with_retry
     # raw_response format expected: [{"id": "0", "translated_text": "line1 translated"}, ...]
-    mock_gemini.generate_text = AsyncMock(return_value=[
+    mock_gemini.generate_text_async = AsyncMock(return_value=[
         {"id": "0", "translated_text": "줄1 번역"},
         {"id": "1", "translated_text": "줄2 번역"}
     ])

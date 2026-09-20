@@ -16,7 +16,8 @@ try:
         GeminiRateLimitException,
         GeminiApiException,
         GeminiInvalidRequestException,
-        GeminiAllApiKeysExhaustedException 
+        GeminiAllApiKeysExhaustedException,
+        GeminiServiceUnavailableException
     )
     from infrastructure.file_handler import read_json_file
     from infrastructure.logger_config import setup_logger
@@ -41,7 +42,8 @@ except ImportError:
         GeminiRateLimitException,
         GeminiApiException,
         GeminiInvalidRequestException,
-        GeminiAllApiKeysExhaustedException 
+        GeminiAllApiKeysExhaustedException,
+        GeminiServiceUnavailableException
     )
     from infrastructure.file_handler import read_json_file  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
@@ -791,10 +793,15 @@ class TranslationService:
     async def _translate_integrity_chunk_with_retry(
         self, 
         chunk: List[TranslationUnit], 
-        depth: int = 0
+        split_depth: int = 0,
+        retry_depth: int = 0
     ) -> Dict[str, str]:
         """
         무결성 청크 번역 (Binary Split 및 Targeted Retry 포함)
+
+        재귀 경로가 둘이므로 예산도 둘로 나눈다. split_depth는 청크를 몇 번 쪼갰는지(크기의 로그),
+        retry_depth는 누락분을 몇 번 다시 물었는지(횟수)다. 한 카운터로 묶으면 누락 재시도가
+        검열 분할의 깊이를 잠식하고, 반대로 깊이 내려간 조각에서는 누락 재시도가 막힌다.
         """
         if not chunk:
             return {}
@@ -891,9 +898,13 @@ class TranslationService:
 
             # 3. 응답 파싱 및 검증
             if not raw_response or not isinstance(raw_response, list):
-                # JSON 파싱 실패 또는 빈 응답 -> Binary Split
-                logger.warning(f"무결성 번역 JSON 파싱 실패 (depth {depth}). Binary Split 시도.")
-                return await self._binary_split_integrity_retry(chunk, depth)
+                # JSON 파싱 실패 또는 빈 응답 -> Binary Split.
+                # 검열 시 Gemini가 빈 응답이나 깨진 응답을 돌려주기도 하므로 분할로 푼다.
+                if split_depth >= self.config.get("max_integrity_retry_depth", 2):
+                    logger.error(f"무결성 번역 JSON 파싱 실패 (split_depth {split_depth}). 분할 한도 도달, 원문 유지.")
+                    return {u.id: u.text for u in chunk}
+                logger.warning(f"무결성 번역 JSON 파싱 실패 (split_depth {split_depth}). Binary Split 시도.")
+                return await self._binary_split_integrity_retry(chunk, split_depth, retry_depth)
 
             # 4. 누락 검사 및 Targeted Retry
             translated_units = []
@@ -911,24 +922,49 @@ class TranslationService:
             received_ids = set(translated_map.keys())
             missing_ids = requested_ids - received_ids
 
-            if missing_ids and depth < self.config.get("max_integrity_retry_depth", 2):
+            max_targeted = self.config.get("max_integrity_targeted_retry_depth", 1)
+            if missing_ids and retry_depth < max_targeted:
                 logger.warning(f"무결성 번역 누락 감지: {len(missing_ids)}개. Targeted Retry 시도.")
                 missing_units = [u for u in chunk if u.id in missing_ids]
-                additional_results = await self._translate_integrity_chunk_with_retry(missing_units, depth + 1)
+                # 분할 예산은 그대로 물려준다. 누락분 재요청이 검열당하면 남은 분할 예산 안에서 쪼갠다.
+                additional_results = await self._translate_integrity_chunk_with_retry(
+                    missing_units, split_depth, retry_depth + 1
+                )
                 translated_map.update(additional_results)
+            elif missing_ids:
+                logger.error(f"무결성 번역 누락 {len(missing_ids)}개. 재시도 한도({max_targeted}) 도달, 원문 유지.")
+                for u in chunk:
+                    if u.id in missing_ids:
+                        translated_map[u.id] = u.text
 
             return translated_map
 
-        except Exception as e:
-            logger.error(f"무결성 청크 번역 중 오류 발생: {e}")
-            if depth < self.config.get("max_integrity_retry_depth", 2):
-                return await self._binary_split_integrity_retry(chunk, depth)
-            else:
-                # 최후의 수단: 실패 시 원문 유지
-                return {u.id: u.text for u in chunk}
+        except GeminiAllApiKeysExhaustedException:
+            # 키·재시도 소진은 작업 전체를 멈추라는 신호다. 분할로 삼키면 45개 키가 모두 소진돼도
+            # 작업이 계속 돌면서 결과물이 조용히 원문으로 채워진다.
+            raise
+        except GeminiServiceUnavailableException:
+            # 503 과부하는 청크 크기와 무관한 서버측 문제다. 나눠도 해결되지 않고 요청 수만 배로
+            # 늘려 쿼터를 낭비하므로 이 청크만 실패로 끝내고 이어하기에 맡긴다.
+            raise
+        except GeminiContentSafetyException as e_safety:
+            # 검열만이 분할로 풀리는 오류다. 문제 구간이 분리되면 나머지는 통과할 수 있다.
+            logger.warning(f"무결성 청크 검열 감지 (split_depth {split_depth}): {e_safety}")
+            if not self.config.get("use_content_safety_retry", True):
+                raise
+            if split_depth < self.config.get("max_integrity_retry_depth", 2):
+                return await self._binary_split_integrity_retry(chunk, split_depth, retry_depth)
+            # 최후의 수단: 실패 시 원문 유지
+            return {u.id: u.text for u in chunk}
 
-    async def _binary_split_integrity_retry(self, chunk: List[TranslationUnit], depth: int) -> Dict[str, str]:
-        """청크를 반으로 나누어 재귀적으로 번역 시도"""
+    async def _binary_split_integrity_retry(
+        self, chunk: List[TranslationUnit], split_depth: int, retry_depth: int = 0
+    ) -> Dict[str, str]:
+        """청크를 반으로 나누어 재귀적으로 번역 시도
+
+        쪼갠 조각은 각각 새 요청이므로 누락 재시도 예산(retry_depth)은 0으로 되돌린다.
+        분할 깊이에 상한이 있어 조각 수가 유한하므로 총 호출 수도 유한하다.
+        """
         if len(chunk) <= 1:
             logger.error("더 이상 나눌 수 없는 단일 항목 무결성 번역 실패.")
             return {chunk[0].id: chunk[0].text} if chunk else {}
@@ -940,8 +976,8 @@ class TranslationService:
         logger.info(f"🔄 Binary Split: {len(chunk)} -> {len(left_chunk)}, {len(right_chunk)}")
         
         results = {}
-        results.update(await self._translate_integrity_chunk_with_retry(left_chunk, depth + 1))
-        results.update(await self._translate_integrity_chunk_with_retry(right_chunk, depth + 1))
+        results.update(await self._translate_integrity_chunk_with_retry(left_chunk, split_depth + 1))
+        results.update(await self._translate_integrity_chunk_with_retry(right_chunk, split_depth + 1))
         return results
 
     async def translate_epub(self, epub_path: Union[str, Path], output_path: Union[str, Path]) -> None:
