@@ -247,13 +247,14 @@ def test_list_models_consumes_a_slot(env):
 
 
 # ---------------------------------------------------------------------------
-# 재시도와 키 선택 (T4: 새 요청은 가장 오래 쉰 키, 재시도는 같은 키, 소진 시에만 전환)
+# 재시도와 키 선택 (T9: 키는 쿨다운에 들어갈 때만 바뀐다. 새 요청도 재시도도 같은 키)
 # ---------------------------------------------------------------------------
 
-def test_new_requests_use_least_recently_used_key(env):
-    """새 요청마다 가장 오래 쉰 키를 고른다.
+def test_new_requests_reuse_the_same_key(env):
+    """소진되지 않은 키는 새 요청에서도 계속 쓴다.
 
-    T4에서 뒤집혔다: 이전에는 성공하는 동안 같은 키를 계속 썼다(sticky).
+    T9에서 되돌렸다: T4는 새 요청마다 가장 오래 쉰 키를 골라(LRU) 소진되지 않은 키까지
+    번갈아 깎았다. 키가 바뀌는 계기는 쿨다운뿐이다.
     """
     client, api = env.build(lambda k, n: ok_response(), rpm=60.0)
 
@@ -263,19 +264,23 @@ def test_new_requests_use_least_recently_used_key(env):
 
     asyncio.run(env.clock.run(scenario()))
 
-    assert api.keys() == [KEYS[0], KEYS[1], KEYS[2], KEYS[0]]
+    assert api.keys() == [KEYS[0]] * 4
 
 
 def test_queued_requests_pick_keys_when_sent(env):
-    """동시에 대기하던 요청도 보내는 순간에 키를 골라 고르게 나뉜다."""
-    client, api = env.build(lambda k, n: ok_response(), rpm=60.0)
+    """동시에 대기하던 요청도 보내는 순간에 키를 고른다.
+
+    대기열에 들어갈 때 미리 골랐다면 두 번째 요청은 이미 쿨다운에 들어간 A를 들고 갔을 것이다.
+    """
+    client, api = env.build(lambda k, n: err_429_quota() if k == KEYS[0] else ok_response(), rpm=60.0)
 
     async def scenario():
-        return await asyncio.gather(*[_gen(client) for _ in range(4)])
+        return await asyncio.gather(*[_gen(client) for _ in range(2)])
 
     asyncio.run(env.clock.run(scenario()))
 
-    assert api.keys() == [KEYS[0], KEYS[1], KEYS[2], KEYS[0]]
+    # 1: A 소진 → B, 2: A는 쿨다운이라 B
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[1]]
 
 
 def test_transient_errors_retry_on_same_key_then_fail(env):
@@ -319,8 +324,8 @@ def test_retry_keeps_key_even_after_other_requests(env):
 
     asyncio.run(env.clock.run(scenario()))
 
-    # 첫 요청 A(503) → 다른 요청은 B → A의 재시도는 다시 A
-    assert api.keys() == [KEYS[0], KEYS[1], KEYS[0]]
+    # 첫 요청 A(503) → 백오프 사이에 낀 요청도 A → A의 재시도도 A
+    assert api.keys() == [KEYS[0]] * 3
 
 
 def test_quota_exhaustion_switches_key_and_cools_down(env):
@@ -359,8 +364,8 @@ def test_cooling_down_key_is_skipped_by_new_requests(env):
 
     asyncio.run(env.clock.run(scenario()))
 
-    # 1: A 소진 → B, 2: C, 3: A는 쿨다운이라 B
-    assert api.keys() == [KEYS[0], KEYS[1], KEYS[2], KEYS[1]]
+    # 1: A 소진 → B, 2와 3: A는 쿨다운이라 B. C는 손대지 않는다
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[1], KEYS[1]]
 
 
 def test_all_keys_exhausted_raises(env):

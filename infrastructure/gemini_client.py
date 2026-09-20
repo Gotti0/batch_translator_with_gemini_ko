@@ -416,7 +416,7 @@ class GeminiClient:
 
 
     def _acquire_key(self, exclude: Iterable[str] = (), model: Optional[str] = None) -> Optional[str]:
-        """새 요청(또는 키 전환)에 쓸 키를 골라 사용 표시한다. Vertex 모드는 키가 없으므로 None.
+        """새 요청(또는 키 전환)에 쓸 키를 고른다. Vertex 모드는 키가 없으므로 None.
 
         model을 주면 그 모델의 하루 한도가 소진된 키는 건너뛴다.
         """
@@ -425,7 +425,6 @@ class GeminiClient:
         key = self._key_pool.acquire(exclude=exclude, model=model)
         if key is None:
             raise GeminiAllApiKeysExhaustedException("사용 가능한 API 키가 없습니다 (모두 쿨다운 중이거나 이 요청에서 실패).")
-        self._key_pool.mark_used(key)
         self.current_api_key = key
         self.current_api_key_index = self.api_keys_list.index(key) if key in self.api_keys_list else 0
         self.client = self.client_pool.get(key, self.client)
@@ -606,8 +605,6 @@ class GeminiClient:
                             logger.info(f"API {key_id}로 작업 시도.")
                         elif self.auth_mode == "VERTEX_AI":
                             logger.info(f"Vertex AI 모드로 작업 시도 (프로젝트: {self.vertex_project}).")
-                    elif key is not None:
-                        self._key_pool.mark_used(key)
                     sdk_client = self._client_for_key(key)
                     if not sdk_client:
                         raise GeminiApiException("Gemini 클라이언트가 유효하지 않습니다.")
