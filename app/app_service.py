@@ -1295,6 +1295,14 @@ class AppService:
                 translated_chunk = await self.translation_service.translate_chunk_async(
                     chunk_text
                 )
+
+                # 내용이 있는 청크가 빈 번역문으로 돌아오면 실패로 다룬다. 아래층
+                # translate_text_async가 빈 응답을 예외로 바꾸므로 정상 경로에서는 오지 않지만,
+                # 그 방어가 뚫리면 빈 번역문이 완료로 기록되고 이어하기가 다시 집지 않아
+                # 결과물에 구멍이 남는다. 실패로 두면 그 청크는 원문이 보존되고 다시 시도된다.
+                if chunk_text.strip() and not translated_chunk.strip():
+                    raise BtgTranslationException("번역 결과가 비어있습니다.")
+
                 success = True
                 
                 translation_time = time.time() - translation_start_time
