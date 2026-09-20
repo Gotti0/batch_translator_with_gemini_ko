@@ -2,15 +2,20 @@
 """
 API 키 선택과 쿨다운을 맡는 키 풀.
 
-새 요청마다 쿨다운이 아닌 키 중 가장 오래 쉰 키를 고른다. 재시도는 호출자가 같은 키를 그대로
-쓰므로 여기서 다루지 않는다. 사용자가 어느 키를 소진했는지 알 수 있어야 하기 때문이다.
+키는 쓸 수 있는 동안 계속 쓰고, 쿨다운에 들어갔을 때에만 다음 키로 넘어간다. 그래서 선택 규칙은
+"쿨다운이 아니면서 등록 순서가 가장 앞선 키"다. 소진되지 않은 키를 요청마다 번갈아 쓰면 키가
+고르게 조금씩 깎여 어느 키가 유난히 빨리 죽는지 알 수 없고, 모델 전체가 과부하일 때는 아무 소득
+없이 키마다 하루 한도를 1회씩 뜯긴다(503도 하루 한도를 쓴다).
+
+앞쪽 키부터 차례로 소진되므로 뒤쪽 키는 손대지 않은 채 남고, 로그에서 키가 바뀐 지점 사이의
+요청 수가 곧 그 키의 수명이 된다. 재시도는 호출자가 같은 키를 그대로 쓰므로 여기서 다루지 않는다.
 """
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 
 class KeyPool:
-    """키별 마지막 사용 순번과 쿨다운 만료 시각만 안다.
+    """키별 쿨다운 만료 시각만 안다.
 
     쿨다운은 키 전체에 걸거나 특정 모델에만 걸 수 있다. 무료 티어 한도는 (키, 모델) 단위라
     한 모델의 하루 한도를 다 써도 같은 키로 다른 모델은 쓸 수 있다.
@@ -28,8 +33,6 @@ class KeyPool:
         self._keys: List[str] = list(dict.fromkeys(keys))
         self._clock = clock
         self._cooldown_seconds = cooldown_seconds
-        self._use_seq = 0
-        self._last_used: Dict[str, int] = {}
         self._cooldown_until: Dict[Tuple[str, Optional[str]], float] = {}
 
     @property
@@ -37,18 +40,16 @@ class KeyPool:
         return list(self._keys)
 
     def acquire(self, exclude: Iterable[str] = (), model: Optional[str] = None) -> Optional[str]:
-        """쿨다운이 아니고 exclude에 없는 키 중 가장 오래 쉰 키. 한 번도 안 쓴 키가 먼저, 동률이면 등록 순서."""
-        excluded = set(exclude)
-        candidates = [
-            (self._last_used.get(key, -1), index, key)
-            for index, key in enumerate(self._keys)
-            if key not in excluded and not self.is_cooling_down(key, model)
-        ]
-        return min(candidates)[2] if candidates else None
+        """쿨다운이 아니고 exclude에 없는 키 중 등록 순서가 가장 앞선 키.
 
-    def mark_used(self, key: str) -> None:
-        self._use_seq += 1
-        self._last_used[key] = self._use_seq
+        쿨다운이 풀린 키는 다시 앞자리를 되찾는다. 분당 한도로 잠깐 비켜섰던 키가 풀리면
+        그 키로 돌아가, 뒤쪽 키의 하루 한도를 필요 이상으로 헐지 않는다.
+        """
+        excluded = set(exclude)
+        for key in self._keys:
+            if key not in excluded and not self.is_cooling_down(key, model):
+                return key
+        return None
 
     def mark_exhausted(self, key: str, cooldown_seconds: Optional[float] = None, model: Optional[str] = None) -> None:
         """키를 쿨다운에 넣는다. model을 주면 그 모델에 대해서만 쿨다운한다."""

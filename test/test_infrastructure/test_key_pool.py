@@ -1,4 +1,4 @@
-"""KeyPool 단위 테스트: 가장 오래 쉰 키 선택, 제외, 쿨다운."""
+"""KeyPool 단위 테스트: 등록 순서가 가장 앞선 키 선택, 제외, 쿨다운."""
 import os
 import sys
 
@@ -20,31 +20,29 @@ def make(keys=("a", "b", "c"), cooldown=100.0):
     return KeyPool(keys, clock=clock, cooldown_seconds=cooldown), clock
 
 
-def use(pool, **kw):
-    key = pool.acquire(**kw)
-    if key is not None:
-        pool.mark_used(key)
-    return key
-
-
-def test_unused_keys_first_in_registration_order():
+def test_same_key_is_reused_until_it_cools_down():
+    """소진되지 않은 키는 계속 쓴다. 요청마다 키가 도는 것은 의도가 아니다."""
     pool, _ = make()
-    assert [use(pool) for _ in range(3)] == ["a", "b", "c"]
+    assert [pool.acquire() for _ in range(5)] == ["a"] * 5
 
 
-def test_least_recently_used_key_comes_next():
-    pool, _ = make()
-    for _ in range(3):
-        use(pool)
-    pool.mark_used("a")  # a를 다시 씀 → 가장 오래 쉰 키는 b
-    assert use(pool) == "b"
-    assert use(pool) == "c"
-    assert use(pool) == "a"
-
-
-def test_acquire_without_mark_used_does_not_change_order():
+def test_next_key_only_after_cooldown():
+    """키가 바뀌는 유일한 계기는 쿨다운이다."""
     pool, _ = make()
     assert pool.acquire() == "a"
+    pool.mark_exhausted("a")
+    assert pool.acquire() == "b"
+    pool.mark_exhausted("b")
+    assert pool.acquire() == "c"
+
+
+def test_recovered_key_regains_priority():
+    """쿨다운이 풀린 키는 앞자리를 되찾아, 뒤쪽 키의 하루 한도를 더 헐지 않는다."""
+    pool, clock = make(cooldown=100.0)
+    pool.mark_exhausted("a", cooldown_seconds=60.0)
+    assert pool.acquire() == "b"
+
+    clock.now = 60.0
     assert pool.acquire() == "a"
 
 
@@ -65,6 +63,14 @@ def test_cooling_down_key_is_skipped_until_cooldown_ends():
     clock.now = 100.0
     assert not pool.is_cooling_down("a")
     assert pool.acquire() == "a"
+
+
+def test_model_scoped_cooldown_keeps_key_for_other_models():
+    """하루 한도는 (키, 모델) 단위라 한 모델이 막혀도 같은 키로 다른 모델은 쓴다."""
+    pool, _ = make()
+    pool.mark_exhausted("a", cooldown_seconds=3600.0, model="flash")
+    assert pool.acquire(model="flash") == "b"
+    assert pool.acquire(model="pro") == "a"
 
 
 def test_custom_cooldown_duration():
