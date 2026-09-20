@@ -119,11 +119,12 @@ class ConfigManager:
             ),
             # 콘텐츠 안전 재시도 설정
             "use_content_safety_retry": True,
-            "max_content_safety_split_attempts": 5,
+            # 분할 깊이. 일반 모드의 재귀 시도 횟수이자 무결성 모드의 분할 깊이다.
+            # 한 단계마다 조각 수가 두 배가 되므로 무료 티어에서는 낮게 둔다.
+            "max_content_safety_split_attempts": 2,
+            # 분할을 멈출 최소 크기(글자). 무결성 모드에서는 청크에 담긴 본문 길이의 합으로 잰다.
             "min_content_safety_chunk_size": 100,
             "content_safety_split_by_sentences": True,
-            # 무결성 모드에서 검열·JSON 파싱 실패로 청크를 분할할 최대 깊이
-            "max_integrity_retry_depth": 2,
             # 응답에서 누락된 항목만 다시 요청하는 Targeted Retry의 최대 횟수
             "max_integrity_targeted_retry_depth": 1,
             "max_workers": 1,
