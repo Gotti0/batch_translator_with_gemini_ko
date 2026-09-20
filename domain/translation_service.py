@@ -714,11 +714,6 @@ class TranslationService:
             except Exception as pbar_e:
                 logger.debug(f"tqdm 초기화 실패: {pbar_e}")
 
-        # 과부하(503)로 실패한 청크. 저장하지 않으므로 다음 실행의 이어하기가 다시 집는다.
-        overloaded_chunk_indices: set = set()
-        consecutive_overloads = 0
-        max_consecutive_overloads = self.config.get("max_consecutive_overloaded_chunks", 3)
-
         try:
             for i, chunk in enumerate(chunks):
                 # 📍 중단 체크
@@ -752,40 +747,40 @@ class TranslationService:
                         logger.warning(f"  ⚠️ 저장된 청크 읽기 실패, 재번역 시도: {e}")
 
                 # 3. API 요청 및 검증 (재시도 포함)
-                try:
-                    chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
-                except GeminiServiceUnavailableException as e_overload:
-                    # 503은 이 청크만 실패로 끝내고 다음으로 간다. 예전에는 여기에 받는 곳이 없어
-                    # 예외가 작업 전체를 끝냈다. 실패한 청크는 temp_dir에 저장하지 않으므로
-                    # 다음 실행의 이어하기가 다시 집는다.
-                    consecutive_overloads += 1
-                    overloaded_chunk_indices.add(i)
-                    logger.error(
-                        f"  ❌ 청크 {i+1}/{total_chunks} 과부하로 실패 "
-                        f"(연속 {consecutive_overloads}/{max_consecutive_overloads}): {e_overload}"
-                    )
-                    if consecutive_overloads >= max_consecutive_overloads:
-                        # 과부하가 이어지는 중이면 남은 청크를 헛돌지 않고 멈춘다. 지금까지 성공한
-                        # 청크는 저장돼 있으므로 다시 실행하면 그 지점부터 이어간다.
-                        logger.error(
-                            f"연속 {consecutive_overloads}개 청크가 과부하로 실패해 중단합니다. "
-                            f"다시 실행하면 완료된 청크 다음부터 이어갑니다."
+                # 과부하(503)는 이 청크가 성공할 때까지 다시 시도한다. 상한을 두지 않는 것은
+                # 사용자의 결정이다. 과부하가 풀리지 않으면 이 청크에서 무한히 머물며, 멈추는
+                # 판단은 사용자의 중단 요청에 맡긴다. 시도 간격은 서킷브레이커의 정지(5→10→20분)가
+                # 잡으므로 바쁜 대기는 아니다.
+                overload_attempts = 0
+                while True:
+                    # 📍 중단 체크. 재시도로 오래 머물 수 있으므로 매 회 확인한다.
+                    if self.stop_check_callback and self.stop_check_callback():
+                        raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 재시도 중)")
+                    try:
+                        chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
+                        break
+                    except GeminiServiceUnavailableException as e_overload:
+                        overload_attempts += 1
+                        logger.warning(
+                            f"  ⏳ 청크 {i+1}/{total_chunks} 과부하로 실패해 다시 시도합니다 "
+                            f"(재시도 {overload_attempts}회째): {e_overload}"
                         )
-                        raise
-                    if progress_callback:
-                        progress_callback(TranslationJobProgressDTO(
-                            total_chunks=total_chunks,
-                            processed_chunks=i + 1,
-                            successful_chunks=len(translated_chunk_indices),
-                            failed_chunks=len(overloaded_chunk_indices),
-                            current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 과부하로 실패",
-                            current_chunk_processing=i + 1
-                        ))
-                    if pbar:
-                        pbar.update(1)
-                    continue
+                        if status_callback:
+                            status_callback(
+                                f"무결성 번역 청크 {i+1}/{total_chunks} 과부하 재시도 {overload_attempts}회째"
+                            )
+                        if progress_callback:
+                            progress_callback(TranslationJobProgressDTO(
+                                total_chunks=total_chunks,
+                                processed_chunks=i,
+                                successful_chunks=len(translated_chunk_indices),
+                                failed_chunks=0,
+                                current_status_message=(
+                                    f"무결성 번역 청크 {i+1}/{total_chunks} 과부하 재시도 {overload_attempts}회째"
+                                ),
+                                current_chunk_processing=i + 1
+                            ))
 
-                consecutive_overloads = 0
                 translated_map.update(chunk_results)
                 
                 if temp_dir:
@@ -805,24 +800,13 @@ class TranslationService:
                         total_chunks=total_chunks,
                         processed_chunks=i + 1,
                         successful_chunks=len(translated_chunk_indices),
-                        failed_chunks=len(overloaded_chunk_indices),
+                        failed_chunks=0,
                         current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 완료",
                         current_chunk_processing=i + 1
                     ))
         finally:
             if pbar:
                 pbar.close()
-
-        if overloaded_chunk_indices:
-            # 실패한 청크 자리는 조립 단계에서 원문으로 채워진다. 그대로 두면 번역된 결과물처럼
-            # 보이므로 무엇이 빠졌는지 남긴다.
-            missing = sorted(i + 1 for i in overloaded_chunk_indices)
-            logger.warning(
-                f"무결성 번역: 청크 {len(missing)}/{total_chunks}개가 과부하로 실패해 원문이 남았습니다 "
-                f"(청크 번호 {missing}). 다시 실행하면 해당 청크만 번역합니다."
-            )
-            if status_callback:
-                status_callback(f"과부하로 {len(missing)}개 청크가 번역되지 않았습니다. 다시 실행하면 이어갑니다.")
 
         # 4. 조립
         result_lines = []
