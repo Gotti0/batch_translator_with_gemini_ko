@@ -171,3 +171,61 @@ def test_max_split_attempts_setting_drives_integrity_depth():
     asyncio.run(service._translate_integrity_chunk_with_retry(_units(8)))
 
     assert len(calls) == 3  # 1 + 2, 깊이 1에서 멈춘다
+
+
+def test_empty_translation_counts_as_missing():
+    """빈 번역문은 받은 것이 아니라 누락이다. 키만 있으면 재시도가 걸리지 않았다."""
+    calls = []
+
+    async def respond(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            # 두 번째 항목이 빈 문자열로 돌아온다.
+            return [
+                {"id": "0", "translated_text": "t0"},
+                {"id": "1", "translated_text": ""},
+            ]
+        return [{"id": "1", "translated_text": "t1"}]
+
+    service = _service(respond)
+    result = asyncio.run(service._translate_integrity_chunk_with_retry(_units(2)))
+
+    assert len(calls) == 2  # 빈 항목만 다시 물었다
+    assert result["1"] == "t1"
+
+
+def test_empty_translation_falls_back_to_source_at_limit():
+    """재시도 한도에 걸리면 빈 문자열이 아니라 원문이 남는다."""
+
+    async def respond(**kwargs):
+        return [
+            {"id": "0", "translated_text": "t0"},
+            {"id": "1", "translated_text": "   "},
+        ]
+
+    service = _service(respond)
+    result = asyncio.run(service._translate_integrity_chunk_with_retry(_units(2)))
+
+    assert result["1"] == "line1"
+
+
+def test_blank_source_may_translate_to_empty():
+    """원문이 공백뿐이면 빈 번역문이 정상이다. 이것까지 재시도하면 안 된다."""
+    calls = []
+
+    async def respond(**kwargs):
+        calls.append(kwargs)
+        return [
+            {"id": "0", "translated_text": "t0"},
+            {"id": "1", "translated_text": ""},
+        ]
+
+    chunk = [
+        TranslationUnit(id="0", text="line0"),
+        TranslationUnit(id="1", text="   "),
+    ]
+    service = _service(respond)
+    result = asyncio.run(service._translate_integrity_chunk_with_retry(chunk))
+
+    assert len(calls) == 1
+    assert result["1"] == ""

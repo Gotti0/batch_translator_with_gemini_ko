@@ -922,8 +922,14 @@ class TranslationService:
                 u.id: (u.translated_text if u.translated_text else "")
                 for u in translated_units
             }
-            requested_ids = {u.id for u in chunk}
-            received_ids = set(translated_map.keys())
+            # 빈 번역문은 '받은 것'이 아니라 누락으로 센다. 키 존재만 보면 모델이
+            # {"id": "42", "translated_text": ""}를 돌려줬을 때 재시도가 걸리지 않고, 조립 단계의
+            # translated_map.get(id, 원문)도 키가 있으므로 빈 문자열을 그대로 넣는다. 무결성
+            # 모드에서는 그 줄이 빈 줄이 되고 EPUB에서는 <p></p>만 남는다. 줄 수와 구조는
+            # 그대로라 눈에 띄지 않는다.
+            # 원문이 공백뿐인 항목은 빈 번역문이 정상이므로 검사 대상에서 뺀다.
+            requested_ids = {u.id for u in chunk if u.text.strip()}
+            received_ids = {uid for uid, text in translated_map.items() if text.strip()}
             missing_ids = requested_ids - received_ids
 
             max_targeted = self.config.get("max_integrity_targeted_retry_depth", 1)
