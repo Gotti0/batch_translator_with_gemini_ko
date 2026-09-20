@@ -127,6 +127,9 @@ class ConfigManager:
             "content_safety_split_by_sentences": True,
             # 응답에서 누락된 항목만 다시 요청하는 Targeted Retry의 최대 횟수
             "max_integrity_targeted_retry_depth": 1,
+            # 과부하(503)로 연속 실패한 청크가 이만큼 쌓이면 작업을 멈춘다. 과부하가 이어지는
+            # 중에 남은 청크를 헛돌지 않기 위한 값이다.
+            "max_consecutive_overloaded_chunks": 3,
             "max_workers": 1,
             "chunk_size": 10000,
             "enable_post_processing": True,
