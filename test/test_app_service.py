@@ -1,6 +1,6 @@
 # test/test_app_service.py
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from pathlib import Path
 import json
 
@@ -34,10 +34,13 @@ def mock_dependencies():
             "api_keys": ["test_api_key"],
             "chunk_size": 100,
             "model_name": "gemini-test-model",
+            # asyncio.Semaphore에 그대로 넘어가므로 실제 정수여야 한다.
+            "max_workers": 1,
         }
         mock_config_manager.return_value.load_config.return_value = mock_config
         
         yield {
+            "config": mock_config,
             "config_manager": mock_config_manager,
             "gemini_client": mock_gemini_client,
             "translation_service": mock_translation_service,
@@ -55,8 +58,10 @@ def app_service_instance(mock_dependencies):
     with patch('app.app_service.ConfigManager', return_value=mock_dependencies['config_manager']):
         service = AppService()
     
-    # 실제 config 딕셔너리를 주입
-    service.config = mock_dependencies['config_manager'].load_config()
+    # 실제 config 딕셔너리를 주입.
+    # 이전에는 클래스 목에서 바로 load_config()를 불러 MagicMock이 들어갔고, 설정값을 정수로
+    # 쓰는 곳(asyncio.Semaphore 등)에서 TypeError가 났다.
+    service.config = mock_dependencies['config']
 
     # 나머지 의존성들을 직접 주입
     service.gemini_client = mock_dependencies['gemini_client']
@@ -97,24 +102,38 @@ class TestAppService:
         # mock_post_processing_service.merge_and_save_chunks.assert_called_once()
 
     def test_extract_glossary(self, app_service_instance, mock_dependencies, tmp_path):
-        """용어집 추출 기능 테스트."""
-        # Arrange
+        """용어집 추출이 도메인 서비스의 단계들을 순서대로 엮는지 본다.
+
+        예전에는 `SimpleGlossaryService.extract_glossary()` 한 메서드가 전부를 했고 이
+        테스트는 그것이 한 번 불렸는지만 확인했다. 지금은 AppService가 시드 로드 →
+        세그먼트 준비 → 세그먼트별 API 추출 → 최종화 → 저장을 직접 조합하므로, 그 메서드는
+        존재하지 않아 호출 횟수가 영영 0이었다.
+        """
         input_file = tmp_path / "novel.txt"
-        input_file.write_text("The hero named Elize.")
-        
-        mock_glossary_service = mock_dependencies['glossary_service']
-        expected_glossary = [{"keyword": "Elize", "translated_keyword": "엘리즈"}]
-        mock_glossary_service.extract_glossary.return_value = expected_glossary
-        
-        # Act
+        input_file.write_text("The hero named Elize.", encoding="utf-8")
+        output_path = tmp_path / "novel_simple_glossary.json"
+
+        glossary_service = app_service_instance.glossary_service
+        seed_entries = []
+        extracted = [MagicMock(name="entry")]
+        finalized = [MagicMock(name="final-entry")]
+
+        glossary_service.load_seed_glossary.return_value = seed_entries
+        glossary_service.prepare_segments.return_value = ["The hero named Elize."]
+        glossary_service._extract_glossary_entries_from_segment_via_api_async = AsyncMock(
+            return_value=extracted
+        )
+        glossary_service.finalize_glossary.return_value = finalized
+        glossary_service.get_glossary_output_path.return_value = output_path
+
         result_path = app_service_instance.extract_glossary(str(input_file))
 
-        # Assert
-        mock_glossary_service.extract_glossary.assert_called_once()
-        self.assertTrue(result_path.exists())
-        with open(result_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        self.assertEqual(data, expected_glossary)
+        glossary_service.prepare_segments.assert_called_once()
+        glossary_service._extract_glossary_entries_from_segment_via_api_async.assert_awaited_once()
+        # 추출 결과와 시드가 함께 최종화로 넘어간다.
+        glossary_service.finalize_glossary.assert_called_once_with(extracted, seed_entries)
+        glossary_service.save_glossary_to_json.assert_called_once_with(finalized, output_path)
+        assert result_path == output_path
 
 # 주석 처리: 이 테스트 클래스는 이전 배치 아키텍처에 의존하므로 비활성화합니다.
 # class TestAppServiceBatchMethods:

@@ -24,7 +24,16 @@ load_dotenv(dotenv_path=env_path)
 
 @pytest.fixture
 def api_key():
-    """환경 변수에서 API 키 가져오기"""
+    """실제 API를 부르는 테스트는 명시적으로 켤 때만 돈다.
+
+    예전에는 키가 있으면 무조건 돌았다. test/.env에 키를 둔 개발 환경에서는 `pytest test/`를
+    돌릴 때마다 실제 Gemini API를 호출해 무료 티어 하루 한도를 갉아먹었고, 한도가 차 있으면
+    스위트가 붉게 나왔다. 이 프로젝트는 키를 여러 개 돌려 쓸 만큼 쿼터가 빠듯하므로 기본은
+    건너뛰고, 확인이 필요할 때 RUN_GEMINI_API_TESTS=1로 켠다.
+    """
+    if os.getenv('RUN_GEMINI_API_TESTS') != '1':
+        pytest.skip("실제 API 테스트는 RUN_GEMINI_API_TESTS=1일 때만 실행합니다")
+
     key = os.getenv('GEMINI_API_KEY')
     if not key:
         pytest.skip("GEMINI_API_KEY가 설정되지 않았습니다")

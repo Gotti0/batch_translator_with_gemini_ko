@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
 from typing import Optional, Dict, Any
@@ -66,25 +68,21 @@ def translation_service(mock_config):
 # --- 테스트 케이스 ---
 
 def test_normal_translation_fails_with_sensitive_text(translation_service):
+    """시나리오 1: 일반 텍스트 요청은 검열에 걸려 BtgTranslationException이 된다.
+
+    비동기 마이그레이션으로 `translate_text`가 `translate_text_async`로 바뀌었는데 호출이
+    그대로 남아 AttributeError로 실패하고 있었다.
     """
-    시나리오 1: 민감한 텍스트에 대한 일반 번역 요청이 BtgTranslationException을 발생시키는지 테스트
-    """
-    print("\n--- 테스트 1: 일반 번역 (실패 예상) ---")
     with pytest.raises(BtgTranslationException) as excinfo:
-        translation_service.translate_text(SENSITIVE_TEXT)
-    
-    # 예외 메시지에 '콘텐츠 안전 문제'가 포함되어 있는지 확인
+        asyncio.run(translation_service.translate_text_async(SENSITIVE_TEXT))
+
     assert "콘텐츠 안전 문제" in str(excinfo.value)
-    print("예상대로 BtgTranslationException 발생 (콘텐츠 안전 문제)")
-    print(f"예외 정보: {excinfo.value}")
 
 @patch('domain.translation_service.TranslationService._construct_prompt')
 def test_structured_output_succeeds_with_sensitive_text(mock_construct_prompt, translation_service):
     """
     시나리오 2: 구조화된 출력 요청이 검열을 우회하고 성공하는지 테스트
     """
-    print("\n--- 테스트 2: 구조화된 출력 번역 (성공 예상) ---")
-    
     # _construct_prompt가 구조화된 출력을 요청하는 프롬프트를 반환하도록 설정
     # 실제로는 generate_text 호출 시 generation_config로 제어되므로, 여기서는 프롬프트 자체는 중요하지 않음
     mock_construct_prompt.return_value = f"Translate this to JSON: {SENSITIVE_TEXT}"
@@ -98,7 +96,6 @@ def test_structured_output_succeeds_with_sensitive_text(mock_construct_prompt, t
     # TranslationService의 gemini_client.generate_text_async를 직접 호출하여 테스트
     # 실제로는 TranslationService 내부에 이 로직을 호출하는 새로운 메서드가 필요함
     # 여기서는 개념 증명을 위해 직접 호출
-    import asyncio
     try:
         async def run_test():
             return await translation_service.gemini_client.generate_text_async(
@@ -112,8 +109,6 @@ def test_structured_output_succeeds_with_sensitive_text(mock_construct_prompt, t
         assert isinstance(result, MockStructuredTranslation)
         assert result.status == "success"
         assert "[구조화된 번역 성공]" in result.translated_text
-        print("성공: 구조화된 출력 요청이 Mock 응답을 성공적으로 반환했습니다.")
-        print(f"결과: {result}")
 
     except BtgTranslationException as e:
         pytest.fail(f"구조화된 출력 테스트에서 예외가 발생해서는 안 됩니다: {e}")
