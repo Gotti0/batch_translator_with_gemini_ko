@@ -746,41 +746,26 @@ class TranslationService:
                     except Exception as e:
                         logger.warning(f"  ⚠️ 저장된 청크 읽기 실패, 재번역 시도: {e}")
 
-                # 3. API 요청 및 검증 (재시도 포함)
-                # 과부하(503)는 이 청크가 성공할 때까지 다시 시도한다. 상한을 두지 않는 것은
-                # 사용자의 결정이다. 과부하가 풀리지 않으면 이 청크에서 무한히 머물며, 멈추는
-                # 판단은 사용자의 중단 요청에 맡긴다. 시도 간격은 서킷브레이커의 정지(5→10→20분)가
-                # 잡으므로 바쁜 대기는 아니다.
-                overload_attempts = 0
-                while True:
-                    # 📍 중단 체크. 재시도로 오래 머물 수 있으므로 매 회 확인한다.
-                    if self.stop_check_callback and self.stop_check_callback():
-                        raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 재시도 중)")
-                    try:
-                        chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
-                        break
-                    except GeminiServiceUnavailableException as e_overload:
-                        overload_attempts += 1
-                        logger.warning(
-                            f"  ⏳ 청크 {i+1}/{total_chunks} 과부하로 실패해 다시 시도합니다 "
-                            f"(재시도 {overload_attempts}회째): {e_overload}"
-                        )
-                        if status_callback:
-                            status_callback(
-                                f"무결성 번역 청크 {i+1}/{total_chunks} 과부하 재시도 {overload_attempts}회째"
-                            )
-                        if progress_callback:
-                            progress_callback(TranslationJobProgressDTO(
-                                total_chunks=total_chunks,
-                                processed_chunks=i,
-                                successful_chunks=len(translated_chunk_indices),
-                                failed_chunks=0,
-                                current_status_message=(
-                                    f"무결성 번역 청크 {i+1}/{total_chunks} 과부하 재시도 {overload_attempts}회째"
-                                ),
-                                current_chunk_processing=i + 1
-                            ))
+                # 3. API 요청 및 검증 (재시도 포함). 과부하는 이 청크가 성공할 때까지 기다린다.
+                def _notify_overload_retry(attempt: int, _i: int = i) -> None:
+                    message = f"무결성 번역 청크 {_i+1}/{total_chunks} 과부하 재시도 {attempt}회째"
+                    if status_callback:
+                        status_callback(message)
+                    if progress_callback:
+                        progress_callback(TranslationJobProgressDTO(
+                            total_chunks=total_chunks,
+                            processed_chunks=_i,
+                            successful_chunks=len(translated_chunk_indices),
+                            failed_chunks=0,
+                            current_status_message=message,
+                            current_chunk_processing=_i + 1
+                        ))
 
+                chunk_results = await self._translate_chunk_waiting_out_overload(
+                    chunk,
+                    label=f"무결성 번역 청크 {i+1}/{total_chunks}",
+                    on_retry=_notify_overload_retry,
+                )
                 translated_map.update(chunk_results)
                 
                 if temp_dir:
@@ -822,6 +807,42 @@ class TranslationService:
             logger.info(f"무결성 검수 캐시 및 진행 상태 파일 보존: {temp_dir}")
 
         return "\n".join(result_lines)
+
+    async def _translate_chunk_waiting_out_overload(
+        self,
+        chunk: List[TranslationUnit],
+        *,
+        label: str,
+        on_retry: Optional[Callable[[int], None]] = None,
+    ) -> Dict[str, str]:
+        """과부하(503)가 풀릴 때까지 청크 번역을 다시 시도한다.
+
+        상한을 두지 않는 것은 사용자의 결정이다. 과부하가 풀리지 않으면 이 청크에서 무한히 머물며,
+        멈추는 판단은 사용자의 중단 요청에 맡긴다. 그래서 매 회 중단을 확인한다. 이 검사가 없으면
+        상한도 탈출구도 없는 루프가 된다.
+
+        시도 간격은 서킷브레이커의 정지(5→10→20분)와 스케줄러의 RPM 간격이 잡으므로 여기서 따로
+        기다리지 않는다. 지연 정책을 한곳에 남기기 위해서다.
+
+        무결성 번역과 EPUB 번역이 이 방침을 공유한다. 과부하로 청크를 버리면 그 자리가 원문으로
+        남는데(EPUB은 챕터 전체가 원본으로 되돌아간다), 과부하는 대개 일시적이라 기다리는 편이
+        결과물이 온전하다.
+        """
+        attempts = 0
+        while True:
+            # 📍 중단 체크. 재시도로 오래 머물 수 있으므로 매 회 확인한다.
+            if self.stop_check_callback and self.stop_check_callback():
+                raise asyncio.CancelledError(f"{label} 중단 요청됨")
+            try:
+                return await self._translate_integrity_chunk_with_retry(chunk)
+            except GeminiServiceUnavailableException as e_overload:
+                attempts += 1
+                logger.warning(
+                    f"  ⏳ {label} 과부하로 실패해 다시 시도합니다 "
+                    f"(재시도 {attempts}회째): {e_overload}"
+                )
+                if on_retry:
+                    on_retry(attempts)
 
     async def _translate_integrity_chunk_with_retry(
         self, 
@@ -1119,7 +1140,10 @@ class TranslationService:
                                     translated_map: Dict[str, str] = {}
                                     for i, chunk in enumerate(chunks):
                                         logger.info(f"    📦 EPUB 노드 청크 {i+1}/{len(chunks)} 번역 중")
-                                        chunk_results = await self._translate_integrity_chunk_with_retry(chunk)
+                                        chunk_results = await self._translate_chunk_waiting_out_overload(
+                                            chunk,
+                                            label=f"EPUB 챕터 {item.filename} 청크 {i+1}/{len(chunks)}",
+                                        )
                                         translated_map.update(chunk_results)
                                     
                                     # 번역된 내용으로 HTML 재조립
