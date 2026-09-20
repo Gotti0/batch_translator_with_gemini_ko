@@ -900,6 +900,10 @@ class TranslationService:
             if not raw_response or not isinstance(raw_response, list):
                 # JSON 파싱 실패 또는 빈 응답 -> Binary Split.
                 # 검열 시 Gemini가 빈 응답이나 깨진 응답을 돌려주기도 하므로 분할로 푼다.
+                # 검열의 다른 표현으로 보고 검열 분할과 같은 스위치에 묶는다.
+                if not self.config.get("use_content_safety_retry", True):
+                    logger.warning(f"무결성 번역 JSON 파싱 실패 (split_depth {split_depth}). 분할 재시도가 꺼져 있어 원문 유지.")
+                    return {u.id: u.text for u in chunk}
                 if split_depth >= self.config.get("max_integrity_retry_depth", 2):
                     logger.error(f"무결성 번역 JSON 파싱 실패 (split_depth {split_depth}). 분할 한도 도달, 원문 유지.")
                     return {u.id: u.text for u in chunk}

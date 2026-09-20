@@ -381,7 +381,12 @@ class SettingsTabQt(QtWidgets.QWidget):
         safety_group = QtWidgets.QGroupBox("콘텐츠 안전 재시도")
         safety_form = QtWidgets.QFormLayout(safety_group)
         self.use_content_safety_check = QtWidgets.QCheckBox("검열 오류 시 청크 분할 재시도")
-        TooltipQt(self.use_content_safety_check, "콘텐츠 안전 오류 발생 시 청크를 분할하여 재시도합니다.")
+        TooltipQt(
+            self.use_content_safety_check,
+            "콘텐츠 안전 오류 발생 시 청크를 분할하여 재시도합니다.\n"
+            "무결성 모드에서는 모델이 JSON을 제대로 돌려주지 못한 경우도 같은 스위치로 묶입니다.\n"
+            "끄면 분할 없이 해당 청크의 원문이 그대로 남습니다.",
+        )
         self.max_split_spin = NoWheelSpinBox()
         self.max_split_spin.setRange(1, 10)
         TooltipQt(self.max_split_spin, "최대 분할 시도 횟수입니다.")
