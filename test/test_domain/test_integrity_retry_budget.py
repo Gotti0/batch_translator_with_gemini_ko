@@ -84,6 +84,34 @@ def test_censorship_split_stops_at_depth_limit():
     assert all(result[str(i)] == f"line{i}" for i in range(8))
 
 
+def test_json_parse_failure_split_follows_the_same_switch():
+    """파싱 실패 분할도 검열 분할과 같은 스위치에 묶인다."""
+    calls = []
+
+    async def respond(**kwargs):
+        calls.append(kwargs)
+        return None  # 파싱 실패로 취급되는 응답
+
+    service = _service(respond, use_content_safety_retry=False)
+    result = asyncio.run(service._translate_integrity_chunk_with_retry(_units(4)))
+
+    assert len(calls) == 1  # 분할하지 않는다
+    assert all(result[str(i)] == f"line{i}" for i in range(4))  # 원문을 남긴다
+
+
+def test_json_parse_failure_still_splits_when_switch_is_on():
+    calls = []
+
+    async def respond(**kwargs):
+        calls.append(kwargs)
+        return None
+
+    service = _service(respond)
+    asyncio.run(service._translate_integrity_chunk_with_retry(_units(8)))
+
+    assert len(calls) == 7  # 1 + 2 + 4, 깊이 2에서 멈춘다
+
+
 def test_split_disabled_when_content_safety_retry_is_off():
     async def respond(**kwargs):
         raise GeminiContentSafetyException("censored")
