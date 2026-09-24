@@ -149,6 +149,11 @@ class ConfigManager:
             "memory_min_similarity": 0.55,  # 번역 예시 최소 코사인 유사도
             "memory_glossary_top_k": 5,     # 의미 기반으로 더할 용어 수 (동적 용어집 주입 사용 시)
             "glossary_min_similarity": 0.6,
+            "memory_depth": "balanced",     # fast(표면만) / balanced / deep(호박 속까지) — 연상 확산 깊이
+            "memory_max_entities": 5,       # 청크당 주입할 인물 메모 수
+            "memory_min_activation": 0.25,
+            "enable_memory_extraction": False,  # 청크 번역 후 저렴한 모델로 인물·호칭·말투 메모 추출
+            "memory_extraction_model": "",      # 비우면 번역 모델 사용
 
             # 배치 번역 (Gemini Batch API)
             "batch_api_key": "",  # 배치 제출용 유료 키 (무료 티어 키는 Batch API 사용 불가). 비우면 첫 API 키

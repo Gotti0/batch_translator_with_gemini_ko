@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from domain.memory_graph import MemoryGraph, MemoryRecall, format_recall
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -64,6 +65,7 @@ class MemoryExample:
     translation: str
     chunk_index: int
     score: float
+    hash: str = ""
 
 
 class TranslationMemoryStore:
@@ -77,6 +79,9 @@ class TranslationMemoryStore:
         self.vectors = np.zeros((0, dimension or 0), dtype=np.float32)
         self._hash_rows: Dict[str, List[int]] = {}
         self.stats = {"recorded_chunks": 0, "mismatched_chunks": 0}
+        # WygLore Leaf 방식 연상 기억 (캐논·인물·에피소드 가지와 연결)
+        self.graph = MemoryGraph()
+        self._recall_cache: Optional[Tuple[str, MemoryRecall]] = None
 
     # ------------------------------------------------------------------
     # 경로·저장
@@ -105,6 +110,7 @@ class TranslationMemoryStore:
                 raise ValueError(f"항목 {len(items)}개와 벡터 {len(vectors)}개가 다릅니다")
             store.items, store.vectors = items, vectors.astype(np.float32)
             store._rebuild_index()
+            store.graph = MemoryGraph.load(store.directory / "graph.json")
             logger.info(f"번역 기억 로드: {len(items)}개 항목 ({store.directory})")
         except Exception as e:
             logger.warning(f"번역 기억을 읽지 못해 새로 만듭니다: {e}")
@@ -120,6 +126,7 @@ class TranslationMemoryStore:
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
         meta = {"model": self.model, "dimension": self.dimension, "updated_at": time.time(), "count": len(self.items)}
         (self.directory / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        self.graph.save(self.directory / "graph.json")
 
     def _rebuild_index(self) -> None:
         self._hash_rows = {}
@@ -173,10 +180,12 @@ class TranslationMemoryStore:
     async def index_glossary_async(self, entries: Iterable[Any], embedder: Any) -> int:
         """용어집 항목을 `키워드 (번역어)` 텍스트로 인덱싱한다."""
         rows = []
-        for e in entries:
+        entries_list = list(entries)
+        for e in entries_list:
             text = f"{e.keyword} ({e.translated_keyword})"
             rows.append({"kind": "glossary", "text": text, "hash": content_hash(text), "keyword": e.keyword})
         embedded = await self._index("glossary", rows, embedder)
+        self.graph.sync_canon(entries_list)
         self.save()
         logger.info(f"번역 기억 인덱싱: 용어 {len(rows)}개 (새로 임베딩 {embedded}개)")
         return embedded
@@ -200,10 +209,55 @@ class TranslationMemoryStore:
                 item = self.items[row]
                 if item["kind"] == "paragraph" and item.get("chunk_index") == chunk_index and item.get("para_index") == para_index:
                     item["translation"] = tr
+                    self.graph.add_episode(item["hash"], src, chunk_index)
                     changed = True
+        self._close_chunk(chunk_index, source_chunk)
         if changed and save:
             self.save(vectors_changed=False)
         return changed
+
+    def _close_chunk(self, chunk_index: int, source_chunk: str) -> None:
+        """청크가 끝나면 함께 등장·사용된 가지를 강화한다."""
+        surfaced = self.graph.surface_triggers(source_chunk)
+        self.graph.link_cooccurring(surfaced, chunk_index)
+        self.graph.close_chunk(chunk_index, extra_fired=surfaced)
+        self._recall_cache = None
+
+    def chunk_index_of(self, text: str) -> Optional[int]:
+        rows = self._query_rows(text)
+        indices = [self.items[r].get("chunk_index") for r in rows if self.items[r].get("chunk_index") is not None]
+        return min(indices) if indices else None
+
+    def recall(
+        self,
+        text: str,
+        top_k: int = 3,
+        min_similarity: float = 0.55,
+        depth: str = "balanced",
+        max_entities: int = 5,
+        min_activation: float = 0.25,
+    ) -> MemoryRecall:
+        """이 청크에서 떠오르는 기억 (의미가 가까운 번역 문단을 씨앗으로 그래프 확산). 같은 텍스트는 캐시."""
+        key = content_hash(f"{text}|{top_k}|{min_similarity}|{depth}|{max_entities}|{min_activation}")
+        if self._recall_cache and self._recall_cache[0] == key:
+            return self._recall_cache[1]
+        seeds = [(ex.hash, ex.score) for ex in self.search_examples(text, top_k=max(top_k * 3, top_k), min_similarity=min_similarity)]
+        result = self.graph.recall(
+            text, self.chunk_index_of(text), seeds, depth=depth,
+            max_episodes=top_k, max_entities=max_entities, min_activation=min_activation,
+        )
+        self._recall_cache = (key, result)
+        return result
+
+    def _example_for_hash(self, h: str):
+        for row in self._hash_rows.get(h, []):
+            item = self.items[row]
+            if item["kind"] == "paragraph" and item.get("translation"):
+                return _clip(item["text"]), _clip(item["translation"]), int(item.get("chunk_index", -1))
+        return None
+
+    def format_recall(self, recall: MemoryRecall) -> str:
+        return format_recall(recall, self._example_for_hash)
 
     # ------------------------------------------------------------------
     # 검색
@@ -246,7 +300,7 @@ class TranslationMemoryStore:
             if item["hash"] in seen:
                 continue
             seen.add(item["hash"])
-            results.append(MemoryExample(item["text"], item["translation"], int(item.get("chunk_index", -1)), float(score)))
+            results.append(MemoryExample(item["text"], item["translation"], int(item.get("chunk_index", -1)), float(score), item["hash"]))
         return results
 
     def search_glossary(self, text: str, top_k: int = 5, min_similarity: float = 0.6) -> List[str]:
@@ -275,10 +329,13 @@ class TranslationMemoryStore:
 
     def summary(self) -> Dict[str, int]:
         paragraphs = [i for i in self.items if i["kind"] == "paragraph"]
+        graph = self.graph.summary()
         return {
             "paragraphs": len(paragraphs),
             "translated": sum(1 for i in paragraphs if i.get("translation")),
             "glossary": sum(1 for i in self.items if i["kind"] == "glossary"),
+            "entities": graph["entity"],
+            "edges": graph["edges"],
         }
 
 

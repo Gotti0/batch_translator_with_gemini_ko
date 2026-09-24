@@ -144,3 +144,84 @@ async def test_disabled_by_default_changes_nothing(workspace):
         await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
     assert all("<translation_memory>" not in (c.kwargs.get("system_instruction_text") or "") for c in gen.call_args_list)
     assert not (workspace / "novel_memory").exists()
+
+
+@pytest.mark.asyncio
+async def test_character_notes_extracted_and_recalled_later(workspace):
+    """투 트랙 추출: 청크 0에서 뽑힌 인물 메모가, 그 인물이 다시 나온 뒤 청크에 주입된다"""
+    from domain.memory_extractor import ExtractedEntity
+
+    cfg = json.loads((workspace / "config.json").read_text(encoding="utf-8"))
+    cfg["enable_memory_extraction"] = True
+    (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+    class FakeExtractor:
+        calls = []
+
+        async def extract(self, source, translation, known):
+            self.calls.append(source)
+            if "リリア" in source and not known:
+                return [ExtractedEntity(name="リリア", translated_name="릴리아", note="반말, 마왕을 '너'라 부름")]
+            return []
+
+    app = AppService(workspace / "config.json")
+    app.embedding_client_factory = lambda cfg: FakeEmbedder()
+    extractor = FakeExtractor()
+    app.memory_extractor_factory = lambda cfg: extractor
+    with patch.object(app.chunk_service, "create_chunks_from_file_content", return_value=list(LINES)), \
+         patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=_fake_translate)) as gen:
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+
+    assert len(extractor.calls) == 4  # 청크마다 한 번, 뒤에서
+    last_sys = gen.call_args_list[3].kwargs.get("system_instruction_text") or ""
+    assert '<entity name="リリア" ko="릴리아"' in last_sys and "반말" in last_sys
+    graph = app.translation_service.translation_memory.graph
+    unit = graph.units["ent:リリア"]
+    assert unit.evidence and "リリア" in unit.evidence[0]["excerpt"]
+    # 다시 열어도 그래프가 남아 있다
+    from domain.translation_memory import TranslationMemoryStore
+    reopened = TranslationMemoryStore.open(workspace / "novel.txt", "fake-1", 64)
+    assert "ent:リリア" in reopened.graph.units
+
+
+@pytest.mark.asyncio
+async def test_extraction_failure_does_not_block(workspace):
+    cfg = json.loads((workspace / "config.json").read_text(encoding="utf-8"))
+    cfg["enable_memory_extraction"] = True
+    (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+    class Broken:
+        async def extract(self, *a):
+            raise RuntimeError("extract down")
+
+    app = AppService(workspace / "config.json")
+    app.embedding_client_factory = lambda cfg: FakeEmbedder()
+    app.memory_extractor_factory = lambda cfg: Broken()
+    with patch.object(app.chunk_service, "create_chunks_from_file_content", return_value=list(LINES)), \
+         patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=_fake_translate)) as gen:
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+    assert gen.await_count == 4
+    assert (workspace / "out.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_overview(workspace):
+    from domain.memory_extractor import ExtractedEntity
+    cfg = json.loads((workspace / "config.json").read_text(encoding="utf-8"))
+    cfg["enable_memory_extraction"] = True
+    (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+    class Ex:
+        async def extract(self, source, translation, known):
+            return [ExtractedEntity(name="リリア", translated_name="릴리아", note="반말")] if "リリア" in source else []
+
+    app = AppService(workspace / "config.json")
+    assert app.get_memory_overview(workspace / "novel.txt") is None
+    app.embedding_client_factory = lambda cfg: FakeEmbedder()
+    app.memory_extractor_factory = lambda cfg: Ex()
+    with patch.object(app.chunk_service, "create_chunks_from_file_content", return_value=list(LINES)), \
+         patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=_fake_translate)):
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+    ov = app.get_memory_overview(workspace / "novel.txt")
+    assert ov["summary"]["entity"] == 1 and ov["summary"]["episode"] == 4
+    assert ov["entities"][0]["name"] == "リリア" and ov["entities"][0]["fire_count"] >= 1

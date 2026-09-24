@@ -39,6 +39,7 @@ try:
     from app.batch_translation_service import BatchTranslationService, BatchSummary
     from infrastructure.embedding_client import create_embedding_client
     from domain.translation_memory import TranslationMemoryStore
+    from domain.memory_extractor import MemoryExtractor, find_excerpt
     from utils.lang_utils import normalize_language_code
 except ImportError:
     # Fallback imports
@@ -65,6 +66,7 @@ except ImportError:
     from app.batch_translation_service import BatchTranslationService, BatchSummary
     from infrastructure.embedding_client import create_embedding_client
     from domain.translation_memory import TranslationMemoryStore
+    from domain.memory_extractor import MemoryExtractor, find_excerpt
     from utils.lang_utils import normalize_language_code
 
 logger = setup_logger(__name__)
@@ -86,6 +88,11 @@ class AppService:
         self.batch_client_factory: Optional[Callable[[str], Any]] = None
         # 임베딩 클라이언트 생성 함수 (설정 → BaseEmbeddingClient). None이면 기본 구현, 테스트에서 교체한다.
         self.embedding_client_factory: Optional[Callable[[Dict[str, Any]], Any]] = None
+        # 인물 메모 추출기 생성 함수 (설정 → MemoryExtractor). None이면 추출용 LLM 클라이언트를 새로 만든다.
+        self.memory_extractor_factory: Optional[Callable[[Dict[str, Any]], Any]] = None
+        self._memory_extractor: Optional[Any] = None
+        self._memory_tasks: set = set()
+        self._memory_extract_semaphore: Optional[asyncio.Semaphore] = None
 
         # === 비동기 마이그레이션: Lock 제거, Task 객체 기반 상태 관리 ===
         # 기존 상태 플래그 제거 (asyncio는 단일 스레드)
@@ -1179,8 +1186,12 @@ class AppService:
                         store.record_translation(idx, chunks[idx], text, save=False)
                 store.save(vectors_changed=False)
             ts.translation_memory = store
+            self._memory_extractor = self._create_memory_extractor()
             info = store.summary()
-            logger.info(f"번역 기억 준비 완료: 문단 {info['paragraphs']}개 (번역됨 {info['translated']}), 용어 {info['glossary']}개")
+            logger.info(
+                f"번역 기억 준비 완료: 문단 {info['paragraphs']}개 (번역됨 {info['translated']}), 용어 {info['glossary']}개, "
+                f"인물 {info['entities']}개, 연결 {info['edges']}개, 인물 메모 추출 {'켬' if self._memory_extractor else '끔'}"
+            )
         except Exception as e:
             logger.warning(f"번역 기억을 준비하지 못해 기억 없이 번역합니다: {e}", exc_info=True)
             if status_callback:
@@ -1194,6 +1205,86 @@ class AppService:
             memory.record_translation(chunk_index, source_text, translated_text)
         except Exception as e:
             logger.warning(f"번역 기억 기록 실패 (청크 {chunk_index}): {e}")
+        if self._memory_extractor is not None:
+            # 투 트랙: 추출은 번역 흐름을 기다리게 하지 않고 뒤에서 돈다
+            task = asyncio.ensure_future(self._extract_memory_async(chunk_index, source_text, translated_text))
+            self._memory_tasks.add(task)
+            task.add_done_callback(self._memory_tasks.discard)
+
+    def _create_memory_extractor(self) -> Optional[Any]:
+        if not self.config.get("enable_memory_extraction", False):
+            return None
+        try:
+            if self.memory_extractor_factory is not None:
+                return self.memory_extractor_factory(self.config)
+            model = str(self.config.get("memory_extraction_model") or "").strip() or self.config.get("model_name")
+            # 추출 전용 클라이언트: 번역 요청과 스케줄러를 나눠 쓰지 않는다
+            client = LLMClientFactory.create_client(config={**self.config, "model_name": model})
+            return MemoryExtractor(client, model)
+        except Exception as e:
+            logger.warning(f"인물 메모 추출기를 만들지 못했습니다 (추출 없이 진행): {e}")
+            return None
+
+    async def _extract_memory_async(self, chunk_index: int, source_text: str, translated_text: str) -> None:
+        memory = getattr(self.translation_service, "translation_memory", None)
+        extractor = self._memory_extractor
+        if memory is None or extractor is None:
+            return
+        if self._memory_extract_semaphore is None:
+            # 배치 수거처럼 많은 청크가 한꺼번에 끝나도 추출 호출은 2개씩만
+            self._memory_extract_semaphore = asyncio.Semaphore(2)
+        try:
+            async with self._memory_extract_semaphore:
+                known = [u.name for u in memory.graph.units.values() if u.kind == "entity"]
+                entities = await extractor.extract(source_text, translated_text, known)
+            ids = []
+            for e in entities:
+                unit = memory.graph.upsert_entity(
+                    e.name, e.aliases, e.translated_name, e.note, e.category, chunk_index,
+                    find_excerpt(source_text, [e.name, *e.aliases]),
+                )
+                ids.append(unit.id)
+            memory.graph.link_cooccurring(ids + memory.graph.surface_triggers(source_text), chunk_index)
+            memory.save(vectors_changed=False)
+            if entities:
+                logger.info(f"인물 메모 추출 (청크 {chunk_index + 1}): {', '.join(e.name for e in entities)}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"인물 메모 추출 실패 (청크 {chunk_index + 1}, 번역에는 영향 없음): {e}")
+
+    async def _drain_memory_tasks(self) -> None:
+        """남은 인물 메모 추출이 끝날 때까지 기다린다 (최종 병합·배치 수거 전에)."""
+        pending = [t for t in list(self._memory_tasks) if not t.done()]
+        if pending:
+            logger.info(f"인물 메모 추출 {len(pending)}건 마무리 대기...")
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    def get_memory_overview(self, input_file_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+        """기억뜰 보기용: 저장된 그래프의 인물 가지와 최근 머지 기록 (네트워크 없음)."""
+        from domain.memory_graph import MemoryGraph
+        path = TranslationMemoryStore.directory_for(Path(input_file_path)) / "graph.json"
+        if not path.exists():
+            return None
+        graph = MemoryGraph.load(path)
+        last_chunk = max((u.last_fired_chunk for u in graph.units.values()), default=-1)
+        entities = sorted(
+            (u for u in graph.units.values() if u.kind == "entity"),
+            key=lambda u: (-u.fire_count, u.name),
+        )
+        return {
+            "summary": graph.summary(last_chunk if last_chunk >= 0 else None),
+            "entities": [
+                {
+                    "name": u.name, "aliases": u.aliases, "translated": u.translated, "note": u.note,
+                    "category": u.category, "last_chunk": u.last_fired_chunk, "fire_count": u.fire_count,
+                    "cold": graph.is_cold(u, last_chunk) if last_chunk >= 0 else False,
+                    "evidence": u.evidence,
+                }
+                for u in entities
+            ],
+            "merge_log": list(reversed(graph.merge_log)),
+        }
 
     async def check_embedding_health_async(self, config_override: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
         """임베딩 프로바이더(Voyage) 연결을 점검한다."""
@@ -1215,6 +1306,7 @@ class AppService:
             self.config, self.translation_service, self.gemini_client, self.chunk_service,
             batch_client_factory=getattr(self, "batch_client_factory", None),
         )
+        service.on_chunk_translated = self._record_translation_memory
         reason = service.check_available()
         if reason:
             raise BtgServiceException(reason)
@@ -1276,7 +1368,11 @@ class AppService:
         service = self._get_batch_service()
         summary = service.summarize(input_path)
         if summary.active:
+            if self.config.get("enable_translation_memory", False) and \
+                    getattr(self.translation_service, "translation_memory", None) is None:
+                await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
             summary = await service.refresh_async(input_path, status_callback)
+            await self._drain_memory_tasks()
         else:
             failed = (load_metadata(input_path) or {}).get("failed_chunks") or {}
             never_tried = [i for i in summary.remaining if str(i) not in failed] if summary.jobs else summary.remaining
@@ -1295,7 +1391,12 @@ class AppService:
         """배치 작업 상태를 조회·수거하고, 모두 끝났으면 최종 파일을 쓴다 (폴링용)."""
         service = self._get_batch_service()
         input_path, output_path = Path(input_file_path), Path(output_file_path)
+        if self.config.get("enable_translation_memory", False) and \
+                getattr(self.translation_service, "translation_memory", None) is None:
+            # 앱을 다시 켠 뒤 수거할 때도 결과가 기억에 기록되도록 (임베딩은 캐시되어 재호출 없음)
+            await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
         summary = await service.refresh_async(input_path, status_callback)
+        await self._drain_memory_tasks()
         await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
         return summary
 
@@ -1346,6 +1447,7 @@ class AppService:
 
         표준 모드와 배치 모드가 공유한다.
         """
+        await self._drain_memory_tasks()
         logger.info("모든 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
         
         # 청크 백업 파일에서 최종 병합 대상 로드 및 인덱스 정렬
