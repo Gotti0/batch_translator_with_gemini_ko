@@ -494,6 +494,40 @@ class SettingsTabQt(QtWidgets.QWidget):
         pagefold_form.addRow("작동 모드", self.pagefold_mode_combo)
         pagefold_form.addRow("폰트 크기(pt)", self.pagefold_font_size_spin)
 
+        # --- 배치 작업 (배치 번역 모드 전용) ---
+        self.batch_group = QtWidgets.QGroupBox("배치 작업")
+        batch_vbox = QtWidgets.QVBoxLayout(self.batch_group)
+        self.batch_status_label = QtWidgets.QLabel("제출한 배치 작업이 없습니다.")
+        self.batch_status_label.setWordWrap(True)
+        self.batch_jobs_table = QtWidgets.QTableWidget(0, 5)
+        self.batch_jobs_table.setHorizontalHeaderLabels(["작업", "청크", "상태", "제출 후", "결과"])
+        self.batch_jobs_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.batch_jobs_table.verticalHeader().setVisible(False)
+        self.batch_jobs_table.horizontalHeader().setStretchLastSection(True)
+        self.batch_jobs_table.setMaximumHeight(160)
+        self.batch_refresh_btn = QtWidgets.QPushButton("지금 확인")
+        TooltipQt(self.batch_refresh_btn, "배치 작업 상태를 바로 조회하고, 끝난 작업의 결과를 가져옵니다.")
+        self.batch_cancel_btn = QtWidgets.QPushButton("작업 취소")
+        TooltipQt(self.batch_cancel_btn, "진행 중인 배치 작업을 취소합니다. 이미 끝난 결과는 가져옵니다.")
+        self.batch_realtime_btn = QtWidgets.QPushButton("실시간으로 마무리")
+        TooltipQt(self.batch_realtime_btn, "미완료 청크를 표준 모드로 바로 번역합니다.\n검열로 빠진 청크는 분할 재시도가 있는 이 방법을 권장합니다.")
+        self.batch_resubmit_btn = QtWidgets.QPushButton("다시 배치 제출")
+        TooltipQt(self.batch_resubmit_btn, "미완료 청크만 모아 배치로 다시 제출합니다 (비용 50%, 최대 24시간).")
+        self.batch_keep_btn = QtWidgets.QPushButton("그대로 저장")
+        TooltipQt(self.batch_keep_btn, "미완료 청크는 실패 표시와 원문으로 채워 최종 파일을 저장합니다.")
+        batch_btn_row = QtWidgets.QHBoxLayout()
+        for btn in (self.batch_refresh_btn, self.batch_cancel_btn, self.batch_realtime_btn,
+                    self.batch_resubmit_btn, self.batch_keep_btn):
+            batch_btn_row.addWidget(btn)
+        batch_vbox.addWidget(self.batch_status_label)
+        batch_vbox.addWidget(self.batch_jobs_table)
+        batch_vbox.addLayout(batch_btn_row)
+        self.batch_group.setVisible(False)
+
+        # 앱이 켜져 있는 동안 진행 중인 배치 작업을 주기적으로 조회한다
+        self._batch_timer = QtCore.QTimer(self)
+        self._batch_busy = False
+
         # --- 액션/진행 표시 ---
         self.start_btn = QtWidgets.QPushButton("번역 시작")
         TooltipQt(self.start_btn, "현재 설정으로 번역을 시작합니다.")
@@ -525,6 +559,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         layout.addWidget(prefill_group)
         layout.addWidget(safety_group)
         layout.addWidget(pagefold_group)
+        layout.addWidget(self.batch_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
@@ -551,6 +586,13 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.auth_check_btn.clicked.connect(self._on_auth_check_clicked)
         self.mode_selector.mode_changed.connect(self._on_mode_changed)
         self.enable_pagefold_check.toggled.connect(self._on_pagefold_toggled)
+        self.batch_refresh_btn.clicked.connect(self._on_batch_refresh_clicked)
+        self.batch_cancel_btn.clicked.connect(self._on_batch_cancel_clicked)
+        self.batch_realtime_btn.clicked.connect(self._on_batch_realtime_clicked)
+        self.batch_resubmit_btn.clicked.connect(self._on_batch_resubmit_clicked)
+        self.batch_keep_btn.clicked.connect(self._on_batch_keep_clicked)
+        self._batch_timer.timeout.connect(self._on_batch_timer)
+        self.input_edit.editingFinished.connect(self._update_batch_panel)
 
     def _on_provider_changed(self, _=None) -> None:
         """AI 공급자 변경 시 입력 폼 표시 및 추천 모델 목록 조정"""
@@ -616,6 +658,7 @@ class SettingsTabQt(QtWidgets.QWidget):
                 self.base_url_edit.setText(saved_url)
 
         # PageFold 토글 가능 여부 (Gemini만 지원)
+        self._update_batch_availability()
         self.enable_pagefold_check.setEnabled(is_gemini)
         if not is_gemini:
             self.enable_pagefold_check.setChecked(False)
@@ -665,6 +708,7 @@ class SettingsTabQt(QtWidgets.QWidget):
             # 모드에 따른 특수 UI 조정 (예: EPUB 모드일 때 청크 크기 숨기기 등)
             is_epub = mode_id == "epub"
             self.chunk_size_spin.setEnabled(not is_epub)
+        self._update_batch_panel()
             # 무결성/EPUB 모드일 때 안전 재시도 옵션 강제 활성화 고려 가능
 
     def _wrap(self, layout: QtWidgets.QLayout) -> QtWidgets.QWidget:
@@ -701,7 +745,7 @@ class SettingsTabQt(QtWidgets.QWidget):
     def _status_cb(self, message: str) -> None:
         self.status_signal.emit(message)
 
-    async def _run_translation(self, input_path: str, output_path: str) -> None:
+    async def _run_translation(self, input_path: str, output_path: str, translation_mode_override: Optional[str] = None) -> None:
         try:
             await self.app_service.start_translation_async(
                 input_file_path=input_path,
@@ -710,7 +754,14 @@ class SettingsTabQt(QtWidgets.QWidget):
                 status_callback=self._status_cb,
                 tqdm_file_stream=self._tqdm_stream,
                 retranslate_failed_only=False,
+                translation_mode_override=translation_mode_override,
             )
+            if (translation_mode_override or self.mode_selector.get_current_mode()) == "batch":
+                # 배치는 제출·조회로 끝난다. 결과는 폴링이 수거하므로 완료 창을 띄우지 않는다.
+                summary = self.app_service.get_batch_summary(input_path)
+                message = summary.describe() if summary else "배치 작업이 없습니다."
+                self.completion_signal.emit(True, message, {"batch": True})
+                return
             # 완료 통계 계산
             elapsed = time.time() - self._translation_start_time if self._translation_start_time else 0
             actual_processed = self._final_processed_chunks - self._translation_start_chunks
@@ -962,6 +1013,9 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     @asyncSlot()
     async def _on_start_clicked(self) -> None:
+        await self._start_translation_flow()
+
+    async def _start_translation_flow(self, translation_mode_override: Optional[str] = None) -> None:
         input_path = self.input_edit.text().strip()
         output_path = self.output_edit.text().strip()
         if not input_path or not output_path:
@@ -993,7 +1047,7 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         # Task 실행
         self._translation_task = asyncio.create_task(
-            self._run_translation(input_path, output_path)
+            self._run_translation(input_path, output_path, translation_mode_override)
         )
         try:
             await self._translation_task
@@ -1014,6 +1068,170 @@ class SettingsTabQt(QtWidgets.QWidget):
             await self.app_service.cancel_translation_async()
         
         # 완료 시 UI 복구는 completion_signal에서 처리됨
+
+    # ------------------------------------------------------------------
+    # 배치 번역
+    # ------------------------------------------------------------------
+
+    def _batch_unavailable_reason_from_ui(self) -> Optional[str]:
+        if (self.provider_combo.currentData() or "gemini") != "gemini":
+            return "배치 번역은 Google Gemini API 프로바이더에서만 사용할 수 있습니다."
+        if self.use_vertex_check.isChecked():
+            return "배치 번역은 Vertex AI를 지원하지 않습니다. Gemini API 키를 사용하세요."
+        return None
+
+    def _update_batch_availability(self) -> None:
+        reason = self._batch_unavailable_reason_from_ui()
+        self.mode_selector.set_mode_available("batch", reason is None, reason or "")
+
+    def _is_batch_mode(self) -> bool:
+        return self.mode_selector.get_current_mode() == "batch"
+
+    def _current_batch_summary(self):
+        input_path = self.input_edit.text().strip()
+        if not input_path or not hasattr(self.app_service, "get_batch_summary"):
+            return None
+        try:
+            return self.app_service.get_batch_summary(input_path)
+        except Exception as e:  # pragma: no cover - 표시 실패는 무시
+            logger.warning(f"배치 현황 조회 실패: {e}")
+            return None
+
+    def _update_batch_panel(self, summary=None) -> None:
+        """배치 모드일 때 작업 목록·버튼·폴링 타이머를 현재 메타데이터에 맞춘다."""
+        is_batch = self._is_batch_mode()
+        self.batch_group.setVisible(is_batch)
+        self.start_btn.setText("배치 제출 / 상태 확인" if is_batch else "번역 시작")
+        if not is_batch:
+            self._batch_timer.stop()
+            return
+
+        summary = summary if summary is not None else self._current_batch_summary()
+        self.batch_jobs_table.setRowCount(0)
+        if summary is None or not summary.jobs:
+            self.batch_status_label.setText("제출한 배치 작업이 없습니다. '배치 제출 / 상태 확인'을 누르면 미번역 청크를 제출합니다.")
+            active = remaining = False
+        else:
+            text = summary.describe()
+            if summary.config_changed:
+                text += "\n제출 후 번역 설정이 바뀌었습니다. 진행 중인 작업은 제출 당시 설정으로 번역됩니다."
+            self.batch_status_label.setText(text)
+            now = time.time()
+            for job in summary.jobs:
+                row = self.batch_jobs_table.rowCount()
+                self.batch_jobs_table.insertRow(row)
+                chunks = job.get("chunks") or []
+                chunk_range = f"{chunks[0] + 1}–{chunks[-1] + 1} ({len(chunks)})" if chunks else "-"
+                elapsed_min = int((now - float(job.get("submitted_at") or now)) / 60)
+                elapsed = f"{elapsed_min // 60}시간 {elapsed_min % 60}분" if elapsed_min >= 60 else f"{elapsed_min}분"
+                result = (
+                    f"성공 {job.get('succeeded', 0)} · 검열 {job.get('blocked', 0)} · 오류 {job.get('errored', 0)}"
+                    if job.get("collected") and "succeeded" in job else ""
+                )
+                values = [job.get("name") or job.get("display_name", ""), chunk_range,
+                          str(job.get("state", "")), elapsed, result]
+                for col, value in enumerate(values):
+                    self.batch_jobs_table.setItem(row, col, QtWidgets.QTableWidgetItem(value))
+            active, remaining = summary.active, bool(summary.remaining)
+            if summary.total_chunks:
+                self.progress_bar.setValue(int(summary.translated * 100 / summary.total_chunks))
+
+        busy = self._batch_busy or bool(
+            self.app_service.current_translation_task and not self.app_service.current_translation_task.done()
+        )
+        self.batch_refresh_btn.setEnabled(active and not busy)
+        self.batch_cancel_btn.setEnabled(active and not busy)
+        for btn in (self.batch_realtime_btn, self.batch_resubmit_btn, self.batch_keep_btn):
+            btn.setEnabled(remaining and not active and not busy)
+
+        if active:
+            interval_s = int((getattr(self.app_service, "config", {}) or {}).get("batch_poll_interval_seconds", 60) or 60)
+            if not self._batch_timer.isActive() or self._batch_timer.interval() != interval_s * 1000:
+                self._batch_timer.start(max(10, interval_s) * 1000)
+        else:
+            self._batch_timer.stop()
+
+    async def _run_batch_action(self, label: str, action) -> None:
+        if self._batch_busy:
+            return
+        self._batch_busy = True
+        self._update_batch_panel()
+        self.status_label.setText(f"{label}...")
+        try:
+            result = await action()
+            if isinstance(result, str):
+                self.status_label.setText(result)
+        except Exception as e:
+            logger.error(f"배치 작업 처리 실패 ({label}): {e}", exc_info=True)
+            self.status_label.setText(f"{label} 실패: {e}")
+            QtWidgets.QMessageBox.warning(self, "배치 작업", f"{label} 중 오류가 발생했습니다.\n{e}")
+        finally:
+            self._batch_busy = False
+            self._update_batch_panel()
+
+    def _batch_paths(self):
+        return self.input_edit.text().strip(), self.output_edit.text().strip()
+
+    @asyncSlot()
+    async def _on_batch_timer(self) -> None:
+        if not self._is_batch_mode() or self._batch_busy:
+            return
+        summary = self._current_batch_summary()
+        if not summary or not summary.active:
+            self._batch_timer.stop()
+            return
+        await self._batch_refresh()
+
+    @asyncSlot()
+    async def _on_batch_refresh_clicked(self) -> None:
+        await self._batch_refresh()
+
+    async def _batch_refresh(self) -> None:
+        input_path, output_path = self._batch_paths()
+
+        async def action():
+            summary = await self.app_service.refresh_batch_async(input_path, output_path, self._status_cb)
+            if summary.complete:
+                self._show_tray_notification(True, summary.translated, summary.total_chunks, None)
+            return summary.describe()
+
+        await self._run_batch_action("배치 상태 확인", action)
+
+    @asyncSlot()
+    async def _on_batch_cancel_clicked(self) -> None:
+        if QtWidgets.QMessageBox.question(self, "배치 작업 취소", "진행 중인 배치 작업을 취소할까요?") != QtWidgets.QMessageBox.Yes:
+            return
+        input_path, _ = self._batch_paths()
+
+        async def action():
+            return (await self.app_service.cancel_batch_async(input_path, self._status_cb)).describe()
+
+        await self._run_batch_action("배치 작업 취소", action)
+
+    @asyncSlot()
+    async def _on_batch_realtime_clicked(self) -> None:
+        # 표준 모드 이어하기가 metadata의 translated_chunks에 없는 청크만 번역한다
+        await self._start_translation_flow(translation_mode_override="standard")
+
+    @asyncSlot()
+    async def _on_batch_resubmit_clicked(self) -> None:
+        self._save_config_to_service()
+        input_path, _ = self._batch_paths()
+
+        async def action():
+            return (await self.app_service.resubmit_batch_async(input_path, self._status_cb)).describe()
+
+        await self._run_batch_action("배치 재제출", action)
+
+    @asyncSlot()
+    async def _on_batch_keep_clicked(self) -> None:
+        input_path, output_path = self._batch_paths()
+
+        async def action():
+            count = await self.app_service.save_batch_with_failures_async(input_path, output_path, self._status_cb)
+            return f"저장 완료: 미완료 청크 {count}개는 실패 표시와 원문으로 채웠습니다."
+
+        await self._run_batch_action("최종 파일 저장", action)
 
     def _on_save_config_clicked(self) -> None:
         """'설정 저장' 버튼 클릭 시 config.json에 저장"""
@@ -1193,9 +1411,16 @@ class SettingsTabQt(QtWidgets.QWidget):
     def _on_completion(self, success: bool, message: str, stats: dict) -> None:
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        if stats.get("batch"):
+            self.status_label.setText(message)
+            self._translation_start_time = None
+            self._translation_start_chunks = 0
+            self._update_batch_panel()
+            return
         if success:
             self.progress_bar.setValue(100)
         self.status_label.setText(message)
+        self._update_batch_panel()
         
         # 완료 팝업 다이얼로그 표시
         self._show_completion_dialog(success, message, stats)
@@ -1280,6 +1505,7 @@ class SettingsTabQt(QtWidgets.QWidget):
     @QtCore.Slot(int)
     def _on_vertex_toggle(self, state: int) -> None:
         enabled = state == QtCore.Qt.Checked
+        self._update_batch_availability()
         self.sa_path_edit.setEnabled(enabled)
         self.gcp_project_edit.setEnabled(enabled)
         self.gcp_location_edit.setEnabled(enabled)

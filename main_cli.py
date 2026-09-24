@@ -159,6 +159,26 @@ def cli_glossary_extraction_progress_callback(dto: GlossaryExtractionProgressDTO
             if task_id in tqdm_instances: del tqdm_instances[task_id] # type: ignore
 
 
+def run_batch_cli_action(app_service: AppService, args: argparse.Namespace, input_file: Path, output_file: Path) -> None:
+    """배치 번역 옵션 처리. 이어하기·새로 시작 확인은 배치 메타데이터가 대신한다."""
+    common = dict(progress_callback=cli_translation_progress_callback, status_callback=cli_translation_status_callback)
+    if args.batch_submit:
+        asyncio.run(app_service.start_translation_async(input_file, output_file, translation_mode_override="batch", **common))
+    elif args.batch_status:
+        summary = asyncio.run(app_service.refresh_batch_async(input_file, output_file, cli_translation_status_callback))
+        if summary.complete:
+            Tqdm.write(f"최종 파일: {output_file}", file=sys.stdout)
+        elif not summary.active and summary.remaining:
+            Tqdm.write("남은 청크는 --batch-finish realtime|resubmit|keep 으로 처리하세요.", file=sys.stdout)
+    elif args.batch_finish == "realtime":
+        asyncio.run(app_service.start_translation_async(input_file, output_file, translation_mode_override="standard", **common))
+    elif args.batch_finish == "resubmit":
+        asyncio.run(app_service.resubmit_batch_async(input_file, cli_translation_status_callback))
+    elif args.batch_finish == "keep":
+        count = asyncio.run(app_service.save_batch_with_failures_async(input_file, output_file, cli_translation_status_callback))
+        Tqdm.write(f"최종 파일: {output_file} (미완료 청크 {count}개는 실패 표시와 원문)", file=sys.stdout)
+
+
 def parse_arguments():
     """명령줄 인수를 파싱합니다."""
     parser = argparse.ArgumentParser(description="BTG - 배치 번역기 CLI (4-Tier Refactored)")
@@ -197,6 +217,15 @@ def parse_arguments():
     dyn_glossary_group.add_argument("--max-glossary-entries-injection", type=int, help="번역 청크당 주입할 최대 용어집 항목 수 (예: 3)") # Arg name and help text changed
     dyn_glossary_group.add_argument("--max-glossary-chars-injection", type=int, help="번역 청크당 주입할 용어집의 최대 총 문자 수 (예: 500)") # Arg name and help text changed
     # 설정 오버라이드
+    batch_group = parser.add_argument_group('배치 번역 (Gemini Batch API, 비용 50%, 결과는 최대 24시간 뒤)')
+    batch_action = batch_group.add_mutually_exclusive_group()
+    batch_action.add_argument("--batch-submit", action="store_true",
+                              help="미번역 청크를 배치로 제출합니다. 진행 중인 작업이 있으면 상태만 조회합니다.")
+    batch_action.add_argument("--batch-status", action="store_true",
+                              help="배치 작업 상태를 조회하고 끝난 결과를 수거합니다. 모두 끝났으면 최종 파일을 씁니다 (예약 작업용).")
+    batch_action.add_argument("--batch-finish", choices=["realtime", "resubmit", "keep"],
+                              help="수거 후 남은 청크 처리: realtime=실시간 번역, resubmit=배치 재제출, keep=실패 표시로 저장")
+
     config_override_group = parser.add_argument_group('Configuration Overrides')
     config_override_group.add_argument("--novel-language-override", type=str, help="설정 파일의 'novel_language' 값을 덮어씁니다. (--novel-language와 동일)")
     config_override_group.add_argument("--novel-language-fallback-override", type=str, help="설정 파일의 'novel_language_fallback' 값을 덮어씁니다.")
@@ -348,6 +377,11 @@ def main():
                     output_file = input_file.parent / f"{input_file.stem}_translated{input_file.suffix}"
                 
                 cli_logger.info(f"출력 파일: {output_file}")
+
+                if args.batch_submit or args.batch_status or args.batch_finish:
+                    run_batch_cli_action(app_service, args, input_file, output_file)
+                    cli_logger.info(f"--- 파일 {i+1}/{total_files} 처리 완료: {input_file} ---")
+                    continue
 
                 metadata_file_path = get_metadata_file_path(input_file)
                 loaded_metadata = load_metadata(metadata_file_path)

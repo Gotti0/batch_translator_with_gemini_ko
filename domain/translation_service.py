@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Union, Callable
 import os
 import copy # Moved here
+from dataclasses import dataclass
 
 try:
     from infrastructure.gemini_client import (
@@ -134,6 +135,14 @@ def _inject_slots_into_history(
 
 # PageFold로 전체 용어집 PDF를 첨부할 때 {{glossary_context}}에 채우는 안내문
 PAGEFOLD_GLOSSARY_NOTICE = "참조용 전체 용어집이 첨부된 고밀도 PDF 문서에 수록되어 있습니다. PDF에 명시된 용어 번역 지침을 최우선으로 일관되게 준수하세요."
+
+
+@dataclass
+class TranslationRequest:
+    """청크 하나를 번역하기 위한 요청 구성요소."""
+    contents: List[genai_types.Content]
+    system_instruction: Optional[str] = None
+    multimodal_parts: Optional[List[genai_types.Part]] = None
 
 
 class TranslationService:
@@ -442,37 +451,21 @@ class TranslationService:
     # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
     # ============================================================================
 
-    async def translate_text_async(self, text_chunk: str, stream: bool = False) -> str:
+    def build_generation_config_dict(self) -> Dict[str, Any]:
+        """번역 요청의 생성 파라미터 (실시간·배치 공용)."""
+        return {
+            "temperature": self.config.get("temperature", 0.7),
+            "top_p": self.config.get("top_p", 0.9),
+            "thinking_level": self.config.get("thinking_level", "high")
+        }
+
+    def build_translation_request(self, text_chunk: str) -> "TranslationRequest":
         """
-        비동기 텍스트 번역 메서드 (translate_text의 비동기 버전)
-        
-        Args:
-            text_chunk: 번역할 텍스트
-            stream: 스트리밍 여부
-            
-        Returns:
-            번역된 텍스트
-            
-        Raises:
-            asyncio.CancelledError: 작업이 취소된 경우
-            BtgTranslationException: 번역 실패
+        청크 하나의 번역 요청(contents, 시스템 지시문, PageFold PDF 파트)을 조립한다.
+
+        실시간 번역과 배치 번역이 같은 프롬프트를 쓰도록 요청 조립을 호출과 분리했다.
+        용어집 주입, 프리필 히스토리, `<pdf>` 태그 처리가 모두 여기서 이뤄진다.
         """
-        if not text_chunk.strip():
-            logger.debug("translate_text_async: 입력 텍스트가 비어 있어 빈 문자열 반환.")
-            return ""
-        
-        # 📍 중단 체크: 작업 시작 전 (asyncio.CancelledError 발생)
-        if self.stop_check_callback and self.stop_check_callback():
-            logger.info("translate_text_async: 중단 요청 감지됨 (작업 시작 전)")
-            raise asyncio.CancelledError("번역 중단 요청됨")
-        
-        # ✨ 방어적 체크포인트: asyncio 취소 확인 강제
-        await asyncio.sleep(0)
-        
-        text_preview = text_chunk[:100].replace('\n', ' ')
-        logger.info(f"비동기 번역 요청: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")
-        
-        # 용어집 및 프롬프트 준비 (동기 메서드와 동일)
         glossary_context_str = "용어집 컨텍스트 없음"
         pagefold_multimodal_parts: Optional[List[genai_types.Part]] = None
 
@@ -580,31 +573,73 @@ class TranslationService:
             else:
                 api_system_instruction = PDF_NEWLINE_MARKER_DIRECTIVE
 
+        return TranslationRequest(
+            contents=api_prompt_for_gemini_client,
+            system_instruction=api_system_instruction,
+            multimodal_parts=pagefold_multimodal_parts,
+        )
+
+    def finalize_translation_text(self, source_text: str, raw_text: Optional[str]) -> str:
+        """
+        모델 응답 텍스트를 번역 결과로 확정한다 (실시간·배치 공용).
+
+        Raises:
+            GeminiContentSafetyException: 응답이 없거나, 내용이 있는 원문에 빈 번역이 돌아온 경우
+        """
+        if raw_text is None:
+            raise GeminiContentSafetyException("API로부터 응답을 받지 못했습니다 (None 반환).")
+
+        if not raw_text.strip() and source_text.strip():
+            raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
+
+        final_translated = raw_text.strip()
+        if self.config.get("enable_pagefold", True):
+            final_translated = restore_response_newlines(final_translated)
+        return final_translated
+
+    async def translate_text_async(self, text_chunk: str, stream: bool = False) -> str:
+        """
+        비동기 텍스트 번역 메서드 (translate_text의 비동기 버전)
+        
+        Args:
+            text_chunk: 번역할 텍스트
+            stream: 스트리밍 여부
+            
+        Returns:
+            번역된 텍스트
+            
+        Raises:
+            asyncio.CancelledError: 작업이 취소된 경우
+            BtgTranslationException: 번역 실패
+        """
+        if not text_chunk.strip():
+            logger.debug("translate_text_async: 입력 텍스트가 비어 있어 빈 문자열 반환.")
+            return ""
+        
+        # 📍 중단 체크: 작업 시작 전 (asyncio.CancelledError 발생)
+        if self.stop_check_callback and self.stop_check_callback():
+            logger.info("translate_text_async: 중단 요청 감지됨 (작업 시작 전)")
+            raise asyncio.CancelledError("번역 중단 요청됨")
+        
+        # ✨ 방어적 체크포인트: asyncio 취소 확인 강제
+        await asyncio.sleep(0)
+        
+        text_preview = text_chunk[:100].replace('\n', ' ')
+        logger.info(f"비동기 번역 요청: \"{text_preview}{'...' if len(text_chunk) > 100 else ''}\"")
+        
+        request = self.build_translation_request(text_chunk)
+
         try:
             translated_text_from_api = await self.gemini_client.generate_text_async(
-                prompt=api_prompt_for_gemini_client,
+                prompt=request.contents,
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
-                generation_config_dict={
-                    "temperature": self.config.get("temperature", 0.7),
-                    "top_p": self.config.get("top_p", 0.9),
-                    "thinking_level": self.config.get("thinking_level", "high")
-                },
+                generation_config_dict=self.build_generation_config_dict(),
                 thinking_budget=self.config.get("thinking_budget", None),
-                system_instruction_text=api_system_instruction,
+                system_instruction_text=request.system_instruction,
                 stream=stream,
-                multimodal_parts=pagefold_multimodal_parts
+                multimodal_parts=request.multimodal_parts
             )
-
-            if translated_text_from_api is None:
-                raise GeminiContentSafetyException("API로부터 응답을 받지 못했습니다 (None 반환).")
-
-            if not translated_text_from_api.strip() and text_chunk.strip():
-                raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
-
-            final_translated = translated_text_from_api.strip()
-            if self.config.get("enable_pagefold", True):
-                final_translated = restore_response_newlines(final_translated)
-            return final_translated
+            return self.finalize_translation_text(text_chunk, translated_text_from_api)
 
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소되었습니다")

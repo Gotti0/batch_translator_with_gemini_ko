@@ -36,6 +36,7 @@ try:
     from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from ..utils.post_processing_service import PostProcessingService
     from ..utils.quality_check_service import QualityCheckService
+    from app.batch_translation_service import BatchTranslationService, BatchSummary
 except ImportError:
     # Fallback imports
     from infrastructure.file_handler import (
@@ -58,6 +59,7 @@ except ImportError:
     from utils.quality_check_service import QualityCheckService
     from infrastructure.llm_client_factory import LLMClientFactory
     from infrastructure.base_client import BaseLLMClient
+    from app.batch_translation_service import BatchTranslationService, BatchSummary
 
 logger = setup_logger(__name__)
 
@@ -74,6 +76,8 @@ class AppService:
         self.translation_service: Optional[TranslationService] = None
         self.glossary_service: Optional[SimpleGlossaryService] = None # Renamed from pronoun_service
         self.chunk_service = ChunkService()
+        # 배치 번역 클라이언트 생성 함수 (API 키 → GeminiBatchClient). None이면 기본 구현, 테스트에서 교체한다.
+        self.batch_client_factory: Optional[Callable[[str], Any]] = None
 
         # === 비동기 마이그레이션: Lock 제거, Task 객체 기반 상태 관리 ===
         # 기존 상태 플래그 제거 (asyncio는 단일 스레드)
@@ -652,7 +656,8 @@ class AppService:
         progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
         tqdm_file_stream: Optional[Any] = None,
-        retranslate_failed_only: bool = False
+        retranslate_failed_only: bool = False,
+        translation_mode_override: Optional[str] = None
     ) -> None:
         """
         비동기 번역 시작 (GUI에서 @asyncSlot()으로 호출)
@@ -663,6 +668,7 @@ class AppService:
         :param status_callback: 상태 변경 콜백
         :param tqdm_file_stream: 진행률 표시 스트림
         :param retranslate_failed_only: 실패한 청크만 재번역
+        :param translation_mode_override: 설정 대신 쓸 번역 모드 (배치 미완료 청크를 실시간으로 마무리할 때 "standard")
         :raises BtgServiceException: 이미 번역 중인 경우
         """
         # 이미 실행 중이면 예외 발생
@@ -711,7 +717,8 @@ class AppService:
                 progress_callback,
                 status_callback,
                 tqdm_file_stream,
-                retranslate_failed_only
+                retranslate_failed_only,
+                translation_mode_override
             ),
             name="translation_main"
         )
@@ -816,7 +823,8 @@ class AppService:
         progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
         tqdm_file_stream: Optional[Any] = None,
-        retranslate_failed_only: bool = False
+        retranslate_failed_only: bool = False,
+        translation_mode_override: Optional[str] = None
     ) -> None:
         """
         비동기 번역 메인 로직
@@ -840,8 +848,15 @@ class AppService:
         input_file_path_obj = Path(input_file_path)
         final_output_file_path_obj = Path(output_file_path)
         
-        translation_mode = self.config.get("translation_mode", "standard")
+        translation_mode = translation_mode_override or self.config.get("translation_mode", "standard")
         logger.info(f"비동기 번역 시작 (모드: {translation_mode}): {input_file_path} → {output_file_path}")
+
+        # 🚀 배치 모드: 제출하거나, 진행 중인 작업을 조회·수거한다 (결과는 최대 24시간 뒤)
+        if translation_mode == "batch":
+            await self._do_batch_translation_async(
+                input_file_path_obj, final_output_file_path_obj, progress_callback, status_callback
+            )
+            return
 
         # 🚀 EPUB 모드 특수 처리
         if translation_mode == "epub" or input_file_path_obj.suffix.lower() == ".epub":
@@ -1096,70 +1111,12 @@ class AppService:
                 tqdm_file_stream
             )
             
-            logger.info("모든 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
-            
-            # 청크 백업 파일에서 최종 병합 대상 로드 및 인덱스 정렬
-            final_merged_chunks: Dict[int, str] = {}
-            try:
-                # 병렬 번역으로 인해 뒤섞인 백업 파일을 정렬하기 위해 먼저 로드
-                final_merged_chunks = load_chunks_from_file(chunked_output_file_path)
-                # 정렬된 순서로 백업 파일 다시 저장 (유저 요청: 인덱스 정렬)
-                save_merged_chunks_to_file(chunked_output_file_path, final_merged_chunks)
-                logger.info(f"청크 백업 파일 인덱스 정렬 완료 및 로드: {len(final_merged_chunks)}개 청크")
-            except Exception as e:
-                logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 및 정렬 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
-            
-            try:
-                # ✅ 후처리 실행 (설정에서 활성화된 경우)
-                if self.config.get("enable_post_processing", True):
-                    logger.info("번역 완료 후 후처리를 시작합니다 (비동기 스레드 위임)...")
-                    try:
-                        # 1. 별도 스레드에서 가공 및 마커 제거까지 한 번에 수행 (이벤트 루프 차단 방지)
-                        final_text = await asyncio.to_thread(
-                            self.post_processing_service.post_process_and_clean_chunks,
-                            final_merged_chunks,
-                            self.config
-                        )
-                        
-                        # 2. 최종 결과물만 단 한 번 저장
-                        await asyncio.to_thread(write_text_file, final_output_file_path_obj, final_text)
-                        logger.info(f"후처리 및 최종 파일 저장 완료 (단일 I/O): {final_output_file_path_obj}")
-                            
-                    except Exception as post_proc_e:
-                        logger.error(f"후처리 중 오류 발생: {post_proc_e}. 기본 병합 저장을 시도합니다.", exc_info=True)
-                        # 후처리 실패 시 원본 병합 결과를 최종 출력 파일에 저장 (인덱스 제거 시도)
-                        await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
-                        await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
-                else:
-                    logger.info("후처리가 설정에서 비활성화되었습니다. 기본 병합 저장을 진행합니다.")
-                    # 후처리가 비활성화된 경우에도 인덱스는 제거하여 저장
-                    await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
-                    await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
-                    logger.info(f"후처리 없이 최종 결과 저장 완료: {final_output_file_path_obj}")
-                
-                # 청크 백업 파일(이어하기용)은 이미 chunked_output_file_path에 존재함
-                logger.info(f"✅ 번역 완료! 최종 파일: {final_output_file_path_obj}, 백업: {chunked_output_file_path}")
-                
-                if status_callback:
-                    status_callback("완료!")
-            except Exception as merge_err:
-                logger.error(f"최종 저장 중 오류: {merge_err}", exc_info=True)
-                if status_callback:
-                    status_callback(f"오류: 최종 저장 실패 - {merge_err}")
-                raise
-            
-            # 메타데이터 최종 업데이트
-            # ⚠️ 중요: 각 청크 처리 중 update_metadata_for_chunk_completion이 파일을 업데이트했으므로,
-            # 메모리의 loaded_metadata가 아닌 최신 파일 내용을 로드하여 status만 업데이트
-            try:
-                current_metadata = load_metadata(metadata_file_path)
-                current_metadata["status"] = "completed"
-                current_metadata["last_updated"] = time.time()
-                save_metadata(metadata_file_path, current_metadata)
-                logger.info(f"메타데이터 최종 업데이트 완료: {len(current_metadata.get('translated_chunks', {}))}개 청크 정보 보존")
-            except Exception as meta_save_err:
-                logger.error(f"메타데이터 최종 저장 중 오류: {meta_save_err}", exc_info=True)
-                # 실패해도 번역 파일은 정상이므로 계속 진행
+            await self._merge_and_finalize_async(
+                chunked_output_file_path,
+                final_output_file_path_obj,
+                metadata_file_path,
+                status_callback,
+            )
             
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소되었습니다")
@@ -1171,6 +1128,208 @@ class AppService:
             if status_callback:
                 status_callback(f"오류: {e}")
             raise
+
+    # ============================================================================
+    # 배치 번역 (Gemini Batch API)
+    # ============================================================================
+
+    def _get_batch_service(self) -> BatchTranslationService:
+        if not isinstance(self.gemini_client, GeminiClient) or not self.translation_service:
+            raise BtgServiceException("배치 번역은 Google Gemini API 프로바이더에서만 사용할 수 있습니다.")
+        service = BatchTranslationService(
+            self.config, self.translation_service, self.gemini_client, self.chunk_service,
+            batch_client_factory=getattr(self, "batch_client_factory", None),
+        )
+        reason = service.check_available()
+        if reason:
+            raise BtgServiceException(reason)
+        return service
+
+    def batch_unavailable_reason(self) -> Optional[str]:
+        """배치 모드를 쓸 수 없는 이유 (GUI 카드 비활성화용). 쓸 수 있으면 None."""
+        try:
+            self._get_batch_service()
+            return None
+        except BtgServiceException as e:
+            return e.message
+
+    def get_batch_summary(self, input_file_path: Union[str, Path]) -> Optional[BatchSummary]:
+        """네트워크 없이 메타데이터만 읽어 배치 현황을 돌려준다. 배치 기록이 없으면 None."""
+        input_path = Path(input_file_path)
+        if not input_path.exists() or not (load_metadata(input_path) or {}).get("batch"):
+            return None
+        try:
+            return self._get_batch_service().summarize(input_path)
+        except BtgServiceException:
+            return None
+
+    def _emit_batch_progress(self, summary: BatchSummary, progress_callback, status_callback) -> None:
+        if status_callback:
+            status_callback(summary.describe())
+        if progress_callback:
+            progress_callback(TranslationJobProgressDTO(
+                total_chunks=summary.total_chunks,
+                processed_chunks=summary.translated,
+                successful_chunks=summary.translated,
+                failed_chunks=len(summary.remaining) if not summary.active else 0,
+                current_status_message=summary.describe(),
+            ))
+
+    async def _finalize_batch_if_complete(self, service: BatchTranslationService, summary: BatchSummary,
+                                          input_path: Path, output_path: Path, status_callback) -> None:
+        if summary.complete and summary.total_chunks > 0:
+            await self._merge_and_finalize_async(
+                service.chunked_output_path(input_path), output_path,
+                get_metadata_file_path(input_path), status_callback,
+            )
+
+    async def _do_batch_translation_async(
+        self,
+        input_path: Path,
+        output_path: Path,
+        progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """
+        시작 버튼의 배치 동작.
+
+        - 진행 중인 작업이 있으면 상태를 조회하고 끝난 결과를 수거한다.
+        - 아직 한 번도 제출하지 않은 청크가 있으면 제출한다.
+        - 모든 청크가 채워지면 표준 모드와 같은 병합·후처리로 최종 파일을 쓴다.
+        미완료(검열·오류) 청크의 재처리는 사용자가 고른다 (실시간 마무리 / 재제출 / 그대로 저장).
+        """
+        service = self._get_batch_service()
+        summary = service.summarize(input_path)
+        if summary.active:
+            summary = await service.refresh_async(input_path, status_callback)
+        else:
+            failed = (load_metadata(input_path) or {}).get("failed_chunks") or {}
+            never_tried = [i for i in summary.remaining if str(i) not in failed] if summary.jobs else summary.remaining
+            if never_tried:
+                summary = await service.submit_async(input_path, status_callback)
+        await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
+        self._emit_batch_progress(summary, progress_callback, status_callback)
+
+    async def refresh_batch_async(
+        self,
+        input_file_path: Union[str, Path],
+        output_file_path: Union[str, Path],
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> BatchSummary:
+        """배치 작업 상태를 조회·수거하고, 모두 끝났으면 최종 파일을 쓴다 (폴링용)."""
+        service = self._get_batch_service()
+        input_path, output_path = Path(input_file_path), Path(output_file_path)
+        summary = await service.refresh_async(input_path, status_callback)
+        await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
+        return summary
+
+    async def resubmit_batch_async(
+        self,
+        input_file_path: Union[str, Path],
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> BatchSummary:
+        """미완료 청크만 모아 다음 라운드 배치로 다시 제출한다."""
+        return await self._get_batch_service().submit_async(Path(input_file_path), status_callback)
+
+    async def cancel_batch_async(
+        self,
+        input_file_path: Union[str, Path],
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> BatchSummary:
+        return await self._get_batch_service().cancel_async(Path(input_file_path), status_callback)
+
+    async def save_batch_with_failures_async(
+        self,
+        input_file_path: Union[str, Path],
+        output_file_path: Union[str, Path],
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> int:
+        """미완료 청크는 실패 표시와 원문으로 채워 최종 파일을 쓴다. 채운 청크 수를 돌려준다."""
+        service = self._get_batch_service()
+        input_path = Path(input_file_path)
+        count = service.write_failure_placeholders(input_path)
+        await self._merge_and_finalize_async(
+            service.chunked_output_path(input_path), Path(output_file_path),
+            get_metadata_file_path(input_path), status_callback,
+        )
+        return count
+
+    async def _merge_and_finalize_async(
+        self,
+        chunked_output_file_path: Path,
+        final_output_file_path_obj: Path,
+        metadata_file_path: Path,
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """
+        청크 백업 파일을 인덱스 순으로 병합하고 후처리해 최종 파일을 쓴 뒤 메타데이터를 완료로 표시한다.
+
+        표준 모드와 배치 모드가 공유한다.
+        """
+        logger.info("모든 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
+        
+        # 청크 백업 파일에서 최종 병합 대상 로드 및 인덱스 정렬
+        final_merged_chunks: Dict[int, str] = {}
+        try:
+            # 병렬 번역으로 인해 뒤섞인 백업 파일을 정렬하기 위해 먼저 로드
+            final_merged_chunks = load_chunks_from_file(chunked_output_file_path)
+            # 정렬된 순서로 백업 파일 다시 저장 (유저 요청: 인덱스 정렬)
+            save_merged_chunks_to_file(chunked_output_file_path, final_merged_chunks)
+            logger.info(f"청크 백업 파일 인덱스 정렬 완료 및 로드: {len(final_merged_chunks)}개 청크")
+        except Exception as e:
+            logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 및 정렬 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
+        
+        try:
+            # ✅ 후처리 실행 (설정에서 활성화된 경우)
+            if self.config.get("enable_post_processing", True):
+                logger.info("번역 완료 후 후처리를 시작합니다 (비동기 스레드 위임)...")
+                try:
+                    # 1. 별도 스레드에서 가공 및 마커 제거까지 한 번에 수행 (이벤트 루프 차단 방지)
+                    final_text = await asyncio.to_thread(
+                        self.post_processing_service.post_process_and_clean_chunks,
+                        final_merged_chunks,
+                        self.config
+                    )
+                    
+                    # 2. 최종 결과물만 단 한 번 저장
+                    await asyncio.to_thread(write_text_file, final_output_file_path_obj, final_text)
+                    logger.info(f"후처리 및 최종 파일 저장 완료 (단일 I/O): {final_output_file_path_obj}")
+                        
+                except Exception as post_proc_e:
+                    logger.error(f"후처리 중 오류 발생: {post_proc_e}. 기본 병합 저장을 시도합니다.", exc_info=True)
+                    # 후처리 실패 시 원본 병합 결과를 최종 출력 파일에 저장 (인덱스 제거 시도)
+                    await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
+                    await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
+            else:
+                logger.info("후처리가 설정에서 비활성화되었습니다. 기본 병합 저장을 진행합니다.")
+                # 후처리가 비활성화된 경우에도 인덱스는 제거하여 저장
+                await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
+                await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
+                logger.info(f"후처리 없이 최종 결과 저장 완료: {final_output_file_path_obj}")
+            
+            # 청크 백업 파일(이어하기용)은 이미 chunked_output_file_path에 존재함
+            logger.info(f"✅ 번역 완료! 최종 파일: {final_output_file_path_obj}, 백업: {chunked_output_file_path}")
+            
+            if status_callback:
+                status_callback("완료!")
+        except Exception as merge_err:
+            logger.error(f"최종 저장 중 오류: {merge_err}", exc_info=True)
+            if status_callback:
+                status_callback(f"오류: 최종 저장 실패 - {merge_err}")
+            raise
+        
+        # 메타데이터 최종 업데이트
+        # ⚠️ 중요: 각 청크 처리 중 update_metadata_for_chunk_completion이 파일을 업데이트했으므로,
+        # 메모리의 loaded_metadata가 아닌 최신 파일 내용을 로드하여 status만 업데이트
+        try:
+            current_metadata = load_metadata(metadata_file_path)
+            current_metadata["status"] = "completed"
+            current_metadata["last_updated"] = time.time()
+            save_metadata(metadata_file_path, current_metadata)
+            logger.info(f"메타데이터 최종 업데이트 완료: {len(current_metadata.get('translated_chunks', {}))}개 청크 정보 보존")
+        except Exception as meta_save_err:
+            logger.error(f"메타데이터 최종 저장 중 오류: {meta_save_err}", exc_info=True)
+            # 실패해도 번역 파일은 정상이므로 계속 진행
 
     async def _translate_chunks_async(
         self,
