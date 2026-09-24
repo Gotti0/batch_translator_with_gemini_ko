@@ -5,6 +5,7 @@ google-genai>=2.24.0
 tzdata  # Windows에서 zoneinfo가 태평양 시간(RPD 리셋 시각)을 찾는 데 필요
 concurrent-log-handler>=0.9.25
 google-api-core
+numpy>=1.24  # 번역 장기기억 벡터 저장·유사도 계산
 
 # GUI 프레임워크 (신규 - PySide6 마이그레이션)
 PySide6>=6.6.0

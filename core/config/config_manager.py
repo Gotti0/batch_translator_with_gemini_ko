@@ -139,6 +139,17 @@ class ConfigManager:
             "pagefold_font_size": 1.0,     # 0.5 ~ 12.0
             "pagefold_service_tier": "standard", # standard, flex, priority
 
+            # 번역 장기기억 (임베딩 기반 번역 예시·의미 기반 용어집)
+            "enable_translation_memory": False,
+            "embedding_provider": "voyage",
+            "voyage_api_key": "",
+            "voyage_model": "voyage-4-lite",
+            "voyage_output_dimension": 512,
+            "memory_top_k": 3,              # 청크당 주입할 번역 예시 수
+            "memory_min_similarity": 0.55,  # 번역 예시 최소 코사인 유사도
+            "memory_glossary_top_k": 5,     # 의미 기반으로 더할 용어 수 (동적 용어집 주입 사용 시)
+            "glossary_min_similarity": 0.6,
+
             # 배치 번역 (Gemini Batch API)
             "batch_api_key": "",  # 배치 제출용 유료 키 (무료 티어 키는 Batch API 사용 불가). 비우면 첫 API 키
             "batch_poll_interval_seconds": 60,

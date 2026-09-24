@@ -446,6 +446,12 @@ class BatchTranslationService:
                 update_metadata_for_chunk_failure(input_file_path, idx, f"{BLOCKED_PREFIX} {e}")
                 return "blocked"
             save_chunk_with_index_to_file(chunked, idx, text)
+            memory = getattr(self.translation_service, "translation_memory", None)
+            if memory is not None:
+                try:
+                    memory.record_translation(idx, source, text)
+                except Exception as e:
+                    logger.warning(f"번역 기억 기록 실패 (청크 {idx}): {e}")
             update_metadata_for_chunk_completion(input_file_path, idx, len(source), len(text))
             return None
         if result.blocked:

@@ -153,6 +153,8 @@ class TranslationService:
         self.glossary_entries_for_injection: List[GlossaryEntryDTO] = [] # Renamed and type changed
         self._cached_glossary_pdf_part: Optional[genai_types.Part] = None
         self.stop_check_callback: Optional[Callable[[], bool]] = None  # 중단 요청 확인용 콜백
+        # 번역 장기기억 (TranslationMemoryStore). AppService가 번역 시작 전에 인덱싱해 넣는다. None이면 사용 안 함.
+        self.translation_memory: Optional[Any] = None
 
         if self.config.get("enable_dynamic_glossary_injection", False) or self.config.get("enable_pagefold", True):
             self._load_glossary_data()
@@ -256,7 +258,8 @@ class TranslationService:
         self._cached_glossary_pdf_part = pdf_part
         return pdf_part
 
-    def _construct_prompt(self, chunk_text: str, glossary_context_override: Optional[str] = None) -> str:
+    def _construct_prompt(self, chunk_text: str, glossary_context_override: Optional[str] = None,
+                          translation_memory_block: str = "") -> str:
         """
         프롬프트 템플릿의 플레이스홀더를 채워 최종 사용자 프롬프트를 생성합니다.
 
@@ -264,6 +267,7 @@ class TranslationService:
             chunk_text: {{slot}}에 주입할 원문
             glossary_context_override: 지정 시 동적 용어집 주입 대신 이 문자열로
                 {{glossary_context}}를 채웁니다 (예: PageFold 용어집 PDF 첨부 안내문).
+            translation_memory_block: {{translation_memory}}에 넣을 번역 기억 블록 (없으면 빈 문자열)
         """
         prompt_template = self.config.get("prompts", "Translate to Korean: {{slot}}")
         if isinstance(prompt_template, (list, tuple)):
@@ -339,10 +343,12 @@ class TranslationService:
                         logger.debug(f"용어집 항목 '{entry.keyword}' 건너뜀: 도착 언어 불일치 (용어집TL: {entry.target_language}, 최종TL: {final_target_lang}).")
                         continue
             
-            logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 용어집 항목 발견.") # 메시지 변경
+            semantic_extra = self._semantic_glossary_entries(chunk_text, relevant_entries_for_chunk)
+            relevant_entries_for_chunk.extend(semantic_extra)
+            logger.debug(f"현재 청크에 대해 {len(relevant_entries_for_chunk)}개의 관련 용어집 항목 발견 (의미 기반 {len(semantic_extra)}개).")
 
             # 1.b. Format the relevant entries for the prompt
-            max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) # Key changed
+            max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) + len(semantic_extra) # Key changed
             max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500) # Key changed
             
             formatted_glossary_context = _format_glossary_for_prompt( # 함수명 변경
@@ -356,6 +362,9 @@ class TranslationService:
                  final_prompt = final_prompt.replace("{{glossary_context}}", "용어집 컨텍스트 없음 (주입 비활성화 또는 해당 항목 없음)") # Placeholder changed
                  logger.debug("동적 용어집 주입 비활성화 또는 플레이스홀더 부재로 '컨텍스트 없음' 메시지 사용.")
         
+        # 2. Translation memory (번역 장기기억 예시)
+        final_prompt = final_prompt.replace("{{translation_memory}}", translation_memory_block or "")
+
         # 3. Main content slot - This should be done *after* all other placeholders are processed.
         final_prompt = final_prompt.replace("{{slot}}", chunk_text)
         return final_prompt
@@ -451,6 +460,43 @@ class TranslationService:
     # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
     # ============================================================================
 
+    def _translation_memory_block(self, text_chunk: str) -> str:
+        """번역 기억에서 이 청크와 의미가 가까운 번역 예시를 찾아 프롬프트 블록으로 만든다."""
+        memory = self.translation_memory
+        if memory is None or not self.config.get("enable_translation_memory", False):
+            return ""
+        try:
+            examples = memory.search_examples(
+                text_chunk,
+                top_k=int(self.config.get("memory_top_k", 3)),
+                min_similarity=float(self.config.get("memory_min_similarity", 0.55)),
+            )
+        except Exception as e:  # 기억 검색 실패는 번역을 막지 않는다
+            logger.warning(f"번역 기억 검색 실패 (기억 없이 번역): {e}")
+            return ""
+        if examples:
+            logger.info(f"번역 기억: 예시 {len(examples)}개 주입 (유사도 {', '.join(f'{e.score:.2f}' for e in examples)})")
+        return memory.format_examples(examples)
+
+    def _semantic_glossary_entries(self, text_chunk: str, already: List[GlossaryEntryDTO]) -> List[GlossaryEntryDTO]:
+        """키워드가 원문에 그대로 없어도 의미가 가까운 용어집 항목을 더한다 (번역 기억 사용 시)."""
+        memory = self.translation_memory
+        if memory is None or not self.config.get("enable_translation_memory", False):
+            return []
+        try:
+            keywords = memory.search_glossary(
+                text_chunk,
+                top_k=int(self.config.get("memory_glossary_top_k", 5)),
+                min_similarity=float(self.config.get("glossary_min_similarity", 0.6)),
+            )
+        except Exception as e:
+            logger.warning(f"의미 기반 용어 검색 실패: {e}")
+            return []
+        final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
+        have = {e.keyword for e in already}
+        by_keyword = {e.keyword: e for e in self.glossary_entries_for_injection if e.target_language == final_target_lang}
+        return [by_keyword[k] for k in keywords if k in by_keyword and k not in have]
+
     def build_generation_config_dict(self) -> Dict[str, Any]:
         """번역 요청의 생성 파라미터 (실시간·배치 공용)."""
         return {
@@ -486,17 +532,21 @@ class TranslationService:
                 # entry.target_language는 _load_glossary_data에서 이미 정규화됨
                 if entry.target_language == final_target_lang and entry.keyword.lower() in chunk_text_lower:
                     relevant_entries.append(entry)
-            
-            max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3)
+            semantic_extra = self._semantic_glossary_entries(text_chunk, relevant_entries)
+            relevant_entries.extend(semantic_extra)
+
+            max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) + len(semantic_extra)
             max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
             glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
             
             if relevant_entries:
                 logger.info(f"API 요청에 주입할 용어집 컨텍스트 생성됨. 내용 일부: {glossary_context_str[:100]}...")
         
+        memory_block = self._translation_memory_block(text_chunk)
         replacements = {
             "{{slot}}": text_chunk,
-            "{{glossary_context}}": glossary_context_str
+            "{{glossary_context}}": glossary_context_str,
+            "{{translation_memory}}": memory_block,
         }
 
         api_prompt_for_gemini_client: List[genai_types.Content] = []
@@ -533,6 +583,7 @@ class TranslationService:
                 user_prompt_str = self._construct_prompt(
                     text_chunk,
                     glossary_context_override=glossary_context_str if pagefold_multimodal_parts else None,
+                    translation_memory_block=memory_block,
                 )
                 api_prompt_for_gemini_client.append(
                     genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
@@ -541,6 +592,7 @@ class TranslationService:
             user_prompt_str = self._construct_prompt(
                 text_chunk,
                 glossary_context_override=glossary_context_str if pagefold_multimodal_parts else None,
+                translation_memory_block=memory_block,
             )
             api_prompt_for_gemini_client = [
                 genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
@@ -572,6 +624,13 @@ class TranslationService:
                 api_system_instruction = f"{api_system_instruction}\n\n{PDF_NEWLINE_MARKER_DIRECTIVE}".strip()
             else:
                 api_system_instruction = PDF_NEWLINE_MARKER_DIRECTIVE
+
+        # 템플릿·프리필 어디에도 {{translation_memory}} 자리가 없으면 시스템 지시문 끝에 붙인다
+        if memory_block and not any(
+            memory_block in (getattr(part, "text", None) or "")
+            for content in api_prompt_for_gemini_client for part in (content.parts or [])
+        ):
+            api_system_instruction = f"{api_system_instruction}\n\n{memory_block}".strip() if api_system_instruction else memory_block
 
         return TranslationRequest(
             contents=api_prompt_for_gemini_client,
