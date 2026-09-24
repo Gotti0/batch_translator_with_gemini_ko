@@ -51,7 +51,7 @@ class ModeCard(QtWidgets.QFrame):
 
         # 커서 설정
         self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setFixedWidth(280)
+        self.setFixedWidth(230)
         self.setFixedHeight(160)
 
     def set_selected(self, selected: bool):
@@ -84,7 +84,8 @@ class ModeSelectorGroup(QtWidgets.QWidget):
         modes = [
             ("standard", "표준 번역", "빠르고 자연스러운 흐름 중심의 일반 텍스트 번역 모드입니다.", "📝"),
             ("integrity", "무결성 번역", "줄 단위 누락 방지 및 정확한 매핑을 보장하는 정밀 번역 모드입니다.", "🔒"),
-            ("epub", "EPUB 번역", "HTML 구조와 스타일을 그대로 유지하며 전자책을 번역하는 모드입니다.", "📚")
+            ("epub", "EPUB 번역", "HTML 구조와 스타일을 그대로 유지하며 전자책을 번역하는 모드입니다.", "📚"),
+            ("batch", "배치 번역", "Gemini Batch API로 비용을 50% 줄입니다. 결과는 최대 24시간 뒤에 받습니다.", "📦"),
         ]
 
         for m_id, title, desc, icon in modes:
@@ -111,3 +112,13 @@ class ModeSelectorGroup(QtWidgets.QWidget):
 
     def get_current_mode(self) -> str:
         return self._current_mode
+
+    def set_mode_available(self, mode_id: str, available: bool, reason: str = "") -> None:
+        """모드 카드를 켜거나 끈다. 선택된 모드가 꺼지면 표준 모드로 돌아간다."""
+        card = self.cards.get(mode_id)
+        if card is None:
+            return
+        card.setEnabled(available)
+        card.setToolTip("" if available else reason)
+        if not available and self._current_mode == mode_id:
+            self._on_card_clicked("standard")

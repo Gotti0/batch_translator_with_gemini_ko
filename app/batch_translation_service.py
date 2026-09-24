@@ -55,7 +55,7 @@ ERROR_PREFIX = "[배치] 오류:"
 
 @dataclass
 class BatchSummary:
-    total_chunks: int
+    total_chunks: int  # 번역 대상(공백이 아닌) 청크 수
     translated: int
     remaining: List[int]
     jobs: List[Dict[str, Any]] = field(default_factory=list)
@@ -253,9 +253,11 @@ class BatchTranslationService:
         remaining = [i for i, c in enumerate(chunks) if c.strip() and str(i) not in translated]
         blocked = sum(1 for i in remaining if str(failed.get(str(i), {}).get("error", "")).startswith(BLOCKED_PREFIX))
         errored = sum(1 for i in remaining if str(failed.get(str(i), {}).get("error", "")).startswith(ERROR_PREFIX))
+        # 공백뿐인 청크는 번역하지 않으므로(표준 모드와 동일) 진행률 분모에서 뺀다
+        translatable = [i for i, c in enumerate(chunks) if c.strip()]
         return BatchSummary(
-            total_chunks=len(chunks),
-            translated=sum(1 for i in range(len(chunks)) if str(i) in translated),
+            total_chunks=len(translatable),
+            translated=sum(1 for i in translatable if str(i) in translated),
             remaining=remaining,
             jobs=list(batch.get("jobs") or []),
             round=int(batch.get("round") or 0),

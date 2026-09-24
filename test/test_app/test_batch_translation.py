@@ -357,3 +357,31 @@ def test_unavailable_reasons(workspace):
     app.config["api_keys"] = []
     app.config["api_key"] = ""
     assert "API 키" in app.batch_unavailable_reason()
+
+
+def test_cli_batch_actions(workspace, capsys):
+    """main_cli의 --batch-submit / --batch-status / --batch-finish keep 흐름"""
+    import argparse
+    from main_cli import run_batch_cli_action
+
+    server = FakeBatchServer()
+    app = _make_app(workspace, server)
+
+    def ns(**kw):
+        base = {"batch_submit": False, "batch_status": False, "batch_finish": None}
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    run_batch_cli_action(app, ns(batch_submit=True), workspace["input"], workspace["output"])
+    assert len(server.jobs) == 1
+
+    run_batch_cli_action(app, ns(batch_status=True), workspace["input"], workspace["output"])
+    assert app.get_batch_summary(workspace["input"]).active
+
+    server.complete(server.only_job(), lambda idx, req: _translate_all(idx, req) if idx else BatchItemResult(key=chunk_key(idx), error="x"))
+    run_batch_cli_action(app, ns(batch_status=True), workspace["input"], workspace["output"])
+    assert "--batch-finish" in capsys.readouterr().out
+
+    run_batch_cli_action(app, ns(batch_finish="keep"), workspace["input"], workspace["output"])
+    text = workspace["output"].read_text(encoding="utf-8")
+    assert "번역1" in text and "[번역 실패:" in text
