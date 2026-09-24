@@ -460,23 +460,36 @@ class TranslationService:
     # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
     # ============================================================================
 
-    def _translation_memory_block(self, text_chunk: str) -> str:
-        """번역 기억에서 이 청크와 의미가 가까운 번역 예시를 찾아 프롬프트 블록으로 만든다."""
+    def _recall_memory(self, text_chunk: str):
+        """번역 기억 그래프에서 이 청크에 떠오르는 기억을 가져온다. 기억이 없거나 꺼져 있으면 None."""
         memory = self.translation_memory
         if memory is None or not self.config.get("enable_translation_memory", False):
-            return ""
+            return None
+        return memory.recall(
+            text_chunk,
+            top_k=int(self.config.get("memory_top_k", 3)),
+            min_similarity=float(self.config.get("memory_min_similarity", 0.55)),
+            depth=str(self.config.get("memory_depth", "balanced")),
+            max_entities=int(self.config.get("memory_max_entities", 5)),
+            min_activation=float(self.config.get("memory_min_activation", 0.25)),
+        )
+
+    def _translation_memory_block(self, text_chunk: str) -> str:
+        """떠오른 기억(인물 메모·번역 예시)을 프롬프트 블록으로 만든다."""
         try:
-            examples = memory.search_examples(
-                text_chunk,
-                top_k=int(self.config.get("memory_top_k", 3)),
-                min_similarity=float(self.config.get("memory_min_similarity", 0.55)),
-            )
+            recall = self._recall_memory(text_chunk)
+            if recall is None:
+                return ""
+            block = self.translation_memory.format_recall(recall)
         except Exception as e:  # 기억 검색 실패는 번역을 막지 않는다
             logger.warning(f"번역 기억 검색 실패 (기억 없이 번역): {e}")
             return ""
-        if examples:
-            logger.info(f"번역 기억: 예시 {len(examples)}개 주입 (유사도 {', '.join(f'{e.score:.2f}' for e in examples)})")
-        return memory.format_examples(examples)
+        if recall.episodes or recall.entities:
+            logger.info(
+                f"번역 기억: 예시 {len(recall.episodes)}개, 인물 {len(recall.entities)}개 주입 "
+                f"(점화 {', '.join(f'{r.activation:.2f}' for r in recall.episodes + recall.entities)})"
+            )
+        return block
 
     def _semantic_glossary_entries(self, text_chunk: str, already: List[GlossaryEntryDTO]) -> List[GlossaryEntryDTO]:
         """키워드가 원문에 그대로 없어도 의미가 가까운 용어집 항목을 더한다 (번역 기억 사용 시)."""
@@ -489,6 +502,9 @@ class TranslationService:
                 top_k=int(self.config.get("memory_glossary_top_k", 5)),
                 min_similarity=float(self.config.get("glossary_min_similarity", 0.6)),
             )
+            recall = self._recall_memory(text_chunk)
+            if recall is not None:  # 연결을 따라 떠오른 캐논(용어)도 더한다
+                keywords += [k for k in recall.canon_keywords if k not in keywords]
         except Exception as e:
             logger.warning(f"의미 기반 용어 검색 실패: {e}")
             return []

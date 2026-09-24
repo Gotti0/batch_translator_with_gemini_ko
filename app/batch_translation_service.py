@@ -145,6 +145,8 @@ class BatchTranslationService:
         self.gemini_client = gemini_client
         self.chunk_service = chunk_service
         self._batch_client_factory = batch_client_factory or (lambda key: GeminiBatchClient(key))
+        # 청크 하나가 번역되어 수거될 때 호출 (idx, 원문, 번역문). 번역 기억 기록에 쓴다.
+        self.on_chunk_translated: Optional[Callable[[int, str, str], None]] = None
 
     # ------------------------------------------------------------------
     # 경로·설정
@@ -446,12 +448,8 @@ class BatchTranslationService:
                 update_metadata_for_chunk_failure(input_file_path, idx, f"{BLOCKED_PREFIX} {e}")
                 return "blocked"
             save_chunk_with_index_to_file(chunked, idx, text)
-            memory = getattr(self.translation_service, "translation_memory", None)
-            if memory is not None:
-                try:
-                    memory.record_translation(idx, source, text)
-                except Exception as e:
-                    logger.warning(f"번역 기억 기록 실패 (청크 {idx}): {e}")
+            if self.on_chunk_translated is not None:
+                self.on_chunk_translated(idx, source, text)  # 번역 기억 기록 (AppService)
             update_metadata_for_chunk_completion(input_file_path, idx, len(source), len(text))
             return None
         if result.blocked:

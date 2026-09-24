@@ -194,8 +194,9 @@ def test_semantic_glossary_entries_added_when_memory_enabled(client, config):
     ]
     memory = MagicMock()
     memory.search_glossary.return_value = ["リリア", "없는키워드"]
-    memory.search_examples.return_value = []
-    memory.format_examples.return_value = ""
+    from domain.memory_graph import MemoryRecall
+    memory.recall.return_value = MemoryRecall(None, [], [], [])
+    memory.format_recall.return_value = ""
     service.translation_memory = memory
 
     text = _texts(service.build_translation_request("勇者が来た").contents[0])[0]
