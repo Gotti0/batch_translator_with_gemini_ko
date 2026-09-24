@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 from google.genai import types as genai_types
 
 from core.dtos import GlossaryEntryDTO
-from domain.translation_service import TranslationService
+from domain.translation_service import PAGEFOLD_GLOSSARY_NOTICE, TranslationService
 from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException
 from utils.pdf_packer import PDF_NEWLINE_MARKER_DIRECTIVE
 
@@ -105,6 +105,8 @@ def test_pagefold_glossary_pdf_and_directive(client, config):
 
     assert req.multimodal_parts and req.multimodal_parts[0].inline_data.mime_type == "application/pdf"
     assert req.system_instruction == PDF_NEWLINE_MARKER_DIRECTIVE
+    # {{glossary_context}}에는 PDF 첨부 안내문이 들어간다
+    assert PAGEFOLD_GLOSSARY_NOTICE in _texts(req.contents[0])[0]
     # 같은 세션에서는 같은 PDF 파트 객체를 재사용한다 (배치에서 중복 업로드를 피하는 근거)
     assert service.build_translation_request("別の文").multimodal_parts[0] is req.multimodal_parts[0]
 

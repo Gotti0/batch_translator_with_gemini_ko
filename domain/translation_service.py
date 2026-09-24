@@ -133,6 +133,10 @@ def _inject_slots_into_history(
     
     return new_history, replacement_occurred
 
+# PageFold로 전체 용어집 PDF를 첨부할 때 {{glossary_context}}에 채우는 안내문
+PAGEFOLD_GLOSSARY_NOTICE = "참조용 전체 용어집이 첨부된 고밀도 PDF 문서에 수록되어 있습니다. PDF에 명시된 용어 번역 지침을 최우선으로 일관되게 준수하세요."
+
+
 @dataclass
 class TranslationRequest:
     """청크 하나를 번역하기 위한 요청 구성요소."""
@@ -252,7 +256,15 @@ class TranslationService:
         self._cached_glossary_pdf_part = pdf_part
         return pdf_part
 
-    def _construct_prompt(self, chunk_text: str) -> str:
+    def _construct_prompt(self, chunk_text: str, glossary_context_override: Optional[str] = None) -> str:
+        """
+        프롬프트 템플릿의 플레이스홀더를 채워 최종 사용자 프롬프트를 생성합니다.
+
+        Args:
+            chunk_text: {{slot}}에 주입할 원문
+            glossary_context_override: 지정 시 동적 용어집 주입 대신 이 문자열로
+                {{glossary_context}}를 채웁니다 (예: PageFold 용어집 PDF 첨부 안내문).
+        """
         prompt_template = self.config.get("prompts", "Translate to Korean: {{slot}}")
         if isinstance(prompt_template, (list, tuple)):
             prompt_template = prompt_template[0] if prompt_template else "Translate to Korean: {{slot}}"
@@ -288,8 +300,12 @@ class TranslationService:
             current_source_lang_for_glossary_filtering = config_fallback_lang
             logger.warning(f"번역 출발 언어가 유효하게 설정되지 않았거나 'auto'가 아닙니다. 폴백 언어 '{current_source_lang_for_glossary_filtering}'를 용어집 필터링에 사용.")
 
+        # 0. Glossary context override (예: PageFold 용어집 PDF 첨부 시 안내문)
+        if glossary_context_override is not None:
+            if "{{glossary_context}}" in final_prompt:
+                final_prompt = final_prompt.replace("{{glossary_context}}", glossary_context_override)
         # 1. Dynamic Glossary Injection
-        if self.config.get("enable_dynamic_glossary_injection", False) and \
+        elif self.config.get("enable_dynamic_glossary_injection", False) and \
            self.glossary_entries_for_injection and \
            "{{glossary_context}}" in final_prompt: # Placeholder changed
             
@@ -457,7 +473,7 @@ class TranslationService:
             glossary_pdf = self._get_pagefold_glossary_pdf_part()
             if glossary_pdf is not None:
                 pagefold_multimodal_parts = [glossary_pdf]
-                glossary_context_str = "참조용 전체 용어집이 첨부된 고밀도 PDF 문서에 수록되어 있습니다. PDF에 명시된 용어 번역 지침을 최우선으로 일관되게 준수하세요."
+                glossary_context_str = PAGEFOLD_GLOSSARY_NOTICE
         
         if not pagefold_multimodal_parts and self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
             logger.info("용어집 컨텍스트 주입 활성화됨 (청크 내 관련 키워드 체크).")
@@ -514,12 +530,18 @@ class TranslationService:
                     )
             else:
                 api_prompt_for_gemini_client = injected_history
-                user_prompt_str = self._construct_prompt(text_chunk)
+                user_prompt_str = self._construct_prompt(
+                    text_chunk,
+                    glossary_context_override=glossary_context_str if pagefold_multimodal_parts else None,
+                )
                 api_prompt_for_gemini_client.append(
                     genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
                 )
         else:
-            user_prompt_str = self._construct_prompt(text_chunk)
+            user_prompt_str = self._construct_prompt(
+                text_chunk,
+                glossary_context_override=glossary_context_str if pagefold_multimodal_parts else None,
+            )
             api_prompt_for_gemini_client = [
                 genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
             ]
@@ -1017,7 +1039,7 @@ class TranslationService:
                 glossary_pdf = self._get_pagefold_glossary_pdf_part()
                 if glossary_pdf is not None:
                     integrity_multimodal_parts = [glossary_pdf]
-                    glossary_context_str = "참조용 전체 용어집이 첨부된 고밀도 PDF 문서에 수록되어 있습니다. PDF에 명시된 용어 번역 지침을 최우선으로 일관되게 준수하세요."
+                    glossary_context_str = PAGEFOLD_GLOSSARY_NOTICE
                     sys_instr = f"{sys_instr}\n\n{PDF_NEWLINE_MARKER_DIRECTIVE}".strip()
 
             if not integrity_multimodal_parts and self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
@@ -1065,14 +1087,20 @@ class TranslationService:
                         )
                 else:
                     api_prompt_for_gemini_client = injected_history
-                    user_prompt_str = self._construct_prompt(chunk_json_str)
+                    user_prompt_str = self._construct_prompt(
+                        chunk_json_str,
+                        glossary_context_override=glossary_context_str if integrity_multimodal_parts else None,
+                    )
                     if integrity_prompt_suffix not in user_prompt_str:
                         user_prompt_str += integrity_prompt_suffix
                     api_prompt_for_gemini_client.append(
                         genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
                     )
             else:
-                user_prompt_str = self._construct_prompt(chunk_json_str)
+                user_prompt_str = self._construct_prompt(
+                    chunk_json_str,
+                    glossary_context_override=glossary_context_str if integrity_multimodal_parts else None,
+                )
                 if integrity_prompt_suffix not in user_prompt_str:
                     user_prompt_str += integrity_prompt_suffix
                 api_prompt_for_gemini_client = [
