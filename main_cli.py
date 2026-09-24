@@ -226,6 +226,11 @@ def parse_arguments():
     batch_action.add_argument("--batch-finish", choices=["realtime", "resubmit", "keep"],
                               help="수거 후 남은 청크 처리: realtime=실시간 번역, resubmit=배치 재제출, keep=실패 표시로 저장")
 
+    memory_group = parser.add_argument_group('번역 장기기억 (Voyage 임베딩)')
+    memory_group.add_argument("--translation-memory", action="store_true",
+                              help="이전에 번역한 비슷한 문단을 예시로 넣어 호칭·말투를 일관되게 유지합니다 (원문이 Voyage로 전송됩니다).")
+    memory_group.add_argument("--voyage-api-key", type=str, default=None, help="Voyage API 키 (config의 voyage_api_key를 덮어씁니다)")
+
     config_override_group = parser.add_argument_group('Configuration Overrides')
     config_override_group.add_argument("--novel-language-override", type=str, help="설정 파일의 'novel_language' 값을 덮어씁니다. (--novel-language와 동일)")
     config_override_group.add_argument("--novel-language-fallback-override", type=str, help="설정 파일의 'novel_language_fallback' 값을 덮어씁니다.")
@@ -310,6 +315,14 @@ def main():
             config_changed_by_cli = True
         if args.max_glossary_chars_injection is not None: # Arg name changed
             cli_overrides["max_glossary_chars_per_chunk_injection"] = args.max_glossary_chars_injection # Key changed
+            config_changed_by_cli = True
+
+        # 번역 장기기억
+        if args.translation_memory:
+            cli_overrides["enable_translation_memory"] = True
+            config_changed_by_cli = True
+        if args.voyage_api_key:
+            cli_overrides["voyage_api_key"] = args.voyage_api_key
             config_changed_by_cli = True
 
         # CLI 인자 --novel-language와 --novel-language-override 둘 다 novel_language 설정을 변경
