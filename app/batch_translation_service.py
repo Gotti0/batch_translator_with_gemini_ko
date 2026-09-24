@@ -155,7 +155,19 @@ class BatchTranslationService:
         # 표준 모드와 같은 백업 파일 (AppService._do_translation_async와 동일한 규칙)
         return input_file_path.parent / f"{input_file_path.stem}_translated_chunked.txt"
 
+    def _batch_key(self) -> Optional[str]:
+        key = self.config.get("batch_api_key")
+        return key.strip() if isinstance(key, str) and key.strip() else None
+
     def _api_keys(self) -> List[str]:
+        """제출·조회에 쓸 수 있는 키 (배치 전용 키가 있으면 맨 앞)."""
+        keys = self._rotation_keys()
+        batch_key = self._batch_key()
+        if batch_key:
+            keys = [batch_key] + [k for k in keys if k != batch_key]
+        return keys
+
+    def _rotation_keys(self) -> List[str]:
         keys = self.config.get("api_keys") or []
         if isinstance(keys, str):
             keys = [keys]
@@ -179,7 +191,8 @@ class BatchTranslationService:
         reason = self.check_available()
         if reason:
             raise BtgServiceException(reason)
-        # 여러 키가 있어도 첫 키로 제출한다. 작업은 제출한 키의 프로젝트에만 보이므로 조회도 이 키로 한다.
+        # 무료 티어 키는 Batch API를 쓸 수 없으므로 배치 전용(유료) 키를 우선한다. 없으면 첫 키.
+        # 작업은 제출한 키의 프로젝트에만 보이므로 조회도 이 키로 한다.
         key = self._api_keys()[0]
         return self._batch_client_factory(key), key_fingerprint(key)
 

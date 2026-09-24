@@ -385,3 +385,20 @@ def test_cli_batch_actions(workspace, capsys):
     run_batch_cli_action(app, ns(batch_finish="keep"), workspace["input"], workspace["output"])
     text = workspace["output"].read_text(encoding="utf-8")
     assert "번역1" in text and "[번역 실패:" in text
+
+
+@pytest.mark.asyncio
+async def test_batch_api_key_is_used_for_submit_and_lookup(workspace):
+    """무료 티어 키(로테이션용)와 별도로 지정한 유료 배치 키로 제출·조회한다"""
+    server = FakeBatchServer()
+    app = _make_app(workspace, server)
+    app.config["batch_api_key"] = "paid-key"
+    await app.start_translation_async(workspace["input"], workspace["output"])
+    assert server.jobs[server.only_job()]["fingerprint"] == key_fingerprint("paid-key")
+    assert load_metadata(workspace["input"])["batch"]["key_fingerprint"] == key_fingerprint("paid-key")
+
+    # 로테이션 키 목록이 비어 있어도 배치 키만으로 조회된다
+    app.config["api_keys"] = []
+    server.complete(server.only_job(), _translate_all)
+    summary = await app.refresh_batch_async(workspace["input"], workspace["output"])
+    assert summary.complete
