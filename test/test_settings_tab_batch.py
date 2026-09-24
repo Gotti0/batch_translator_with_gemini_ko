@@ -127,3 +127,31 @@ class TestBatchKeyField(TestSettingsTabBatch):
         self.svc.config = {"llm_provider": "gemini", "batch_api_key": "loaded-key"}
         self.tab._load_config()
         self.assertEqual(self.tab.batch_key_edit.text(), "loaded-key")
+
+
+class TestMemorySection(TestSettingsTabBatch):
+    def test_memory_settings_saved_loaded_and_toggle(self):
+        self.assertFalse(self.tab.enable_memory_check.isChecked())
+        self.assertFalse(self.tab.voyage_key_edit.isEnabled())
+        self.assertEqual(self.tab.voyage_key_edit.echoMode(), QtWidgets.QLineEdit.Password)
+
+        self.tab.enable_memory_check.setChecked(True)
+        self.assertTrue(self.tab.voyage_key_edit.isEnabled())
+        self.tab.voyage_key_edit.setText(" pa-key ")
+        self.tab.voyage_model_combo.setCurrentText("voyage-4")
+        self.tab.memory_top_k_spin.setValue(2)
+        self.tab._save_config_to_service()
+        saved = self.svc.save_app_config.call_args[0][0]
+        self.assertEqual(
+            (saved["enable_translation_memory"], saved["voyage_api_key"], saved["voyage_model"], saved["memory_top_k"]),
+            (True, "pa-key", "voyage-4", 2),
+        )
+
+        self.svc.config = {"llm_provider": "gemini", "enable_translation_memory": True, "voyage_api_key": "k2",
+                           "voyage_model": "voyage-4-large", "memory_top_k": 5, "memory_min_similarity": 0.7}
+        self.tab._load_config()
+        self.assertTrue(self.tab.enable_memory_check.isChecked())
+        self.assertEqual(self.tab.voyage_key_edit.text(), "k2")
+        self.assertEqual(self.tab.voyage_model_combo.currentText(), "voyage-4-large")
+        self.assertEqual(self.tab.memory_top_k_spin.value(), 5)
+        self.assertAlmostEqual(self.tab.memory_min_sim_spin.value(), 0.7)

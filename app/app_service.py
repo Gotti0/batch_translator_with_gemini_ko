@@ -37,6 +37,9 @@ try:
     from ..utils.post_processing_service import PostProcessingService
     from ..utils.quality_check_service import QualityCheckService
     from app.batch_translation_service import BatchTranslationService, BatchSummary
+    from infrastructure.embedding_client import create_embedding_client
+    from domain.translation_memory import TranslationMemoryStore
+    from utils.lang_utils import normalize_language_code
 except ImportError:
     # Fallback imports
     from infrastructure.file_handler import (
@@ -60,6 +63,9 @@ except ImportError:
     from infrastructure.llm_client_factory import LLMClientFactory
     from infrastructure.base_client import BaseLLMClient
     from app.batch_translation_service import BatchTranslationService, BatchSummary
+    from infrastructure.embedding_client import create_embedding_client
+    from domain.translation_memory import TranslationMemoryStore
+    from utils.lang_utils import normalize_language_code
 
 logger = setup_logger(__name__)
 
@@ -78,6 +84,8 @@ class AppService:
         self.chunk_service = ChunkService()
         # 배치 번역 클라이언트 생성 함수 (API 키 → GeminiBatchClient). None이면 기본 구현, 테스트에서 교체한다.
         self.batch_client_factory: Optional[Callable[[str], Any]] = None
+        # 임베딩 클라이언트 생성 함수 (설정 → BaseEmbeddingClient). None이면 기본 구현, 테스트에서 교체한다.
+        self.embedding_client_factory: Optional[Callable[[Dict[str, Any]], Any]] = None
 
         # === 비동기 마이그레이션: Lock 제거, Task 객체 기반 상태 관리 ===
         # 기존 상태 플래그 제거 (asyncio는 단일 스레드)
@@ -1100,6 +1108,9 @@ class AppService:
                 save_metadata(metadata_file_path, loaded_metadata)
                 logger.info("번역 시작: 메타데이터 상태를 'in_progress'로 업데이트")
             
+            # 번역 장기기억: 원문·용어집 인덱싱과 이미 번역된 청크 반영 (켜져 있을 때만)
+            await self._prepare_translation_memory_async(input_file_path_obj, all_chunks, status_callback)
+
             # 청크 병렬 처리 (청크 백업 파일에 저장)
             await self._translate_chunks_async(
                 chunks_to_process,
@@ -1128,6 +1139,70 @@ class AppService:
             if status_callback:
                 status_callback(f"오류: {e}")
             raise
+
+    # ============================================================================
+    # 번역 장기기억 (임베딩)
+    # ============================================================================
+
+    async def _prepare_translation_memory_async(
+        self,
+        input_path: Path,
+        chunks: List[str],
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """
+        번역 기억을 준비해 TranslationService에 연결한다.
+
+        원문 문단과 용어집을 임베딩하고(내용이 같으면 캐시 재사용), 청크 백업 파일에 이미 있는 번역을
+        기억에 반영한다. 실패해도 번역은 기억 없이 계속한다.
+        """
+        ts = self.translation_service
+        if ts is not None:
+            ts.translation_memory = None
+        if ts is None or not self.config.get("enable_translation_memory", False):
+            return
+        try:
+            factory = self.embedding_client_factory or create_embedding_client
+            embedder = factory(self.config)
+            store = TranslationMemoryStore.open(input_path, embedder.model, embedder.output_dimension)
+            if status_callback:
+                status_callback("번역 기억 인덱싱 중 (원문·용어집 임베딩)...")
+            await store.index_source_async(chunks, embedder)
+            target = normalize_language_code(self.config.get("target_translation_language", "ko"))
+            glossary = [e for e in (ts.glossary_entries_for_injection or []) if e.target_language == target]
+            await store.index_glossary_async(glossary, embedder)
+
+            chunked = input_path.parent / f"{input_path.stem}_translated_chunked.txt"
+            if chunked.exists():
+                for idx, text in load_chunks_from_file(chunked).items():
+                    if 0 <= idx < len(chunks) and not text.startswith("[번역 실패") and not text.startswith("[타임아웃"):
+                        store.record_translation(idx, chunks[idx], text, save=False)
+                store.save(vectors_changed=False)
+            ts.translation_memory = store
+            info = store.summary()
+            logger.info(f"번역 기억 준비 완료: 문단 {info['paragraphs']}개 (번역됨 {info['translated']}), 용어 {info['glossary']}개")
+        except Exception as e:
+            logger.warning(f"번역 기억을 준비하지 못해 기억 없이 번역합니다: {e}", exc_info=True)
+            if status_callback:
+                status_callback(f"번역 기억 준비 실패 (기억 없이 번역): {e}")
+
+    def _record_translation_memory(self, chunk_index: int, source_text: str, translated_text: str) -> None:
+        memory = getattr(self.translation_service, "translation_memory", None)
+        if memory is None or not translated_text:
+            return
+        try:
+            memory.record_translation(chunk_index, source_text, translated_text)
+        except Exception as e:
+            logger.warning(f"번역 기억 기록 실패 (청크 {chunk_index}): {e}")
+
+    async def check_embedding_health_async(self, config_override: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
+        """임베딩 프로바이더(Voyage) 연결을 점검한다."""
+        cfg = config_override or self.config or {}
+        try:
+            factory = self.embedding_client_factory or create_embedding_client
+            return await factory(cfg).check_health_async()
+        except Exception as e:
+            return False, f"임베딩 클라이언트 생성 또는 점검 실패: {e}"
 
     # ============================================================================
     # 배치 번역 (Gemini Batch API)
@@ -1206,6 +1281,7 @@ class AppService:
             failed = (load_metadata(input_path) or {}).get("failed_chunks") or {}
             never_tried = [i for i in summary.remaining if str(i) not in failed] if summary.jobs else summary.remaining
             if never_tried:
+                await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
                 summary = await service.submit_async(input_path, status_callback)
         await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
         self._emit_batch_progress(summary, progress_callback, status_callback)
@@ -1229,7 +1305,11 @@ class AppService:
         status_callback: Optional[Callable[[str], None]] = None,
     ) -> BatchSummary:
         """미완료 청크만 모아 다음 라운드 배치로 다시 제출한다."""
-        return await self._get_batch_service().submit_async(Path(input_file_path), status_callback)
+        service = self._get_batch_service()
+        input_path = Path(input_file_path)
+        # 이전 라운드에서 번역된 청크가 번역 기억의 예시가 된다
+        await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
+        return await service.submit_async(input_path, status_callback)
 
     async def cancel_batch_async(
         self,
@@ -1597,6 +1677,7 @@ class AppService:
             self.processed_chunks_count += 1
             if success:
                 self.successful_chunks_count += 1
+                self._record_translation_memory(chunk_index, chunk_text, translated_chunk)
                 # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
                 try:
                     metadata_updated = update_metadata_for_chunk_completion(
@@ -1725,6 +1806,7 @@ class AppService:
             translated_chunks[chunk_idx] = translated_text
             file_handler.save_merged_chunks_to_file(Path(chunked_output_file), translated_chunks)
             
+            self._record_translation_memory(chunk_idx, source_text, translated_text)
             file_handler.update_metadata_for_chunk_completion(
                 input_file,
                 chunk_idx,
@@ -1847,6 +1929,7 @@ class AppService:
             # 파일에 저장
             save_merged_chunks_to_file(translated_chunked_path, translated_chunks)
             
+            self._record_translation_memory(chunk_index, chunk_text, translated_text)
             # 6. 메타데이터 업데이트
             update_metadata_for_chunk_completion(
                 input_file_path_obj,

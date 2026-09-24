@@ -182,3 +182,26 @@ def test_build_generate_config_realtime_vs_batch():
     assert realtime.automatic_function_calling.disable is True
     assert batch.http_options is None
     assert batch.automatic_function_calling is None
+
+
+def test_semantic_glossary_entries_added_when_memory_enabled(client, config):
+    """키워드가 원문에 없어도 번역 기억이 찾은 의미 기반 용어가 용어집 컨텍스트에 더해진다"""
+    config.update({"enable_dynamic_glossary_injection": True, "enable_translation_memory": True})
+    service = TranslationService(client, config)
+    service.glossary_entries_for_injection = [
+        GlossaryEntryDTO(keyword="勇者", translated_keyword="용사", target_language="ko", occurrence_count=3),
+        GlossaryEntryDTO(keyword="リリア", translated_keyword="릴리아", target_language="ko", occurrence_count=2),
+    ]
+    memory = MagicMock()
+    memory.search_glossary.return_value = ["リリア", "없는키워드"]
+    memory.search_examples.return_value = []
+    memory.format_examples.return_value = ""
+    service.translation_memory = memory
+
+    text = _texts(service.build_translation_request("勇者が来た").contents[0])[0]
+    assert "勇者 -> 용사" in text  # 키워드 일치
+    assert "リリア -> 릴리아" in text  # 의미 기반 (원문에 'リリア' 없음)
+
+    config["enable_translation_memory"] = False
+    text = _texts(service.build_translation_request("勇者が来た").contents[0])[0]
+    assert "リリア" not in text

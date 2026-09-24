@@ -458,6 +458,43 @@ class SettingsTabQt(QtWidgets.QWidget):
         safety_form.addRow("최소 청크 크기", self.min_chunk_spin)
 
         # --- PageFold 토큰 최적화 (PDF 압축) ---
+        # --- 번역 장기기억 (Voyage 임베딩) ---
+        self.memory_group = QtWidgets.QGroupBox("번역 장기기억 (Voyage 임베딩)")
+        memory_form = QtWidgets.QFormLayout(self.memory_group)
+        self.enable_memory_check = QtWidgets.QCheckBox("번역 기억 사용")
+        TooltipQt(
+            self.enable_memory_check,
+            "앞에서 번역한 비슷한 문단을 예시로 넣어 호칭·말투·용어를 일관되게 유지합니다.\n"
+            "번역 시작 전에 원문 전체와 용어집을 Voyage AI로 임베딩합니다 (원문이 Voyage로 전송됩니다).\n"
+            "결과는 입력 파일 옆 '<파일명>_memory' 폴더에 저장되어 이어하기 때 다시 임베딩하지 않습니다.",
+        )
+        self.voyage_key_edit = QtWidgets.QLineEdit()
+        self.voyage_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.voyage_key_edit.setPlaceholderText("Voyage API 키 (pa-...)")
+        self.voyage_model_combo = NoWheelComboBox()
+        self.voyage_model_combo.setEditable(True)
+        self.voyage_model_combo.addItems(["voyage-4-lite", "voyage-4", "voyage-4-large"])
+        TooltipQt(self.voyage_model_combo, "voyage-4-lite: 가장 저렴 (1M 토큰당 $0.02).\n4 시리즈끼리는 벡터가 호환됩니다. 모델을 바꾸면 기억을 새로 만듭니다.")
+        self.memory_top_k_spin = NoWheelSpinBox()
+        self.memory_top_k_spin.setRange(0, 10)
+        self.memory_top_k_spin.setValue(3)
+        TooltipQt(self.memory_top_k_spin, "청크마다 넣을 번역 예시 수입니다. 늘릴수록 번역 요청의 입력 토큰이 늘어납니다.")
+        self.memory_min_sim_spin = NoWheelDoubleSpinBox()
+        self.memory_min_sim_spin.setRange(0.0, 1.0)
+        self.memory_min_sim_spin.setSingleStep(0.05)
+        self.memory_min_sim_spin.setDecimals(2)
+        self.memory_min_sim_spin.setValue(0.55)
+        TooltipQt(self.memory_min_sim_spin, "이보다 유사도가 낮은 문단은 예시로 쓰지 않습니다.")
+        self.memory_test_btn = QtWidgets.QPushButton("Voyage 연결 테스트")
+        memory_key_row = QtWidgets.QHBoxLayout()
+        memory_key_row.addWidget(self.voyage_key_edit, 1)
+        memory_key_row.addWidget(self.memory_test_btn)
+        memory_form.addRow(self.enable_memory_check)
+        memory_form.addRow("Voyage API 키", self._wrap(memory_key_row))
+        memory_form.addRow("임베딩 모델", self.voyage_model_combo)
+        memory_form.addRow("예시 수", self.memory_top_k_spin)
+        memory_form.addRow("최소 유사도", self.memory_min_sim_spin)
+
         pagefold_group = QtWidgets.QGroupBox("PageFold 토큰 최적화")
         pagefold_form = QtWidgets.QFormLayout(pagefold_group)
 
@@ -570,6 +607,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         layout.addWidget(prefill_group)
         layout.addWidget(safety_group)
         layout.addWidget(pagefold_group)
+        layout.addWidget(self.memory_group)
         layout.addWidget(self.batch_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.progress_bar)
@@ -597,6 +635,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.auth_check_btn.clicked.connect(self._on_auth_check_clicked)
         self.mode_selector.mode_changed.connect(self._on_mode_changed)
         self.enable_pagefold_check.toggled.connect(self._on_pagefold_toggled)
+        self.enable_memory_check.toggled.connect(self._on_memory_toggled)
+        self.memory_test_btn.clicked.connect(self._on_memory_test_clicked)
         self.batch_refresh_btn.clicked.connect(self._on_batch_refresh_clicked)
         self.batch_cancel_btn.clicked.connect(self._on_batch_cancel_clicked)
         self.batch_realtime_btn.clicked.connect(self._on_batch_realtime_clicked)
@@ -704,6 +744,27 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.model_name_combo.setCurrentText(target_model)
         else:
             self.model_name_combo.setCurrentIndex(0)
+
+    def _on_memory_toggled(self, checked: bool) -> None:
+        for w in (self.voyage_key_edit, self.voyage_model_combo, self.memory_top_k_spin,
+                  self.memory_min_sim_spin, self.memory_test_btn):
+            w.setEnabled(checked)
+
+    @asyncSlot()
+    async def _on_memory_test_clicked(self) -> None:
+        self.memory_test_btn.setEnabled(False)
+        try:
+            cfg = {
+                "embedding_provider": "voyage",
+                "voyage_api_key": self.voyage_key_edit.text().strip(),
+                "voyage_model": self.voyage_model_combo.currentText().strip() or "voyage-4-lite",
+                "voyage_output_dimension": (getattr(self.app_service, "config", {}) or {}).get("voyage_output_dimension", 512),
+            }
+            ok, message = await self.app_service.check_embedding_health_async(cfg)
+            box = QtWidgets.QMessageBox.information if ok else QtWidgets.QMessageBox.warning
+            box(self, "Voyage 연결 테스트", message)
+        finally:
+            self.memory_test_btn.setEnabled(self.enable_memory_check.isChecked())
 
     def _on_pagefold_toggled(self, checked: bool) -> None:
         """PageFold 활성화 여부에 따라 세부 옵션 활성/비활성화"""
@@ -946,6 +1007,14 @@ class SettingsTabQt(QtWidgets.QWidget):
         pf_font_size = float(cfg.get("pagefold_font_size", defaults.get("pagefold_font_size", 1.0)))
         self.pagefold_font_size_spin.setValue(pf_font_size)
         self._on_pagefold_toggled(self.enable_pagefold_check.isChecked())
+
+        # 번역 장기기억 설정 로드
+        self.enable_memory_check.setChecked(bool(cfg.get("enable_translation_memory", defaults.get("enable_translation_memory", False))))
+        self.voyage_key_edit.setText(str(cfg.get("voyage_api_key") or ""))
+        self.voyage_model_combo.setCurrentText(str(cfg.get("voyage_model") or defaults.get("voyage_model") or "voyage-4-lite"))
+        self.memory_top_k_spin.setValue(int(cfg.get("memory_top_k", defaults.get("memory_top_k", 3))))
+        self.memory_min_sim_spin.setValue(float(cfg.get("memory_min_similarity", defaults.get("memory_min_similarity", 0.55))))
+        self._on_memory_toggled(self.enable_memory_check.isChecked())
         
         self.batch_key_edit.setText(str(cfg.get("batch_api_key") or ""))
 
@@ -1018,6 +1087,11 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["enable_pagefold"] = self.enable_pagefold_check.isChecked()
         cfg["pagefold_mode"] = self.pagefold_mode_combo.currentData() or "reference"
         cfg["pagefold_font_size"] = float(self.pagefold_font_size_spin.value())
+        cfg["enable_translation_memory"] = self.enable_memory_check.isChecked()
+        cfg["voyage_api_key"] = self.voyage_key_edit.text().strip()
+        cfg["voyage_model"] = self.voyage_model_combo.currentText().strip() or "voyage-4-lite"
+        cfg["memory_top_k"] = int(self.memory_top_k_spin.value())
+        cfg["memory_min_similarity"] = float(self.memory_min_sim_spin.value())
         # self.app_service.config = cfg  # 직접 할당 제거 (save_app_config 내부에서 처리됨)
         try:
             self.app_service.save_app_config(cfg)
