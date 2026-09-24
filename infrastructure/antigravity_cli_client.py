@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 from typing import Any, Dict, List, Optional, Union
@@ -112,6 +113,61 @@ class AntigravityCliClient(BaseLLMClient):
             return f"System Instructions:\n{system_instruction.strip()}\n\nUser Input:\n{body}"
         return body
 
+    @staticmethod
+    def _strip_code_fence(text: str) -> str:
+        """
+        모델 응답에서 JSON 문자열을 추출하고 코드 블록이나 앞뒤 설명을 제거합니다.
+        """
+        t = text.strip()
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", t, re.IGNORECASE)
+        if fence_match:
+            candidate = fence_match.group(1).strip()
+            if candidate:
+                return candidate
+
+        first_bracket = min(
+            (pos for pos in (t.find('['), t.find('{')) if pos != -1),
+            default=-1
+        )
+        if first_bracket != -1:
+            last_bracket = max(t.rfind(']'), t.rfind('}'))
+            if last_bracket > first_bracket:
+                return t[first_bracket : last_bracket + 1].strip()
+
+        if t.startswith("```"):
+            t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+            if t.rstrip().endswith("```"):
+                t = t.rstrip()[:-3]
+        return t.strip()
+
+    @staticmethod
+    def _extract_json_data(text: str) -> Any:
+        """
+        모델 응답에서 JSON 데이터(배열 또는 객체)를 견고하게 추출합니다.
+        중복 출력, 코드 블록, 설명 텍스트가 섞여 있어도 첫 번째 완전한 JSON을 디코딩합니다.
+        """
+        t = text.strip()
+        # 1. 마크다운 코드 블록 우선 검사
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", t, re.IGNORECASE)
+        candidates = [fence_match.group(1).strip()] if fence_match else []
+        candidates.append(t)
+
+        decoder = json.JSONDecoder()
+        for cand in candidates:
+            try:
+                return json.loads(cand)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            # raw_decode로 첫 번째 유효 JSON 구조체 탐색
+            for idx in range(len(cand)):
+                if cand[idx] in ('[', '{'):
+                    try:
+                        obj, _ = decoder.raw_decode(cand[idx:])
+                        return obj
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+        raise ValueError("유효한 JSON 구조를 찾을 수 없습니다.")
+
     async def generate_text_async(
         self,
         prompt: Union[str, Any],
@@ -121,63 +177,95 @@ class AntigravityCliClient(BaseLLMClient):
         response_schema: Optional[Any] = None,
         multimodal_parts: Optional[List[Any]] = None,
         **kwargs: Any,
-    ) -> str:
+    ) -> Any:
         """
-        `agy -p - --output-format json` 비동기 서브프로세스를 호출하여 텍스트를 생성합니다.
+        `agy -p @<temp_prompt> --output-format json` 비동기 서브프로세스를 호출하여 텍스트를 생성합니다.
         """
         prompt_str = self._prepare_prompt_string(prompt, system_instruction)
 
-        cmd = [
-            self.cli_path,
-            "-p",
-            "-",
-            "--output-format",
-            "json",
-            "--dangerously-skip-permissions",
-            "--disable-slash-commands",
-        ]
-
-        if self.model_name:
-            cmd.extend(["--model", self.model_name])
-
-        if self.effort:
-            cmd.extend(["--effort", self.effort])
-
+        prompt_temp_path = None
         schema_temp_path = None
-        if response_schema is not None:
-            schema_dict = None
-            if hasattr(response_schema, "model_json_schema"):
-                schema_dict = response_schema.model_json_schema()
-            elif isinstance(response_schema, dict):
-                schema_dict = response_schema
-
-            if schema_dict:
-                try:
-                    with tempfile.NamedTemporaryFile(
-                        "w", suffix=".json", delete=False, encoding="utf-8"
-                    ) as f:
-                        json.dump(schema_dict, f, ensure_ascii=False)
-                        schema_temp_path = f.name
-                    cmd.extend(["--json-schema", schema_temp_path])
-                except Exception as e_schema:
-                    logger.warning(f"AGY JSON Schema 임시 파일 생성 실패: {e_schema}")
-
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-
-        logger.debug(f"Antigravity CLI 실행 시작: {' '.join(cmd[:4])} ...")
-
         try:
+            cmd = [
+                self.cli_path,
+                "--output-format",
+                "json",
+                "--dangerously-skip-permissions",
+                "--disable-slash-commands",
+            ]
+
+            if self.model_name:
+                cmd.extend(["--model", self.model_name])
+
+            if self.effort:
+                cmd.extend(["--effort", self.effort])
+
+            gen_config: Dict[str, Any] = dict(kwargs.get("generation_config_dict") or {})
+            if response_schema is None:
+                response_schema = gen_config.get("response_schema")
+            wants_json = response_schema is not None or gen_config.get("response_mime_type") == "application/json"
+
+            if response_schema is not None:
+                schema_dict = None
+                if isinstance(response_schema, dict):
+                    schema_dict = response_schema
+                elif hasattr(response_schema, "model_json_schema"):
+                    schema_dict = response_schema.model_json_schema()
+                else:
+                    try:
+                        from pydantic import TypeAdapter
+
+                        schema_dict = TypeAdapter(response_schema).json_schema()
+                    except Exception as e_adapt:
+                        logger.warning(f"AGY Pydantic TypeAdapter 스키마 변환 실패: {e_adapt}")
+
+                if schema_dict:
+                    # agy CLI의 --json-schema는 최상위 타입이 반드시 object여야 함 (array일 경우 Gemini API 400 에러 발생).
+                    # array 스키마인 경우 {"type": "object", "properties": {"items": ...}, "required": ["items"]}로 래핑
+                    if schema_dict.get("type") == "array":
+                        defs = schema_dict.pop("$defs", None) or schema_dict.pop("definitions", None)
+                        schema_dict = {
+                            "type": "object",
+                            "properties": {
+                                "items": schema_dict,
+                            },
+                            "required": ["items"],
+                        }
+                        if defs:
+                            schema_dict["$defs"] = defs
+                        prompt_str += "\n\nCRITICAL: You MUST output the results inside the 'items' array of the JSON response."
+
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            "w", suffix=".json", delete=False, encoding="utf-8"
+                        ) as f:
+                            json.dump(schema_dict, f, ensure_ascii=False)
+                            schema_temp_path = f.name
+                        cmd.extend(["--json-schema", schema_temp_path])
+                    except Exception as e_schema:
+                        logger.warning(f"AGY JSON Schema 임시 파일 생성 실패: {e_schema}")
+
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as pf:
+                pf.write(prompt_str)
+                prompt_temp_path = pf.name
+
+            cmd.extend(["-p", f"@{prompt_temp_path}"])
+
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+
+            logger.debug(f"Antigravity CLI 실행 시작: {' '.join(cmd[:4])} ...")
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
-                stdin=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
 
             stdout_data, stderr_data = await asyncio.wait_for(
-                proc.communicate(input=prompt_str.encode("utf-8")),
+                proc.communicate(),
                 timeout=self.timeout_seconds,
             )
 
@@ -199,21 +287,69 @@ class AntigravityCliClient(BaseLLMClient):
                     f"Antigravity CLI 실행 실패 (code {proc.returncode}): {err_msg}"
                 )
 
-            # JSON 출력 파싱 시도
+            # JSON 출력 파싱 시도 (AGY 래퍼 형식: {"status": "SUCCESS", "response": "...", "structured_output": ...})
+            resp_content = stdout_text
+            agy_structured_output = None
             try:
                 data = json.loads(stdout_text)
                 if isinstance(data, dict):
                     if data.get("status") == "ERROR":
                         raise BtgApiClientException(
-                            f"Antigravity CLI 응답 오류: {data.get('response') or stdout_text}"
+                            f"Antigravity CLI 응답 오류: {data.get('response') or data.get('error') or stdout_text}"
                         )
+                    agy_structured_output = data.get("structured_output")
                     resp = data.get("response")
                     if resp is not None:
-                        return str(resp).strip()
+                        resp_content = str(resp).strip()
             except json.JSONDecodeError:
                 pass
 
-            return stdout_text
+            if not wants_json:
+                return resp_content
+
+            # 구조화 출력 모드: agy가 직접 반환한 structured_output 우선 사용 또는 지능형 JSON 추출
+            try:
+                parsed = None
+                if agy_structured_output is not None:
+                    # agy_structured_output이 유효한 비어있지 않은 데이터인 경우 우선 채택
+                    if isinstance(agy_structured_output, dict):
+                        for k in ("items", "units", "terms"):
+                            if k in agy_structured_output and isinstance(agy_structured_output[k], list) and agy_structured_output[k]:
+                                parsed = agy_structured_output[k]
+                                break
+                        if parsed is None and any(agy_structured_output.values()):
+                            parsed = agy_structured_output
+                    elif isinstance(agy_structured_output, list) and agy_structured_output:
+                        parsed = agy_structured_output
+
+                if parsed is None:
+                    try:
+                        parsed = self._extract_json_data(resp_content)
+                    except Exception:
+                        if agy_structured_output is not None:
+                            parsed = agy_structured_output
+                        else:
+                            raise
+
+                if isinstance(parsed, dict):
+                    if "units" in parsed and isinstance(parsed["units"], list):
+                        parsed = parsed["units"]
+                    elif "items" in parsed and isinstance(parsed["items"], list):
+                        parsed = parsed["items"]
+                    elif "terms" in parsed and isinstance(parsed["terms"], list):
+                        parsed = parsed["terms"]
+
+                if response_schema is not None and not isinstance(response_schema, dict):
+                    try:
+                        from pydantic import TypeAdapter
+
+                        return TypeAdapter(response_schema).validate_python(parsed)
+                    except Exception as e_validate:
+                        logger.warning(f"AGY 응답 Pydantic 스키마 검증 실패, 파싱된 JSON 반환: {e_validate}")
+                return parsed
+            except Exception as e_parse:
+                logger.warning(f"AGY JSON 파싱 실패 ({e_parse}), 원문 반환: {resp_content[:200]}")
+                return resp_content
 
         except asyncio.TimeoutError as e:
             logger.error(f"Antigravity CLI 실행 시간 초과 ({self.timeout_seconds}초)")
@@ -229,11 +365,12 @@ class AntigravityCliClient(BaseLLMClient):
                 f"Antigravity CLI 실행 파일을 찾을 수 없습니다: {self.cli_path}", original_exception=e
             ) from e
         finally:
-            if schema_temp_path and os.path.exists(schema_temp_path):
-                try:
-                    os.remove(schema_temp_path)
-                except OSError:
-                    pass
+            for p in (prompt_temp_path, schema_temp_path):
+                if p and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
     async def list_models_async(self) -> List[str]:
         """`agy models` 명령어를 호출하여 동적으로 지원 모델 목록 반환"""
