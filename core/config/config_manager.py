@@ -139,6 +139,10 @@ class ConfigManager:
             "pagefold_font_size": 1.0,     # 0.5 ~ 12.0
             "pagefold_service_tier": "standard", # standard, flex, priority
 
+            # 배치 번역 (Gemini Batch API)
+            "batch_poll_interval_seconds": 60,
+            "batch_max_request_bytes": 18_000_000,  # 인라인 요청 한도 20MB에 여유를 둔 작업당 크기
+
             # 멀티 프로바이더 설정
             "llm_provider": "gemini",  # gemini, claude_cli, codex_cli, antigravity_cli, openai_compatible, ollama
             "claude_cli_path": "claude",
