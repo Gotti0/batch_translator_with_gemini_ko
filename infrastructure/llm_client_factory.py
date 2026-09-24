@@ -15,6 +15,7 @@ from infrastructure.claude_cli_client import ClaudeCliClient
 from infrastructure.codex_cli_client import CodexCliClient
 from infrastructure.antigravity_cli_client import AntigravityCliClient
 from infrastructure.OpenAICompatibleClient import OpenAICompatibleClient
+from infrastructure.ollama_client import OllamaClient, DEFAULT_OLLAMA_BASE_URL
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -31,6 +32,7 @@ class LLMClientFactory:
         "codex_cli",
         "antigravity_cli",
         "openai_compatible",
+        "ollama",
     ]
 
     @classmethod
@@ -105,6 +107,17 @@ class LLMClientFactory:
                 default_model=model_name,
                 requests_per_minute=rpm,
                 request_timeout=timeout,
+            )
+
+        elif provider == "ollama":
+            logger.info("LLMClientFactory: OllamaClient 생성")
+            return OllamaClient(
+                base_url=config.get("ollama_base_url") or DEFAULT_OLLAMA_BASE_URL,
+                model_name=config.get("ollama_model"),
+                api_key=config.get("ollama_api_key") or None,
+                num_ctx=config.get("ollama_num_ctx", 16384),
+                keep_alive=config.get("ollama_keep_alive"),
+                timeout_seconds=float(config.get("api_timeout", 600.0)),
             )
 
         else:

@@ -55,6 +55,22 @@ class TestLLMClientFactory(unittest.TestCase):
         self.assertEqual(client.provider_name, "antigravity_cli")
         self.assertFalse(client.supports_pagefold)
 
+    def test_create_ollama_client(self):
+        from infrastructure.ollama_client import OllamaClient
+        cfg = {
+            "llm_provider": "ollama",
+            "ollama_base_url": "http://gpu-box:11434/v1",
+            "ollama_model": "qwen3:14b",
+            "ollama_num_ctx": 32768,
+        }
+        client = LLMClientFactory.create_client(cfg)
+        self.assertIsInstance(client, OllamaClient)
+        self.assertEqual(client.provider_name, "ollama")
+        self.assertFalse(client.supports_pagefold)
+        self.assertEqual(client.base_url, "http://gpu-box:11434")
+        self.assertEqual(client.model_name, "qwen3:14b")
+        self.assertEqual(client.num_ctx, 32768)
+
 
 if __name__ == "__main__":
     unittest.main()

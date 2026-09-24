@@ -190,9 +190,12 @@ class AppService:
             provider = str(self.config.get("llm_provider", "gemini")).lower().strip()
             should_initialize_client = False
 
-            if provider in ("claude_cli", "codex_cli"):
+            if provider in ("claude_cli", "codex_cli", "antigravity_cli"):
                 should_initialize_client = True
                 logger.info(f"로컬 CLI 런타임 프로바이더 활성화: {provider}")
+            elif provider == "ollama":
+                should_initialize_client = True
+                logger.info("Ollama 프로바이더 활성화")
             elif provider == "openai_compatible":
                 if self.config.get("openai_compatible_base_url"):
                     should_initialize_client = True
@@ -265,13 +268,29 @@ class AppService:
             logger.error(f"설정 저장 중 오류 발생: {e}")
             raise BtgConfigException(f"설정 저장 오류: {e}", original_exception=e) from e
 
-    async def get_available_models(self) -> List[Dict[str, Any]]:
-        if not self.gemini_client:
+    async def get_available_models(self, config_override: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        사용 가능한 모델 목록을 조회합니다.
+
+        Args:
+            config_override: 저장되지 않은 UI 설정으로 조회할 때 사용할 설정 딕셔너리.
+                None이면 현재 초기화된 클라이언트를 사용합니다.
+        """
+        client = self.gemini_client
+        if config_override is not None:
+            try:
+                client = LLMClientFactory.create_client(
+                    config=config_override,
+                    requests_per_minute=config_override.get("requests_per_minute"),
+                )
+            except Exception as e:
+                raise BtgServiceException(f"모델 조회용 클라이언트 생성 실패: {e}", original_exception=e) from e
+        if not client:
             logger.error("모델 목록 조회 실패: Gemini 클라이언트가 초기화되지 않았습니다.")
             raise BtgServiceException("Gemini 클라이언트가 초기화되지 않았습니다. API 키 또는 Vertex AI 설정을 확인하세요.")
         logger.info("사용 가능한 모델 목록 조회 서비스 호출됨.")
         try:
-            models_data = await self.gemini_client.list_models_async()
+            models_data = await client.list_models_async()
             result = []
             for m in models_data:
                 if isinstance(m, dict):
