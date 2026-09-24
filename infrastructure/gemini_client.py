@@ -574,6 +574,108 @@ class GeminiClient(BaseLLMClient):
             logger.info(f"API 호출이 취소됨: {model_name}")
             raise
 
+    @staticmethod
+    def build_sdk_contents(
+        prompt: Union[str, List[genai_types.Content]],
+        multimodal_parts: Optional[List[genai_types.Part]] = None,
+    ) -> List[genai_types.Content]:
+        """프롬프트와 멀티모달 파트를 SDK `contents`로 조립한다 (실시간·배치 공용)."""
+        if isinstance(prompt, str):
+            parts = []
+            if multimodal_parts:
+                parts.extend(multimodal_parts)
+            parts.append(genai_types.Part.from_text(text=prompt))
+            contents = [genai_types.Content(role="user", parts=parts)]
+        elif isinstance(prompt, list) and all(isinstance(item, genai_types.Content) for item in prompt):
+            contents = list(prompt)
+            if multimodal_parts:
+                first_user = next((c for c in contents if c.role == "user"), None)
+                if first_user and hasattr(first_user, "parts"):
+                    first_user.parts = list(multimodal_parts) + list(first_user.parts or [])
+                else:
+                    contents.insert(0, genai_types.Content(role="user", parts=list(multimodal_parts)))
+        else:
+            raise ValueError("프롬프트는 문자열 또는 Content 객체의 리스트여야 합니다.")
+        return contents
+
+    def build_generate_config(
+        self,
+        effective_model_name: str,
+        generation_config_dict: Optional[Dict[str, Any]] = None,
+        thinking_budget: Optional[int] = None,
+        system_instruction_text: Optional[str] = None,
+        multimodal_parts: Optional[List[genai_types.Part]] = None,
+        safety_settings_list_of_dicts: Optional[List[Dict[str, Any]]] = None,
+        for_batch: bool = False,
+    ) -> genai_types.GenerateContentConfig:
+        """
+        요청 설정(thinking, 안전 설정 OFF, PageFold 해상도, 시스템 지시문)을 조립한다.
+
+        실시간 호출과 배치 요청이 같은 설정을 쓰도록 한곳에서 만든다.
+        `for_batch=True`이면 클라이언트 측 전용 값(http_options, AFC)을 넣지 않는다.
+        """
+        final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
+        if not for_batch and 'http_options' not in final_generation_config_params:
+            final_generation_config_params['http_options'] = self.http_options
+    
+        if multimodal_parts and "media_resolution" not in final_generation_config_params:
+            if hasattr(genai_types, "MediaResolution"):
+                final_generation_config_params["media_resolution"] = genai_types.MediaResolution.MEDIA_RESOLUTION_LOW
+
+        if system_instruction_text and system_instruction_text.strip():
+            final_generation_config_params['system_instruction'] = system_instruction_text
+    
+        # 항상 OFF으로 안전 설정 강제 적용
+        if safety_settings_list_of_dicts:
+            logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
+    
+        # Thinking config 관련 필드를 미리 제거 (GenerateContentConfig에서 허용되지 않음)
+        thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
+        thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
+    
+        # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
+        check_name = effective_model_name.lower()
+        thinking_config = None
+    
+        if "gemini-3" in check_name:
+            # Gemini 3.0: thinking_level만 사용
+            # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
+            # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
+            level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
+            thinking_config = genai_types.ThinkingConfig(thinking_level=level)
+            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
+        
+        elif "gemini-2.5" in check_name:
+            # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
+            if thinking_budget is not None:
+                budget = thinking_budget
+            else:
+                budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
+            thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
+            logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
+        
+        if thinking_config:
+            final_generation_config_params['thinking_config'] = thinking_config
+    
+        forced_safety_settings = [
+            genai_types.SafetySetting(category=c, threshold=genai_types.HarmBlockThreshold.BLOCK_NONE)
+            for c in [
+                genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+            ]
+        ]
+        final_generation_config_params['safety_settings'] = forced_safety_settings
+
+        # function calling을 쓰지 않으므로 AFC를 끈다 (SDK 2.x의 AFC 경고·호출마다 찍히는 INFO 로그 방지).
+        # AFC와 http_options는 SDK가 호출하는 쪽에서만 쓰는 값이라 배치 요청에는 넣지 않는다.
+        if not for_batch:
+            final_generation_config_params['automatic_function_calling'] = genai_types.AutomaticFunctionCallingConfig(disable=True)
+
+        return genai_types.GenerateContentConfig(**final_generation_config_params)
+
     async def _generate_text_async_impl(
         self,
         prompt: Union[str, List[genai_types.Content]],
@@ -597,22 +699,7 @@ class GeminiClient(BaseLLMClient):
         is_api_key_mode_for_norm = self.auth_mode == "API_KEY" and bool(self.current_api_key) and not os.environ.get("GOOGLE_API_KEY")
         effective_model_name = self._normalize_model_name(model_name, for_api_key_mode=is_api_key_mode_for_norm)
         
-        if isinstance(prompt, str):
-            parts = []
-            if multimodal_parts:
-                parts.extend(multimodal_parts)
-            parts.append(genai_types.Part.from_text(text=prompt))
-            final_sdk_contents = [genai_types.Content(role="user", parts=parts)]
-        elif isinstance(prompt, list) and all(isinstance(item, genai_types.Content) for item in prompt):
-            final_sdk_contents = list(prompt)
-            if multimodal_parts:
-                first_user = next((c for c in final_sdk_contents if c.role == "user"), None)
-                if first_user and hasattr(first_user, "parts"):
-                    first_user.parts = list(multimodal_parts) + list(first_user.parts or [])
-                else:
-                    final_sdk_contents.insert(0, genai_types.Content(role="user", parts=list(multimodal_parts)))
-        else:
-            raise ValueError("프롬프트는 문자열 또는 Content 객체의 리스트여야 합니다.")
+        final_sdk_contents = self.build_sdk_contents(prompt, multimodal_parts)
 
         # 키는 실제로 보내는 순간(슬롯 안)에 고른다. 대기 중에 미리 고르면 대기열의 요청이 모두
         # 같은 키를 집는다. 재시도는 같은 키로 보내고, 키 전환은 할당량 소진·요청 오류 때만 한다.
@@ -646,65 +733,14 @@ class GeminiClient(BaseLLMClient):
 
                     logger.info(f"모델 '{effective_model_name}'에 텍스트 생성 요청 (시도: {policy.attempt + 1}/{max_retries + 1})")
                 
-                    final_generation_config_params = generation_config_dict.copy() if generation_config_dict else {}
-                    if 'http_options' not in final_generation_config_params:
-                        final_generation_config_params['http_options'] = self.http_options
-                
-                    if multimodal_parts and "media_resolution" not in final_generation_config_params:
-                        if hasattr(genai_types, "MediaResolution"):
-                            final_generation_config_params["media_resolution"] = genai_types.MediaResolution.MEDIA_RESOLUTION_LOW
-
-                    if system_instruction_text and system_instruction_text.strip():
-                        final_generation_config_params['system_instruction'] = system_instruction_text
-                
-                    # 항상 OFF으로 안전 설정 강제 적용
-                    if safety_settings_list_of_dicts:
-                        logger.warning("safety_settings_list_of_dicts가 제공되었지만, 안전 설정이 모든 카테고리에 대해 OFF으로 강제 적용되어 무시됩니다.")
-                
-                    # Thinking config 관련 필드를 미리 제거 (GenerateContentConfig에서 허용되지 않음)
-                    thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
-                    thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
-                
-                    # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
-                    check_name = effective_model_name.lower()
-                    thinking_config = None
-                
-                    if "gemini-3" in check_name:
-                        # Gemini 3.0: thinking_level만 사용
-                        # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
-                        # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
-                        level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
-                        thinking_config = genai_types.ThinkingConfig(thinking_level=level)
-                        logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
-                    
-                    elif "gemini-2.5" in check_name:
-                        # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
-                        if thinking_budget is not None:
-                            budget = thinking_budget
-                        else:
-                            budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
-                        thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
-                        logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
-                    
-                    if thinking_config:
-                        final_generation_config_params['thinking_config'] = thinking_config
-                
-                    forced_safety_settings = [
-                        genai_types.SafetySetting(category=c, threshold=genai_types.HarmBlockThreshold.BLOCK_NONE)
-                        for c in [
-                            genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            genai_types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                        ]
-                    ]
-                    final_generation_config_params['safety_settings'] = forced_safety_settings
-
-                    # function calling을 쓰지 않으므로 AFC를 끈다 (SDK 2.x의 AFC 경고·호출마다 찍히는 INFO 로그 방지)
-                    final_generation_config_params['automatic_function_calling'] = genai_types.AutomaticFunctionCallingConfig(disable=True)
-
-                    sdk_generation_config = genai_types.GenerateContentConfig(**final_generation_config_params) if final_generation_config_params else None
+                    sdk_generation_config = self.build_generate_config(
+                        effective_model_name,
+                        generation_config_dict,
+                        thinking_budget=thinking_budget,
+                        system_instruction_text=system_instruction_text,
+                        multimodal_parts=multimodal_parts,
+                        safety_settings_list_of_dicts=safety_settings_list_of_dicts,
+                    )
                 
                     text_content_from_api: Optional[str] = None
                     # API 호출 결과(성공·503·기타)를 서킷브레이커에 기록한다

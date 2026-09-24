@@ -1096,70 +1096,12 @@ class AppService:
                 tqdm_file_stream
             )
             
-            logger.info("모든 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
-            
-            # 청크 백업 파일에서 최종 병합 대상 로드 및 인덱스 정렬
-            final_merged_chunks: Dict[int, str] = {}
-            try:
-                # 병렬 번역으로 인해 뒤섞인 백업 파일을 정렬하기 위해 먼저 로드
-                final_merged_chunks = load_chunks_from_file(chunked_output_file_path)
-                # 정렬된 순서로 백업 파일 다시 저장 (유저 요청: 인덱스 정렬)
-                save_merged_chunks_to_file(chunked_output_file_path, final_merged_chunks)
-                logger.info(f"청크 백업 파일 인덱스 정렬 완료 및 로드: {len(final_merged_chunks)}개 청크")
-            except Exception as e:
-                logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 및 정렬 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
-            
-            try:
-                # ✅ 후처리 실행 (설정에서 활성화된 경우)
-                if self.config.get("enable_post_processing", True):
-                    logger.info("번역 완료 후 후처리를 시작합니다 (비동기 스레드 위임)...")
-                    try:
-                        # 1. 별도 스레드에서 가공 및 마커 제거까지 한 번에 수행 (이벤트 루프 차단 방지)
-                        final_text = await asyncio.to_thread(
-                            self.post_processing_service.post_process_and_clean_chunks,
-                            final_merged_chunks,
-                            self.config
-                        )
-                        
-                        # 2. 최종 결과물만 단 한 번 저장
-                        await asyncio.to_thread(write_text_file, final_output_file_path_obj, final_text)
-                        logger.info(f"후처리 및 최종 파일 저장 완료 (단일 I/O): {final_output_file_path_obj}")
-                            
-                    except Exception as post_proc_e:
-                        logger.error(f"후처리 중 오류 발생: {post_proc_e}. 기본 병합 저장을 시도합니다.", exc_info=True)
-                        # 후처리 실패 시 원본 병합 결과를 최종 출력 파일에 저장 (인덱스 제거 시도)
-                        await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
-                        await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
-                else:
-                    logger.info("후처리가 설정에서 비활성화되었습니다. 기본 병합 저장을 진행합니다.")
-                    # 후처리가 비활성화된 경우에도 인덱스는 제거하여 저장
-                    await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
-                    await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
-                    logger.info(f"후처리 없이 최종 결과 저장 완료: {final_output_file_path_obj}")
-                
-                # 청크 백업 파일(이어하기용)은 이미 chunked_output_file_path에 존재함
-                logger.info(f"✅ 번역 완료! 최종 파일: {final_output_file_path_obj}, 백업: {chunked_output_file_path}")
-                
-                if status_callback:
-                    status_callback("완료!")
-            except Exception as merge_err:
-                logger.error(f"최종 저장 중 오류: {merge_err}", exc_info=True)
-                if status_callback:
-                    status_callback(f"오류: 최종 저장 실패 - {merge_err}")
-                raise
-            
-            # 메타데이터 최종 업데이트
-            # ⚠️ 중요: 각 청크 처리 중 update_metadata_for_chunk_completion이 파일을 업데이트했으므로,
-            # 메모리의 loaded_metadata가 아닌 최신 파일 내용을 로드하여 status만 업데이트
-            try:
-                current_metadata = load_metadata(metadata_file_path)
-                current_metadata["status"] = "completed"
-                current_metadata["last_updated"] = time.time()
-                save_metadata(metadata_file_path, current_metadata)
-                logger.info(f"메타데이터 최종 업데이트 완료: {len(current_metadata.get('translated_chunks', {}))}개 청크 정보 보존")
-            except Exception as meta_save_err:
-                logger.error(f"메타데이터 최종 저장 중 오류: {meta_save_err}", exc_info=True)
-                # 실패해도 번역 파일은 정상이므로 계속 진행
+            await self._merge_and_finalize_async(
+                chunked_output_file_path,
+                final_output_file_path_obj,
+                metadata_file_path,
+                status_callback,
+            )
             
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소되었습니다")
@@ -1171,6 +1113,83 @@ class AppService:
             if status_callback:
                 status_callback(f"오류: {e}")
             raise
+
+    async def _merge_and_finalize_async(
+        self,
+        chunked_output_file_path: Path,
+        final_output_file_path_obj: Path,
+        metadata_file_path: Path,
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """
+        청크 백업 파일을 인덱스 순으로 병합하고 후처리해 최종 파일을 쓴 뒤 메타데이터를 완료로 표시한다.
+
+        표준 모드와 배치 모드가 공유한다.
+        """
+        logger.info("모든 청크 처리 완료. 결과 병합 및 최종 저장 시작...")
+        
+        # 청크 백업 파일에서 최종 병합 대상 로드 및 인덱스 정렬
+        final_merged_chunks: Dict[int, str] = {}
+        try:
+            # 병렬 번역으로 인해 뒤섞인 백업 파일을 정렬하기 위해 먼저 로드
+            final_merged_chunks = load_chunks_from_file(chunked_output_file_path)
+            # 정렬된 순서로 백업 파일 다시 저장 (유저 요청: 인덱스 정렬)
+            save_merged_chunks_to_file(chunked_output_file_path, final_merged_chunks)
+            logger.info(f"청크 백업 파일 인덱스 정렬 완료 및 로드: {len(final_merged_chunks)}개 청크")
+        except Exception as e:
+            logger.error(f"청크 파일 '{chunked_output_file_path}' 로드 및 정렬 중 오류: {e}. 최종 저장이 불안정할 수 있습니다.", exc_info=True)
+        
+        try:
+            # ✅ 후처리 실행 (설정에서 활성화된 경우)
+            if self.config.get("enable_post_processing", True):
+                logger.info("번역 완료 후 후처리를 시작합니다 (비동기 스레드 위임)...")
+                try:
+                    # 1. 별도 스레드에서 가공 및 마커 제거까지 한 번에 수행 (이벤트 루프 차단 방지)
+                    final_text = await asyncio.to_thread(
+                        self.post_processing_service.post_process_and_clean_chunks,
+                        final_merged_chunks,
+                        self.config
+                    )
+                    
+                    # 2. 최종 결과물만 단 한 번 저장
+                    await asyncio.to_thread(write_text_file, final_output_file_path_obj, final_text)
+                    logger.info(f"후처리 및 최종 파일 저장 완료 (단일 I/O): {final_output_file_path_obj}")
+                        
+                except Exception as post_proc_e:
+                    logger.error(f"후처리 중 오류 발생: {post_proc_e}. 기본 병합 저장을 시도합니다.", exc_info=True)
+                    # 후처리 실패 시 원본 병합 결과를 최종 출력 파일에 저장 (인덱스 제거 시도)
+                    await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
+                    await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
+            else:
+                logger.info("후처리가 설정에서 비활성화되었습니다. 기본 병합 저장을 진행합니다.")
+                # 후처리가 비활성화된 경우에도 인덱스는 제거하여 저장
+                await asyncio.to_thread(save_merged_chunks_to_file, final_output_file_path_obj, final_merged_chunks)
+                await asyncio.to_thread(self.post_processing_service.remove_chunk_indexes_from_final_file, final_output_file_path_obj)
+                logger.info(f"후처리 없이 최종 결과 저장 완료: {final_output_file_path_obj}")
+            
+            # 청크 백업 파일(이어하기용)은 이미 chunked_output_file_path에 존재함
+            logger.info(f"✅ 번역 완료! 최종 파일: {final_output_file_path_obj}, 백업: {chunked_output_file_path}")
+            
+            if status_callback:
+                status_callback("완료!")
+        except Exception as merge_err:
+            logger.error(f"최종 저장 중 오류: {merge_err}", exc_info=True)
+            if status_callback:
+                status_callback(f"오류: 최종 저장 실패 - {merge_err}")
+            raise
+        
+        # 메타데이터 최종 업데이트
+        # ⚠️ 중요: 각 청크 처리 중 update_metadata_for_chunk_completion이 파일을 업데이트했으므로,
+        # 메모리의 loaded_metadata가 아닌 최신 파일 내용을 로드하여 status만 업데이트
+        try:
+            current_metadata = load_metadata(metadata_file_path)
+            current_metadata["status"] = "completed"
+            current_metadata["last_updated"] = time.time()
+            save_metadata(metadata_file_path, current_metadata)
+            logger.info(f"메타데이터 최종 업데이트 완료: {len(current_metadata.get('translated_chunks', {}))}개 청크 정보 보존")
+        except Exception as meta_save_err:
+            logger.error(f"메타데이터 최종 저장 중 오류: {meta_save_err}", exc_info=True)
+            # 실패해도 번역 파일은 정상이므로 계속 진행
 
     async def _translate_chunks_async(
         self,

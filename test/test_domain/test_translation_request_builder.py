@@ -1,0 +1,182 @@
+"""
+실시간·배치 번역이 공유하는 요청 조립 함수 테스트.
+
+- TranslationService.build_translation_request / finalize_translation_text
+- GeminiClient.build_sdk_contents / build_generate_config
+"""
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from google.genai import types as genai_types
+
+from core.dtos import GlossaryEntryDTO
+from domain.translation_service import TranslationService
+from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException
+from utils.pdf_packer import PDF_NEWLINE_MARKER_DIRECTIVE
+
+
+def _texts(content):
+    return [p.text for p in content.parts if getattr(p, "text", None) is not None]
+
+
+@pytest.fixture
+def client():
+    c = MagicMock()
+    c.supports_pagefold = True
+    c.generate_text_async = AsyncMock(return_value="번역 결과")
+    return c
+
+
+@pytest.fixture
+def config():
+    return {
+        "model_name": "gemini-3.8-flash",
+        "target_translation_language": "ko",
+        "enable_pagefold": False,
+        "enable_prefill_translation": False,
+        "prompts": "Translate: {{slot}}\nGlossary: {{glossary_context}}",
+        "temperature": 0.5,
+        "top_p": 0.8,
+        "thinking_level": "low",
+    }
+
+
+def test_plain_prompt(client, config):
+    service = TranslationService(client, config)
+    req = service.build_translation_request("原文です")
+
+    assert len(req.contents) == 1
+    assert req.contents[0].role == "user"
+    assert _texts(req.contents[0]) == ["Translate: 原文です\nGlossary: 용어집 컨텍스트 없음 (주입 비활성화 또는 해당 항목 없음)"]
+    assert req.system_instruction is None
+    assert req.multimodal_parts is None
+
+
+def test_dynamic_glossary_injection(client, config):
+    config["enable_dynamic_glossary_injection"] = True
+    service = TranslationService(client, config)
+    service.glossary_entries_for_injection = [
+        GlossaryEntryDTO(keyword="勇者", translated_keyword="용사", target_language="ko", occurrence_count=3),
+    ]
+    req = service.build_translation_request("勇者が来た")
+    assert "勇者 -> 용사" in _texts(req.contents[0])[0]
+
+
+def test_prefill_history_with_slot(client, config):
+    config.update({
+        "enable_prefill_translation": True,
+        "prefill_system_instruction": "너는 번역가다.",
+        "prefill_cached_history": [
+            {"role": "user", "parts": ["다음을 번역: {{slot}}"]},
+            {"role": "model", "parts": ["네."]},
+        ],
+    })
+    service = TranslationService(client, config)
+    req = service.build_translation_request("原文")
+
+    assert req.system_instruction == "너는 번역가다."
+    assert [c.role for c in req.contents] == ["user", "model", "user"]
+    assert _texts(req.contents[0]) == ["다음을 번역: 原文"]
+    # 마지막이 model이면 이어쓰기를 위해 빈 user 턴을 붙인다
+    assert _texts(req.contents[-1]) == [" "]
+
+
+def test_prefill_history_without_slot_appends_prompt(client, config):
+    config.update({
+        "enable_prefill_translation": True,
+        "prefill_system_instruction": "sys",
+        "prefill_cached_history": [{"role": "user", "parts": ["예시"]}, {"role": "model", "parts": ["예시 번역"]}],
+    })
+    service = TranslationService(client, config)
+    req = service.build_translation_request("原文")
+    assert [c.role for c in req.contents] == ["user", "model", "user"]
+    assert _texts(req.contents[-1])[0].startswith("Translate: 原文")
+
+
+def test_pagefold_glossary_pdf_and_directive(client, config):
+    config["enable_pagefold"] = True
+    config["pagefold_mode"] = "reference"
+    service = TranslationService(client, config)
+    service.glossary_entries_for_injection = [
+        GlossaryEntryDTO(keyword="勇者", translated_keyword="용사", target_language="ko", occurrence_count=3),
+    ]
+    req = service.build_translation_request("勇者が来た")
+
+    assert req.multimodal_parts and req.multimodal_parts[0].inline_data.mime_type == "application/pdf"
+    assert req.system_instruction == PDF_NEWLINE_MARKER_DIRECTIVE
+    # 같은 세션에서는 같은 PDF 파트 객체를 재사용한다 (배치에서 중복 업로드를 피하는 근거)
+    assert service.build_translation_request("別の文").multimodal_parts[0] is req.multimodal_parts[0]
+
+
+def test_pdf_tags_stripped_for_non_pagefold_client(client, config):
+    client.supports_pagefold = False
+    config["prompts"] = "<pdf>참고 자료</pdf>\nTranslate: {{slot}}"
+    service = TranslationService(client, config)
+    req = service.build_translation_request("原文")
+    assert _texts(req.contents[0]) == ["참고 자료\nTranslate: 原文"]
+    assert req.multimodal_parts is None
+
+
+@pytest.mark.asyncio
+async def test_translate_text_async_sends_built_request(client, config):
+    """실시간 경로가 build_translation_request의 결과를 그대로 보낸다"""
+    service = TranslationService(client, config)
+    expected = service.build_translation_request("原文")
+
+    assert await service.translate_text_async("原文") == "번역 결과"
+    kwargs = client.generate_text_async.call_args.kwargs
+    assert [_texts(c) for c in kwargs["prompt"]] == [_texts(c) for c in expected.contents]
+    assert kwargs["system_instruction_text"] == expected.system_instruction
+    assert kwargs["generation_config_dict"] == {"temperature": 0.5, "top_p": 0.8, "thinking_level": "low"}
+
+
+def test_finalize_translation_text(client, config):
+    service = TranslationService(client, config)
+    assert service.finalize_translation_text("원문", "  번역  ") == "번역"
+    with pytest.raises(GeminiContentSafetyException):
+        service.finalize_translation_text("원문", None)
+    with pytest.raises(GeminiContentSafetyException):
+        service.finalize_translation_text("원문", "   ")
+    config["enable_pagefold"] = True
+    assert service.finalize_translation_text("원문", "a\\nb") == "a\nb"
+
+
+def test_build_sdk_contents_prepends_multimodal_parts():
+    pdf = genai_types.Part.from_bytes(data=b"%PDF-1.7", mime_type="application/pdf")
+    contents = GeminiClient.build_sdk_contents("hello", [pdf])
+    assert len(contents) == 1 and contents[0].parts[0] is pdf
+
+    history = [
+        genai_types.Content(role="model", parts=[genai_types.Part.from_text(text="m")]),
+        genai_types.Content(role="user", parts=[genai_types.Part.from_text(text="u")]),
+    ]
+    contents = GeminiClient.build_sdk_contents(history, [pdf])
+    assert contents[1].parts[0] is pdf
+
+
+def test_build_generate_config_realtime_vs_batch():
+    client = GeminiClient(auth_credentials="test_api_key")
+    pdf = genai_types.Part.from_bytes(data=b"%PDF-1.7", mime_type="application/pdf")
+
+    realtime = client.build_generate_config(
+        "gemini-3.8-flash", {"temperature": 0.5, "thinking_level": "low"},
+        system_instruction_text="sys", multimodal_parts=[pdf],
+    )
+    batch = client.build_generate_config(
+        "gemini-3.8-flash", {"temperature": 0.5, "thinking_level": "low"},
+        system_instruction_text="sys", multimodal_parts=[pdf], for_batch=True,
+    )
+
+    for cfg in (realtime, batch):
+        assert cfg.temperature == 0.5
+        assert cfg.system_instruction == "sys"
+        assert cfg.thinking_config.thinking_level.value.lower() == "low"
+        assert cfg.media_resolution == genai_types.MediaResolution.MEDIA_RESOLUTION_LOW
+        assert len(cfg.safety_settings) == 5
+        assert all(s.threshold == genai_types.HarmBlockThreshold.BLOCK_NONE for s in cfg.safety_settings)
+
+    assert realtime.http_options is not None
+    assert realtime.automatic_function_calling.disable is True
+    assert batch.http_options is None
+    assert batch.automatic_function_calling is None
