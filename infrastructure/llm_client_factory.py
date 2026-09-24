@@ -1,0 +1,141 @@
+"""
+LLM Client Factory for Neo Batch Translator (BTG)
+
+설정 딕셔너리(config)의 'llm_provider'에 따라 적절한 BaseLLMClient 인스턴스를
+생성하여 반환합니다.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+from infrastructure.base_client import BaseLLMClient
+from infrastructure.gemini_client import GeminiClient
+from infrastructure.claude_cli_client import ClaudeCliClient
+from infrastructure.codex_cli_client import CodexCliClient
+from infrastructure.antigravity_cli_client import AntigravityCliClient
+from infrastructure.OpenAICompatibleClient import OpenAICompatibleClient
+from infrastructure.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+
+class LLMClientFactory:
+    """
+    공급자 설정에 따라 LLM 클라이언트를 생성하는 팩토리 클래스.
+    """
+
+    SUPPORTED_PROVIDERS = [
+        "gemini",
+        "claude_cli",
+        "codex_cli",
+        "antigravity_cli",
+        "openai_compatible",
+    ]
+
+    @classmethod
+    def create_client(
+        cls,
+        config: Dict[str, Any],
+        auth_credentials: Optional[Any] = None,
+        requests_per_minute: Optional[float] = None,
+    ) -> BaseLLMClient:
+        """
+        설정에 맞는 클라이언트를 생성합니다.
+
+        Args:
+            config: 애플리케이션 설정 딕셔너리
+            auth_credentials: API 키 또는 인증 정보 (선택 사항)
+            requests_per_minute: 분당 요청 제한 수 (선택 사항)
+
+        Returns:
+            BaseLLMClient: 생성된 LLM 클라이언트 인스턴스
+        """
+        provider = str(config.get("llm_provider", "gemini")).lower().strip()
+
+        if provider == "claude_cli":
+            cli_path = config.get("claude_cli_path", "claude")
+            model_name = config.get("claude_cli_model") or config.get("model_name")
+            timeout = int(config.get("api_timeout", 180))
+            api_key = config.get("claude_cli_api_key") or (config.get("api_keys")[0] if config.get("api_keys") else None)
+            logger.info("LLMClientFactory: ClaudeCliClient 생성")
+            return ClaudeCliClient(
+                cli_path=cli_path,
+                model_name=model_name,
+                api_key=api_key,
+                timeout_seconds=timeout,
+            )
+
+        elif provider == "codex_cli":
+            cli_path = config.get("codex_cli_path", "codex")
+            model_name = config.get("codex_cli_model") or config.get("model_name") or "gpt-5.5"
+            timeout = int(config.get("api_timeout", 180))
+            api_key = config.get("codex_cli_api_key") or (config.get("api_keys")[0] if config.get("api_keys") else None)
+            logger.info("LLMClientFactory: CodexCliClient 생성")
+            return CodexCliClient(
+                cli_path=cli_path,
+                model_name=model_name,
+                api_key=api_key,
+                timeout_seconds=timeout,
+            )
+
+        elif provider == "antigravity_cli":
+            cli_path = config.get("antigravity_cli_path", "agy")
+            model_name = config.get("antigravity_cli_model") or config.get("model_name")
+            effort = config.get("antigravity_cli_effort")
+            timeout = int(config.get("api_timeout", 180))
+            logger.info("LLMClientFactory: AntigravityCliClient 생성")
+            return AntigravityCliClient(
+                cli_path=cli_path,
+                model_name=model_name,
+                effort=effort,
+                timeout_seconds=timeout,
+            )
+
+        elif provider == "openai_compatible":
+            base_url = config.get("openai_compatible_base_url", "")
+            api_key = config.get("openai_compatible_api_key", "no-key")
+            model_name = config.get("openai_compatible_model") or config.get("model_name")
+            rpm = requests_per_minute if requests_per_minute is not None else config.get("requests_per_minute")
+            timeout = int(config.get("api_timeout", 60))
+            logger.info("LLMClientFactory: OpenAICompatibleClient 생성")
+            return OpenAICompatibleClient(
+                api_key=api_key,
+                base_url=base_url,
+                default_model=model_name,
+                requests_per_minute=rpm,
+                request_timeout=timeout,
+            )
+
+        else:
+            # 기본값: GeminiClient
+            use_vertex = config.get("use_vertex_ai", False)
+            project = config.get("gcp_project")
+            location = config.get("gcp_location")
+            sa_path = config.get("service_account_file_path")
+
+            if use_vertex and sa_path:
+                creds = sa_path
+            elif auth_credentials is not None:
+                creds = auth_credentials
+            else:
+                creds = config.get("api_keys") or config.get("api_key")
+
+            rpm = (
+                requests_per_minute
+                if requests_per_minute is not None
+                else config.get("requests_per_minute", 2.0)
+            )
+            timeout = float(config.get("api_timeout", 60.0))
+
+            logger.info("LLMClientFactory: GeminiClient 생성")
+            return GeminiClient(
+                auth_credentials=creds,
+                project=project,
+                location=location,
+                requests_per_minute=rpm,
+                api_timeout=timeout,
+                overload_pause_threshold=config.get("overload_pause_threshold", 3),
+                overload_pause_seconds=config.get("overload_pause_seconds", 300.0),
+                overload_max_pause_seconds=config.get("overload_max_pause_seconds", 1800.0),
+            )

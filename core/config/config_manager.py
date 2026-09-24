@@ -133,6 +133,25 @@ class ConfigManager:
             "chunk_size": 10000,
             "enable_post_processing": True,
 
+            # PageFold 토큰 최적화 설정
+            "enable_pagefold": True,
+            "pagefold_mode": "reference",  # reference (용어집/컨텍스트 주입), chunk (원문 청크 PDF화), marked (태그 지정)
+            "pagefold_font_size": 1.0,     # 0.5 ~ 12.0
+            "pagefold_service_tier": "standard", # standard, flex, priority
+
+            # 멀티 프로바이더 설정
+            "llm_provider": "gemini",  # gemini, claude_cli, codex_cli, antigravity_cli, openai_compatible
+            "claude_cli_path": "claude",
+            "claude_cli_model": "default",
+            "codex_cli_path": "codex",
+            "codex_cli_model": "gpt-5.5",
+            "antigravity_cli_path": "agy",
+            "antigravity_cli_model": "default",
+            "antigravity_cli_effort": None,
+            "openai_compatible_base_url": "https://api.openai.com/v1/chat/completions",
+            "openai_compatible_api_key": "",
+            "openai_compatible_model": "gpt-4o",
+
             # 경량화된 용어집 관련 기본 설정
             "glossary_json_path": None, # 용어집 파일 경로
             "glossary_output_json_filename_suffix": "_simple_glossary.json", # 파일명 접미사

@@ -46,8 +46,20 @@ class OpenAICompatibleServerException(OpenAICompatibleApiException):
     """Server-side error (e.g., 500, 503)."""
     pass
 
-class OpenAICompatibleClient:
+import asyncio
+from infrastructure.base_client import BaseLLMClient
+
+
+class OpenAICompatibleClient(BaseLLMClient):
     _DEFAULT_TIMEOUT_SECONDS = 60 # Default timeout for requests
+
+    @property
+    def provider_name(self) -> str:
+        return "openai_compatible"
+
+    @property
+    def supports_pagefold(self) -> bool:
+        return False
 
     def __init__(self,
                  api_key: str,
@@ -321,6 +333,67 @@ class OpenAICompatibleClient:
         finally:
             response.close() # Ensure the connection is closed
             logger.info("Streaming response finished or closed.")
+
+    async def generate_text_async(
+        self,
+        prompt: Union[str, Any],
+        system_instruction: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        response_schema: Optional[Any] = None,
+        multimodal_parts: Optional[List[Any]] = None,
+        **kwargs: Any,
+    ) -> str:
+        """
+        비동기적으로 텍스트 생성을 수행합니다.
+        """
+        gen_config: Dict[str, Any] = {}
+        if temperature is not None:
+            gen_config["temperature"] = temperature
+        if top_p is not None:
+            gen_config["top_p"] = top_p
+        if response_schema is not None:
+            gen_config["response_format"] = {"type": "json_object"}
+
+        model = kwargs.get("model_name") or self.default_model
+
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(
+            None,
+            lambda: self.generate_text(
+                prompt=prompt,
+                model_name=model,
+                generation_config=gen_config,
+                system_instruction_text=system_instruction,
+                stream=False,
+            ),
+        )
+        if isinstance(res, dict):
+            return json.dumps(res, ensure_ascii=False)
+        return str(res)
+
+    async def list_models_async(self) -> List[str]:
+        """사용 가능한 기본 모델 목록 반환"""
+        if self.default_model:
+            return ["default", self.default_model]
+        return ["default", "gpt-4o", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner"]
+
+    async def check_health_async(self) -> tuple[bool, str]:
+        """
+        OpenAI 호환 API 엔드포인트 연결 상태를 점검합니다.
+        """
+        if not self.base_url:
+            return False, "API Base URL이 지정되지 않았습니다."
+        try:
+            test_prompt = "Say 'OK' in one word."
+            response = await asyncio.wait_for(
+                self.generate_text_async(test_prompt),
+                timeout=15,
+            )
+            clean_resp = str(response).replace("\n", " ").strip()
+            return True, f"OpenAI 호환 API 연결 성공 (응답: {clean_resp[:30]})"
+        except Exception as e:
+            return False, f"OpenAI 호환 API 연결 실패: {e}"
 
 
 if __name__ == '__main__':

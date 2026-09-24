@@ -56,6 +56,8 @@ except ImportError:
     from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from utils.post_processing_service import PostProcessingService
     from utils.quality_check_service import QualityCheckService
+    from infrastructure.llm_client_factory import LLMClientFactory
+    from infrastructure.base_client import BaseLLMClient
 
 logger = setup_logger(__name__)
 
@@ -185,43 +187,45 @@ class AppService:
                 if auth_credentials_for_gemini_client is None:
                     logger.warning("API 키가 설정되지 않음")
 
+            provider = str(self.config.get("llm_provider", "gemini")).lower().strip()
             should_initialize_client = False
-            if auth_credentials_for_gemini_client:
-                if isinstance(auth_credentials_for_gemini_client, str) and auth_credentials_for_gemini_client.strip():
-                    should_initialize_client = True
-                elif isinstance(auth_credentials_for_gemini_client, list) and auth_credentials_for_gemini_client:
-                    should_initialize_client = True
-                elif isinstance(auth_credentials_for_gemini_client, dict):
-                    should_initialize_client = True
-            elif use_vertex and not auth_credentials_for_gemini_client and \
-                 (gcp_project_from_config or os.environ.get("GOOGLE_CLOUD_PROJECT")):
+
+            if provider in ("claude_cli", "codex_cli"):
                 should_initialize_client = True
-                logger.info("Vertex AI ADC 모드로 클라이언트 초기화 예정")
+                logger.info(f"로컬 CLI 런타임 프로바이더 활성화: {provider}")
+            elif provider == "openai_compatible":
+                if self.config.get("openai_compatible_base_url"):
+                    should_initialize_client = True
+                    logger.info("OpenAI 호환 API 프로바이더 활성화")
+                else:
+                    logger.warning("OpenAI 호환 API Base URL이 지정되지 않았습니다.")
+            else:
+                # Gemini 공급자
+                if auth_credentials_for_gemini_client:
+                    if isinstance(auth_credentials_for_gemini_client, str) and auth_credentials_for_gemini_client.strip():
+                        should_initialize_client = True
+                    elif isinstance(auth_credentials_for_gemini_client, list) and auth_credentials_for_gemini_client:
+                        should_initialize_client = True
+                    elif isinstance(auth_credentials_for_gemini_client, dict):
+                        should_initialize_client = True
+                elif use_vertex and not auth_credentials_for_gemini_client and \
+                     (gcp_project_from_config or os.environ.get("GOOGLE_CLOUD_PROJECT")):
+                    should_initialize_client = True
+                    logger.info("Vertex AI ADC 모드로 클라이언트 초기화 예정")
 
             if should_initialize_client:
                 try:
-                    project_to_pass_to_client = gcp_project_from_config if gcp_project_from_config and gcp_project_from_config.strip() else None
-                    rpm_value = self.config.get("requests_per_minute")
-                    api_timeout_value = self.config.get("api_timeout", 500.0)
-                    logger.info(f"GeminiClient 초기화: project={project_to_pass_to_client}, RPM={rpm_value}, Timeout={api_timeout_value}s")
-                    self.gemini_client = GeminiClient(
+                    logger.info(f"LLMClientFactory를 통한 클라이언트 초기화 (프로바이더: {provider})")
+                    self.gemini_client = LLMClientFactory.create_client(
+                        config=self.config,
                         auth_credentials=auth_credentials_for_gemini_client,
-                        project=project_to_pass_to_client,
-                        location=gcp_location,
-                        requests_per_minute=rpm_value,
-                        api_timeout=api_timeout_value,
-                        overload_pause_threshold=self.config.get("overload_pause_threshold", 3),
-                        overload_pause_seconds=self.config.get("overload_pause_seconds", 300.0),
-                        overload_max_pause_seconds=self.config.get("overload_max_pause_seconds", 1800.0),
+                        requests_per_minute=self.config.get("requests_per_minute"),
                     )
-                except GeminiInvalidRequestException as e_inv:
-                    logger.error(f"GeminiClient 초기화 실패: {e_inv}")
-                    self.gemini_client = None
                 except Exception as e_client:
-                    logger.error(f"GeminiClient 초기화 오류: {e_client}", exc_info=True)
+                    logger.error(f"{provider} 클라이언트 초기화 오류: {e_client}", exc_info=True)
                     self.gemini_client = None
             else:
-                logger.warning("API 키 또는 Vertex AI 설정이 충분하지 않아 Gemini 클라이언트 초기화를 시도하지 않습니다.")
+                logger.warning(f"설정이 충분하지 않아 {provider} 클라이언트 초기화를 시도하지 않습니다.")
                 self.gemini_client = None
 
             if self.gemini_client:
@@ -267,10 +271,15 @@ class AppService:
             raise BtgServiceException("Gemini 클라이언트가 초기화되지 않았습니다. API 키 또는 Vertex AI 설정을 확인하세요.")
         logger.info("사용 가능한 모델 목록 조회 서비스 호출됨.")
         try:
-            all_models = await self.gemini_client.list_models_async()
-            # 모델 필터링 로직 제거됨
-            logger.info(f"총 {len(all_models)}개의 모델을 API로부터 직접 반환합니다.")
-            return all_models
+            models_data = await self.gemini_client.list_models_async()
+            result = []
+            for m in models_data:
+                if isinstance(m, dict):
+                    result.append(m)
+                else:
+                    result.append({"name": str(m), "short_name": str(m), "display_name": str(m)})
+            logger.info(f"총 {len(result)}개의 모델을 반환합니다.")
+            return result
             
         except BtgApiClientException as e:
             logger.error(f"모델 목록 조회 중 API 오류: {e}")
@@ -278,6 +287,27 @@ class AppService:
         except Exception as e:
             logger.error(f"모델 목록 조회 중 예상치 못한 오류: {e}", exc_info=True) # type: ignore
             raise BtgServiceException(f"모델 목록 조회 중 오류: {e}", original_exception=e) from e
+
+    async def check_llm_health_async(self, config_override: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
+        """
+        지정된(또는 현재 활성화된) LLM 클라이언트의 인증 및 연결 상태를 테스트합니다.
+
+        Args:
+            config_override: 테스트에 사용할 설정 딕셔너리 (None이면 현재 self.config 사용)
+
+        Returns:
+            tuple[bool, str]: (성공 여부, 진단 메시지)
+        """
+        cfg = config_override or self.config or {}
+        try:
+            temp_client = LLMClientFactory.create_client(
+                config=cfg,
+                requests_per_minute=cfg.get("requests_per_minute"),
+            )
+            return await temp_client.check_health_async()
+        except Exception as e:
+            logger.error(f"LLM 헬스체크 중 예외: {e}", exc_info=True)
+            return False, f"클라이언트 생성 또는 점검 실패: {e}"
 
     def extract_glossary(
         self,
