@@ -140,7 +140,7 @@ class ConfigManager:
             "pagefold_service_tier": "standard", # standard, flex, priority
 
             # 멀티 프로바이더 설정
-            "llm_provider": "gemini",  # gemini, claude_cli, codex_cli, antigravity_cli, openai_compatible
+            "llm_provider": "gemini",  # gemini, claude_cli, codex_cli, antigravity_cli, openai_compatible, ollama
             "claude_cli_path": "claude",
             "claude_cli_model": "default",
             "codex_cli_path": "codex",
@@ -151,6 +151,11 @@ class ConfigManager:
             "openai_compatible_base_url": "https://api.openai.com/v1/chat/completions",
             "openai_compatible_api_key": "",
             "openai_compatible_model": "gpt-4o",
+            "ollama_base_url": "http://localhost:11434",
+            "ollama_model": "",
+            "ollama_api_key": "",
+            "ollama_num_ctx": 16384,  # 미지정 시 Ollama 기본값(2K~4K)에서 프롬프트가 잘린다
+            "ollama_keep_alive": None,  # 예: "10m", "-1" (None이면 서버 기본값)
 
             # 경량화된 용어집 관련 기본 설정
             "glossary_json_path": None, # 용어집 파일 경로

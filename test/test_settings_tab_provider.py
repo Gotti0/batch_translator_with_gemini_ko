@@ -156,6 +156,69 @@ class TestSettingsTabProvider(unittest.TestCase):
         self.assertEqual(self.tab.cli_path_edit.text(), "C:\\Codex\\codex.exe")
         self.assertEqual(self.tab.model_name_combo.currentText(), "gpt-5.6-sol")
 
+    def test_switch_to_ollama(self):
+        """Ollama 전환 시 서버 주소·컨텍스트 길이 표시, PageFold 비활성화, 기본 주소 채움"""
+        idx = self.tab.provider_combo.findData("ollama")
+        self.assertNotEqual(idx, -1)
+        self.tab.provider_combo.setCurrentIndex(idx)
+
+        self.assertFalse(self.tab.api_form.isRowVisible(self.tab.cli_path_edit))
+        self.assertTrue(self.tab.api_form.isRowVisible(self.tab.base_url_edit))
+        self.assertTrue(self.tab.api_form.isRowVisible(self.tab.ollama_num_ctx_spin))
+        self.assertIn("선택 사항", self.tab.api_keys_edit.placeholderText())
+        self.assertFalse(self.tab.enable_pagefold_check.isEnabled())
+        # OpenAI 호환 URL이 남아 있으면 Ollama 기본 주소로 바뀐다
+        self.assertEqual(self.tab.base_url_edit.text(), "http://localhost:11434")
+
+        items = [self.tab.model_name_combo.itemText(i) for i in range(self.tab.model_name_combo.count())]
+        self.assertIn("gemma3:12b", items)
+
+        # 다시 OpenAI 호환으로 돌아가면 저장된 URL 복원
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("openai_compatible"))
+        self.assertEqual(self.tab.base_url_edit.text(), "https://api.openai.com/v1/chat/completions")
+        self.assertFalse(self.tab.api_form.isRowVisible(self.tab.ollama_num_ctx_spin))
+
+    def test_save_config_with_ollama(self):
+        idx = self.tab.provider_combo.findData("ollama")
+        self.tab.provider_combo.setCurrentIndex(idx)
+        self.tab.base_url_edit.setText("http://gpu-box:11434")
+        self.tab.model_name_combo.setCurrentText("exaone3.5:32b")
+        self.tab.ollama_num_ctx_spin.setValue(32768)
+
+        self.tab._save_config_to_service()
+
+        saved_cfg = self.mock_app_service.save_app_config.call_args[0][0]
+        self.assertEqual(saved_cfg.get("llm_provider"), "ollama")
+        self.assertEqual(saved_cfg.get("ollama_base_url"), "http://gpu-box:11434")
+        self.assertEqual(saved_cfg.get("ollama_model"), "exaone3.5:32b")
+        self.assertEqual(saved_cfg.get("ollama_num_ctx"), 32768)
+        # OpenAI 호환 설정은 건드리지 않는다
+        self.assertEqual(saved_cfg.get("openai_compatible_base_url"), "https://api.openai.com/v1/chat/completions")
+
+    def test_load_config_with_ollama(self):
+        self.mock_app_service.config = {
+            "llm_provider": "ollama",
+            "ollama_base_url": "http://gpu-box:11434",
+            "ollama_model": "my-finetune:latest",
+            "ollama_num_ctx": 8192,
+            "openai_compatible_base_url": "https://api.deepseek.com/v1/chat/completions",
+        }
+        self.tab._load_config()
+
+        self.assertEqual(self.tab.provider_combo.currentData(), "ollama")
+        self.assertEqual(self.tab.base_url_edit.text(), "http://gpu-box:11434")
+        self.assertEqual(self.tab.model_name_combo.currentText(), "my-finetune:latest")
+        self.assertEqual(self.tab.ollama_num_ctx_spin.value(), 8192)
+
+    def test_ui_config_for_ollama_health_check(self):
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("ollama"))
+        self.tab.model_name_combo.setCurrentText("qwen3:14b")
+        cfg = self.tab._build_provider_config_from_ui()
+        self.assertEqual(cfg["llm_provider"], "ollama")
+        self.assertEqual(cfg["ollama_model"], "qwen3:14b")
+        self.assertEqual(cfg["ollama_base_url"], "http://localhost:11434")
+        self.assertEqual(cfg["ollama_api_key"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

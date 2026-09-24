@@ -190,7 +190,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.provider_combo.addItem("Google Antigravity CLI (로컬 CLI - agy.exe)", "antigravity_cli")
         self.provider_combo.addItem("Anthropic Claude (로컬 CLI - claude.exe)", "claude_cli")
         self.provider_combo.addItem("OpenAI Codex / GPT (로컬 CLI - codex.exe)", "codex_cli")
-        self.provider_combo.addItem("OpenAI 호환 API (DeepSeek, Ollama 등)", "openai_compatible")
+        self.provider_combo.addItem("Ollama (로컬 LLM 서버)", "ollama")
+        self.provider_combo.addItem("OpenAI 호환 API (DeepSeek, vLLM 등)", "openai_compatible")
         TooltipQt(
             self.provider_combo,
             "번역에 사용할 AI 공급자를 선택합니다.\n"
@@ -210,7 +211,23 @@ class SettingsTabQt(QtWidgets.QWidget):
         TooltipQt(self.cli_path_edit, "로컬 CLI 실행 파일 경로 또는 커맨드 이름입니다 (예: claude 또는 codex).")
 
         self.base_url_edit = QtWidgets.QLineEdit("https://api.openai.com/v1/chat/completions")
-        TooltipQt(self.base_url_edit, "OpenAI 호환 API 엔드포인트 URL입니다 (예: http://localhost:11434/v1/chat/completions).")
+        TooltipQt(
+            self.base_url_edit,
+            "OpenAI 호환 API: 채팅 완성 엔드포인트 전체 URL (예: https://api.deepseek.com/v1/chat/completions)\n"
+            "Ollama: 서버 주소 (예: http://localhost:11434)",
+        )
+
+        self.ollama_num_ctx_spin = NoWheelSpinBox()
+        self.ollama_num_ctx_spin.setRange(0, 1048576)
+        self.ollama_num_ctx_spin.setSingleStep(2048)
+        self.ollama_num_ctx_spin.setValue(16384)
+        self.ollama_num_ctx_spin.setSpecialValueText("서버 기본값")
+        TooltipQt(
+            self.ollama_num_ctx_spin,
+            "Ollama 컨텍스트 길이(토큰)입니다.\n"
+            "Ollama 기본값(2K~4K)은 번역 프롬프트보다 짧아 앞부분이 경고 없이 잘립니다.\n"
+            "청크 크기 6,000자 기준 16384 이상을 권장하며, 클수록 VRAM을 더 사용합니다.",
+        )
 
         self.api_keys_edit = QtWidgets.QPlainTextEdit()
         self.api_keys_edit.setPlaceholderText("API 키를 줄바꿈으로 구분하여 입력")
@@ -259,6 +276,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.api_form.addRow("AI 프로바이더", self._wrap(provider_row))
         self.api_form.addRow("CLI 실행 경로", self.cli_path_edit)
         self.api_form.addRow("API Base URL", self.base_url_edit)
+        self.api_form.addRow("컨텍스트 길이", self.ollama_num_ctx_spin)
         self.api_form.addRow("API 키 목록", self.api_keys_edit)
         self.api_form.addRow("Vertex AI", self.use_vertex_check)
         self.api_form.addRow("서비스 계정 JSON", self.sa_row_widget)
@@ -542,9 +560,11 @@ class SettingsTabQt(QtWidgets.QWidget):
         is_codex = (provider == "codex_cli")
         is_agy = (provider == "antigravity_cli")
         is_openai_compat = (provider == "openai_compatible")
+        is_ollama = (provider == "ollama")
 
         self.api_form.setRowVisible(self.cli_path_edit, is_claude or is_codex or is_agy)
-        self.api_form.setRowVisible(self.base_url_edit, is_openai_compat)
+        self.api_form.setRowVisible(self.base_url_edit, is_openai_compat or is_ollama)
+        self.api_form.setRowVisible(self.ollama_num_ctx_spin, is_ollama)
         self.api_form.setRowVisible(self.api_keys_edit, True)
         self.api_form.setRowVisible(self.use_vertex_check, is_gemini)
 
@@ -555,8 +575,10 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.api_keys_edit.setPlaceholderText("선택 사항: ChatGPT Plus 세션 대신 별도 OpenAI API 키(sk-...)를 사용하려면 입력 (비워두면 로컬 구독 세션 사용)")
         elif is_agy:
             self.api_keys_edit.setPlaceholderText("선택 사항: Antigravity CLI는 기본적으로 로그인된 Google 계정 세션을 사용합니다 (비워둘 수 있음)")
+        elif is_ollama:
+            self.api_keys_edit.setPlaceholderText("선택 사항: 인증 프록시나 원격 Ollama에 Bearer 토큰이 필요할 때만 입력 (로컬 Ollama는 비워두세요)")
         elif is_openai_compat:
-            self.api_keys_edit.setPlaceholderText("API 키 입력 (로컬 Ollama 등 인증 불필요 시 비워둘 수 있음)")
+            self.api_keys_edit.setPlaceholderText("API 키 입력 (인증 불필요한 로컬 서버는 비워둘 수 있음)")
         else:
             self.api_keys_edit.setPlaceholderText("API 키를 줄바꿈으로 구분하여 입력 (여러 키 등록 시 자동 로테이션)")
 
@@ -584,7 +606,13 @@ class SettingsTabQt(QtWidgets.QWidget):
                 self.cli_path_edit.setText(saved_path)
         elif is_openai_compat:
             saved_url = cfg.get("openai_compatible_base_url", "https://api.openai.com/v1/chat/completions")
-            if not self.base_url_edit.text().strip():
+            current = self.base_url_edit.text().strip()
+            if not current or current == (cfg.get("ollama_base_url") or "http://localhost:11434"):
+                self.base_url_edit.setText(saved_url)
+        elif is_ollama:
+            saved_url = cfg.get("ollama_base_url") or "http://localhost:11434"
+            current = self.base_url_edit.text().strip()
+            if not current or current == cfg.get("openai_compatible_base_url", "https://api.openai.com/v1/chat/completions"):
                 self.base_url_edit.setText(saved_url)
 
         # PageFold 토글 가능 여부 (Gemini만 지원)
@@ -608,6 +636,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         elif is_agy:
             models = ["default", "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.1-pro-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]
             target_model = cfg.get("antigravity_cli_model", "default")
+        elif is_ollama:
+            models = ["gemma3:12b", "gemma3:27b", "qwen3:14b", "qwen3:32b", "exaone3.5:7.8b", "exaone3.5:32b", "llama3.1:8b"]
+            target_model = cfg.get("ollama_model") or ""
         else:
             models = ["default", "gpt-4o", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner"]
             target_model = cfg.get("openai_compatible_model", "default")
@@ -738,7 +769,14 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.cli_path_edit.setText(str(cfg.get("antigravity_cli_path", defaults.get("antigravity_cli_path", "agy"))))
         else:
             self.cli_path_edit.setText(str(cfg.get("claude_cli_path", defaults.get("claude_cli_path", "claude"))))
-        self.base_url_edit.setText(str(cfg.get("openai_compatible_base_url", defaults.get("openai_compatible_base_url", "https://api.openai.com/v1/chat/completions"))))
+        if provider == "ollama":
+            self.base_url_edit.setText(str(cfg.get("ollama_base_url") or defaults.get("ollama_base_url") or "http://localhost:11434"))
+        else:
+            self.base_url_edit.setText(str(cfg.get("openai_compatible_base_url", defaults.get("openai_compatible_base_url", "https://api.openai.com/v1/chat/completions"))))
+        try:
+            self.ollama_num_ctx_spin.setValue(int(cfg.get("ollama_num_ctx", defaults.get("ollama_num_ctx", 16384)) or 0))
+        except (TypeError, ValueError):
+            self.ollama_num_ctx_spin.setValue(16384)
 
         # 입력/출력 파일 경로 로드
         input_files = cfg.get("input_files", []) or []
@@ -768,6 +806,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             model_val = str(cfg.get("antigravity_cli_model") or defaults.get("antigravity_cli_model", "default"))
         elif provider == "openai_compatible":
             model_val = str(cfg.get("openai_compatible_model") or defaults.get("openai_compatible_model", "default"))
+        elif provider == "ollama":
+            model_val = str(cfg.get("ollama_model") or defaults.get("ollama_model") or "")
         else:
             model_val = str(cfg.get("model_name") or defaults.get("model_name", "gemini-2.0-flash"))
 
@@ -886,6 +926,11 @@ class SettingsTabQt(QtWidgets.QWidget):
             cfg["openai_compatible_model"] = selected_model or "default"
             if api_keys:
                 cfg["openai_compatible_api_key"] = api_keys[0]
+        elif provider == "ollama":
+            cfg["ollama_base_url"] = self.base_url_edit.text().strip() or "http://localhost:11434"
+            cfg["ollama_model"] = selected_model
+            cfg["ollama_api_key"] = api_keys[0] if api_keys else ""
+            cfg["ollama_num_ctx"] = int(self.ollama_num_ctx_spin.value())
         else:
             cfg["model_name"] = selected_model or None
         cfg["temperature"] = self.temperature_slider.value() / 100.0
@@ -1010,6 +1055,36 @@ class SettingsTabQt(QtWidgets.QWidget):
                 f"설정 불러오기 중 오류 발생: {e}"
             )
 
+    def _build_provider_config_from_ui(self) -> dict:
+        """저장하지 않은 현재 UI 상태로 클라이언트 생성용 설정을 만든다 (연결 테스트·모델 조회용)."""
+        provider = self.provider_combo.currentData() or "gemini"
+        api_keys = [line.strip() for line in self.api_keys_edit.toPlainText().splitlines() if line.strip()]
+        return {
+            "llm_provider": provider,
+            "api_keys": api_keys,
+            "api_key": api_keys[0] if api_keys else "",
+            "use_vertex_ai": self.use_vertex_check.isChecked(),
+            "service_account_file_path": self.sa_path_edit.text().strip() or None,
+            "gcp_project": self.gcp_project_edit.text().strip() or None,
+            "gcp_location": self.gcp_location_edit.text().strip() or None,
+            "claude_cli_path": self.cli_path_edit.text().strip() or "claude",
+            "claude_cli_model": self.model_name_combo.currentText().strip() or "default",
+            "claude_cli_api_key": api_keys[0] if (provider == "claude_cli" and api_keys) else None,
+            "codex_cli_path": self.cli_path_edit.text().strip() or "codex",
+            "codex_cli_model": self.model_name_combo.currentText().strip() or "gpt-5.5",
+            "codex_cli_api_key": api_keys[0] if (provider == "codex_cli" and api_keys) else None,
+            "antigravity_cli_path": self.cli_path_edit.text().strip() or "agy",
+            "antigravity_cli_model": self.model_name_combo.currentText().strip() or "default",
+            "openai_compatible_base_url": self.base_url_edit.text().strip(),
+            "openai_compatible_api_key": api_keys[0] if api_keys else "",
+            "openai_compatible_model": self.model_name_combo.currentText().strip() or "default",
+            "model_name": self.model_name_combo.currentText().strip(),
+            "ollama_base_url": self.base_url_edit.text().strip() or "http://localhost:11434",
+            "ollama_model": self.model_name_combo.currentText().strip(),
+            "ollama_api_key": api_keys[0] if (provider == "ollama" and api_keys) else "",
+            "ollama_num_ctx": int(self.ollama_num_ctx_spin.value()),
+        }
+
     @asyncSlot()
     async def _on_auth_check_clicked(self) -> None:
         """현재 UI에 설정된 프로바이더 인증 및 통신 상태를 테스트"""
@@ -1017,30 +1092,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         orig_text = self.auth_check_btn.text()
         self.auth_check_btn.setText("점검 중...")
         try:
-            provider = self.provider_combo.currentData() or "gemini"
-            api_keys = [line.strip() for line in self.api_keys_edit.toPlainText().splitlines() if line.strip()]
-
-            temp_cfg = {
-                "llm_provider": provider,
-                "api_keys": api_keys,
-                "api_key": api_keys[0] if api_keys else "",
-                "use_vertex_ai": self.use_vertex_check.isChecked(),
-                "service_account_file_path": self.sa_path_edit.text().strip() or None,
-                "gcp_project": self.gcp_project_edit.text().strip() or None,
-                "gcp_location": self.gcp_location_edit.text().strip() or None,
-                "claude_cli_path": self.cli_path_edit.text().strip() or "claude",
-                "claude_cli_model": self.model_name_combo.currentText().strip() or "default",
-                "claude_cli_api_key": api_keys[0] if (provider == "claude_cli" and api_keys) else None,
-                "codex_cli_path": self.cli_path_edit.text().strip() or "codex",
-                "codex_cli_model": self.model_name_combo.currentText().strip() or "gpt-5.5",
-                "codex_cli_api_key": api_keys[0] if (provider == "codex_cli" and api_keys) else None,
-                "antigravity_cli_path": self.cli_path_edit.text().strip() or "agy",
-                "antigravity_cli_model": self.model_name_combo.currentText().strip() or "default",
-                "openai_compatible_base_url": self.base_url_edit.text().strip(),
-                "openai_compatible_api_key": api_keys[0] if api_keys else "",
-                "openai_compatible_model": self.model_name_combo.currentText().strip() or "default",
-                "model_name": self.model_name_combo.currentText().strip(),
-            }
+            temp_cfg = self._build_provider_config_from_ui()
 
             if hasattr(self.app_service, "check_llm_health_async"):
                 success, message = await self.app_service.check_llm_health_async(temp_cfg)
@@ -1287,7 +1339,12 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         self._set_model_progress(True)
         try:
-            models = await self.app_service.get_available_models()
+            provider = self.provider_combo.currentData() or "gemini"
+            if provider == "gemini":
+                models = await self.app_service.get_available_models()
+            else:
+                # 저장 전 UI에서 고른 프로바이더·서버 기준으로 조회한다.
+                models = await self.app_service.get_available_models(self._build_provider_config_from_ui())
         except Exception as e:  # pragma: no cover - UI alert path
             self._set_model_progress(False)
             retry = QtWidgets.QMessageBox.question(

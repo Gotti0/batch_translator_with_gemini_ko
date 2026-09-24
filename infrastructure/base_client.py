@@ -55,7 +55,7 @@ class BaseLLMClient(ABC):
     @abstractmethod
     def provider_name(self) -> str:
         """
-        공급자 식별 이름 (예: 'gemini', 'claude_cli', 'codex_cli', 'openai_compatible')
+        공급자 식별 이름 (예: 'gemini', 'claude_cli', 'codex_cli', 'openai_compatible', 'ollama')
         """
         pass
 
