@@ -877,6 +877,8 @@ class AppService:
         if translation_mode == "epub" or input_file_path_obj.suffix.lower() == ".epub":
             if status_callback:
                 status_callback("EPUB 번역 중...")
+            # EPUB은 번역 기억을 쓰지 않는다. 앞 작업의 기억이 남아 섞이지 않게 떼어 둔다
+            self.translation_service.translation_memory = None
             await self.translation_service.translate_epub(input_file_path, output_file_path)
             
             # 메타데이터 영속화 (애플리케이션 레이어 처리)
@@ -934,13 +936,26 @@ class AppService:
                         progress_callback(dto)
 
                 file_content = read_text_file(input_file_path_obj)
+
+                # 번역 기억: 무결성 청크 경계로 인덱싱하고, 이미 끝난 청크(임시 폴더)를 줄 단위로 반영한다
+                integrity_chunks = self.translation_service.split_integrity_chunks(file_content)
+                integrity_temp_dir = self.translation_service.integrity_temp_dir_for(final_output_file_path_obj)
+                await self._prepare_translation_memory_async(
+                    input_file_path_obj,
+                    [self.translation_service.integrity_chunk_text(c) for c in integrity_chunks],
+                    status_callback,
+                    restore=lambda store: self._restore_integrity_memory(store, integrity_chunks, integrity_temp_dir),
+                )
+
                 translated_text = await self.translation_service.translate_text_integrity(
                     file_content,
                     output_path_for_progress=final_output_file_path_obj,
                     progress_callback=integrity_progress_handler,
                     status_callback=status_callback,
-                    tqdm_file_stream=tqdm_file_stream
+                    tqdm_file_stream=tqdm_file_stream,
+                    on_chunk_translated=self._record_integrity_memory,
                 )
+                await self._drain_memory_tasks()
                 write_text_file(final_output_file_path_obj, translated_text)
                 
                 # 📍 완결 후 최종 상태 갱신
@@ -1156,12 +1171,14 @@ class AppService:
         input_path: Path,
         chunks: List[str],
         status_callback: Optional[Callable[[str], None]] = None,
+        restore: Optional[Callable[[TranslationMemoryStore], None]] = None,
     ) -> None:
         """
         번역 기억을 준비해 TranslationService에 연결한다.
 
-        원문 문단과 용어집을 임베딩하고(내용이 같으면 캐시 재사용), 청크 백업 파일에 이미 있는 번역을
-        기억에 반영한다. 실패해도 번역은 기억 없이 계속한다.
+        원문 문단과 용어집을 임베딩하고(내용이 같으면 캐시 재사용), 이미 끝난 번역을 기억에 반영한다.
+        `restore`가 없으면 청크 백업 파일에서, 있으면 그 함수로 반영한다 (무결성 모드는 임시 폴더).
+        실패해도 번역은 기억 없이 계속한다.
         """
         ts = self.translation_service
         if ts is not None:
@@ -1179,12 +1196,16 @@ class AppService:
             glossary = [e for e in (ts.glossary_entries_for_injection or []) if e.target_language == target]
             await store.index_glossary_async(glossary, embedder)
 
-            chunked = input_path.parent / f"{input_path.stem}_translated_chunked.txt"
-            if chunked.exists():
-                for idx, text in load_chunks_from_file(chunked).items():
-                    if 0 <= idx < len(chunks) and not text.startswith("[번역 실패") and not text.startswith("[타임아웃"):
-                        store.record_translation(idx, chunks[idx], text, save=False)
+            if restore is not None:
+                restore(store)
                 store.save(vectors_changed=False)
+            else:
+                chunked = input_path.parent / f"{input_path.stem}_translated_chunked.txt"
+                if chunked.exists():
+                    for idx, text in load_chunks_from_file(chunked).items():
+                        if 0 <= idx < len(chunks) and not text.startswith("[번역 실패") and not text.startswith("[타임아웃"):
+                            store.record_translation(idx, chunks[idx], text, save=False)
+                    store.save(vectors_changed=False)
             ts.translation_memory = store
             self._memory_extractor = self._create_memory_extractor()
             info = store.summary()
@@ -1205,6 +1226,43 @@ class AppService:
             memory.record_translation(chunk_index, source_text, translated_text)
         except Exception as e:
             logger.warning(f"번역 기억 기록 실패 (청크 {chunk_index}): {e}")
+        self._schedule_memory_extraction(chunk_index, source_text, translated_text)
+
+    @staticmethod
+    def _integrity_lines(chunk: List[Any], results: Dict[str, str]) -> Tuple[List[str], List[str]]:
+        """무결성 청크를 (원문 줄, 번역 줄)로 편다. 번역이 없는 줄은 빈 문자열이다."""
+        return [u.text for u in chunk], [str(results.get(u.id) or "") for u in chunk]
+
+    def _record_integrity_memory(self, chunk_index: int, chunk: List[Any], results: Dict[str, str]) -> None:
+        """무결성 청크 결과를 줄 ID로 정확히 짝지어 기억에 기록한다."""
+        memory = getattr(self.translation_service, "translation_memory", None)
+        if memory is None or not results:
+            return
+        source_lines, translated_lines = self._integrity_lines(chunk, results)
+        try:
+            memory.record_aligned_translation(chunk_index, source_lines, translated_lines)
+        except Exception as e:
+            logger.warning(f"번역 기억 기록 실패 (무결성 청크 {chunk_index}): {e}")
+        self._schedule_memory_extraction(chunk_index, "\n".join(source_lines), "\n".join(translated_lines))
+
+    def _restore_integrity_memory(self, store: TranslationMemoryStore, chunks: List[List[Any]], temp_dir: Path) -> None:
+        """무결성 임시 폴더(chunk_<i>.json)에 남은 결과를 기억에 반영한다 (이어하기)."""
+        if not temp_dir.exists():
+            return
+        for f in sorted(temp_dir.glob("chunk_*.json")):
+            try:
+                idx = int(f.stem.split("_")[1])
+                results = json.loads(f.read_text(encoding="utf-8"))
+            except (IndexError, ValueError, OSError) as e:
+                logger.debug(f"무결성 임시 결과를 건너뜁니다 ({f.name}): {e}")
+                continue
+            if 0 <= idx < len(chunks) and isinstance(results, dict):
+                try:
+                    store.record_aligned_translation(idx, *self._integrity_lines(chunks[idx], results), save=False)
+                except Exception as e:
+                    logger.warning(f"무결성 청크 {idx} 결과를 기억에 반영하지 못했습니다: {e}")
+
+    def _schedule_memory_extraction(self, chunk_index: int, source_text: str, translated_text: str) -> None:
         if self._memory_extractor is not None:
             # 투 트랙: 추출은 번역 흐름을 기다리게 하지 않고 뒤에서 돈다
             task = asyncio.ensure_future(self._extract_memory_async(chunk_index, source_text, translated_text))

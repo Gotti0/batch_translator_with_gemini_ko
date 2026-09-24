@@ -31,24 +31,37 @@ MIN_PARAGRAPH_CHARS = 20  # 이보다 짧은 문단은 앞 문단에 붙여 한 
 MAX_EXAMPLE_CHARS = 600  # 주입하는 예시 한쪽(원문·번역문)의 최대 글자 수
 
 
-def split_paragraphs(text: str, min_chars: int = MIN_PARAGRAPH_CHARS) -> List[str]:
-    """청크를 기억 단위(문단)로 나눈다. 인덱싱과 번역문 기록이 같은 규칙을 써야 1:1로 짝지어진다.
+def split_paragraph_groups(text: str, min_chars: int = MIN_PARAGRAPH_CHARS) -> List[Tuple[str, List[int]]]:
+    """청크를 기억 단위(문단)로 나누고, 문단마다 원래 줄 번호 목록을 함께 돌려준다.
 
     빈 줄이 있으면 빈 줄로, 없으면 줄바꿈으로 나눈다. 짧은 문단은 앞 문단에 붙인다.
+    줄 번호는 `text`를 줄바꿈으로 나눈 순서다. 무결성 모드는 이 번호로 원문 문단과 번역 줄을 정확히 짝짓는다.
     """
-    text = (text or "").replace("\r\n", "\n").strip()
-    if not text:
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    content = [i for i, line in enumerate(lines) if line.strip()]
+    if not content:
         return []
-    parts = re.split(r"\n\s*\n", text) if re.search(r"\n\s*\n", text) else text.split("\n")
-    merged: List[str] = []
-    for part in (p.strip() for p in parts):
-        if not part:
-            continue
-        if merged and (len(merged[-1]) < min_chars or len(part) < min_chars):
-            merged[-1] = f"{merged[-1]}\n{part}"
+    has_blank = any(not lines[i].strip() for i in range(content[0], content[-1] + 1))
+    groups: List[List[int]] = []
+    for i in content:
+        if has_blank and groups and groups[-1][-1] == i - 1:
+            groups[-1].append(i)
         else:
-            merged.append(part)
+            groups.append([i])
+
+    merged: List[Tuple[str, List[int]]] = []
+    for group in groups:
+        part = "\n".join(lines[i] for i in group).strip()
+        if merged and (len(merged[-1][0]) < min_chars or len(part) < min_chars):
+            merged[-1] = (f"{merged[-1][0]}\n{part}", merged[-1][1] + group)
+        else:
+            merged.append((part, group))
     return merged
+
+
+def split_paragraphs(text: str, min_chars: int = MIN_PARAGRAPH_CHARS) -> List[str]:
+    """청크를 기억 단위(문단)로 나눈다. 인덱싱과 번역문 기록이 같은 규칙을 써야 1:1로 짝지어진다."""
+    return [part for part, _ in split_paragraph_groups(text, min_chars)]
 
 
 def content_hash(text: str) -> str:
@@ -164,13 +177,16 @@ class TranslationMemoryStore:
         """원문 청크의 문단을 인덱싱한다. 이미 기록된 번역문은 (청크 번호, 해시)가 같으면 유지한다."""
         previous = {(i.get("chunk_index"), i["hash"], i.get("para_index")): i.get("translation")
                     for i in self.items if i["kind"] == "paragraph"}
+        # 청크 경계가 바뀌어도(표준 ↔ 무결성 모드) 같은 문단의 번역은 이어 쓴다
+        by_hash = {h: tr for (_, h, _), tr in previous.items() if tr}
         entries = []
         for chunk_index, chunk in enumerate(chunks):
             for para_index, para in enumerate(split_paragraphs(chunk)):
                 h = content_hash(para)
                 entries.append({
                     "kind": "paragraph", "text": para, "hash": h, "chunk_index": chunk_index,
-                    "para_index": para_index, "translation": previous.get((chunk_index, h, para_index)),
+                    "para_index": para_index,
+                    "translation": previous.get((chunk_index, h, para_index)) or by_hash.get(h),
                 })
         embedded = await self._index("paragraph", entries, embedder)
         self.save()
@@ -211,6 +227,36 @@ class TranslationMemoryStore:
                     item["translation"] = tr
                     self.graph.add_episode(item["hash"], src, chunk_index)
                     changed = True
+        self._close_chunk(chunk_index, source_chunk)
+        if changed and save:
+            self.save(vectors_changed=False)
+        return changed
+
+    def record_aligned_translation(
+        self, chunk_index: int, source_lines: Sequence[str], translated_lines: Sequence[str], save: bool = True
+    ) -> bool:
+        """줄 단위로 짝지어진 번역(무결성 모드)을 기록한다.
+
+        문단 수가 달라도 버리지 않는다. 원문 문단을 이루는 줄 번호를 그대로 번역 줄에 적용해 짝짓는다.
+        번역이 빠진 줄이 있는 문단만 건너뛴다.
+        """
+        if len(source_lines) != len(translated_lines):
+            raise ValueError(f"원문 {len(source_lines)}줄과 번역 {len(translated_lines)}줄이 다릅니다")
+        source_chunk = "\n".join(source_lines)
+        self.stats["recorded_chunks"] += 1
+        changed = False
+        for para_index, (src, line_nos) in enumerate(split_paragraph_groups(source_chunk)):
+            parts = [str(translated_lines[i] or "").strip() for i in line_nos]
+            if not all(parts):
+                continue
+            for row in self._hash_rows.get(content_hash(src), []):
+                item = self.items[row]
+                if item["kind"] == "paragraph" and item.get("chunk_index") == chunk_index and item.get("para_index") == para_index:
+                    item["translation"] = "\n".join(parts)
+                    self.graph.add_episode(item["hash"], src, chunk_index)
+                    changed = True
+        if not changed:
+            self.stats["mismatched_chunks"] += 1
         self._close_chunk(chunk_index, source_chunk)
         if changed and save:
             self.save(vectors_changed=False)

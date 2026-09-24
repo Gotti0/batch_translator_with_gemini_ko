@@ -3,6 +3,7 @@
 (Gemini 호출과 임베딩은 가짜로 바꾼다.)
 """
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -225,3 +226,99 @@ async def test_memory_overview(workspace):
     ov = app.get_memory_overview(workspace / "novel.txt")
     assert ov["summary"]["entity"] == 1 and ov["summary"]["episode"] == 4
     assert ov["entities"][0]["name"] == "リリア" and ov["entities"][0]["fire_count"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 무결성 모드: 줄 ID로 원문 문단과 번역을 정확히 짝짓는다
+# ---------------------------------------------------------------------------
+
+def _fake_integrity(prompt, **kwargs):
+    text = prompt[-1].parts[-1].text
+    units, _ = json.JSONDecoder().raw_decode(text[text.index("[{"):])
+    return [{"id": u["id"], "translated_text": ("[KO]" + u["text"]) if u["text"] else ""} for u in units]
+
+
+def _use_integrity(workspace, **extra):
+    cfg = json.loads((workspace / "config.json").read_text(encoding="utf-8"))
+    # 줄 7개(문단 4 + 빈 줄 3)를 2줄씩 → 청크마다 문단 하나
+    cfg.update({"translation_mode": "integrity", "integrity_max_items": 2, **extra})
+    (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_integrity_mode_uses_memory(workspace):
+    _use_integrity(workspace)
+    app = AppService(workspace / "config.json")
+    app.embedding_client_factory = lambda cfg: FakeEmbedder()
+    with patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=_fake_integrity)) as gen:
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+
+    calls = gen.call_args_list
+    assert len(calls) == 4
+    assert "<translation_memory>" not in calls[0].kwargs["system_instruction_text"]
+    last_sys = calls[3].kwargs["system_instruction_text"]
+    # JSON 지시문은 그대로 두고, 기억은 그 뒤에 붙는다
+    assert last_sys.index("Respond ONLY with a valid JSON array") < last_sys.index("<translation_memory>")
+    assert "[KO]" + LINES[0] in last_sys  # 가장 비슷한 청크 0의 번역
+    assert app.translation_service.translation_memory.summary()["translated"] == 4
+    assert "[KO]" + LINES[3] in (workspace / "out.txt").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_integrity_mode_placeholder_and_resume(workspace):
+    _use_integrity(workspace, prompts="{{translation_memory}}\nTranslate: {{slot}}")
+    app = AppService(workspace / "config.json")
+    emb = FakeEmbedder()
+    app.embedding_client_factory = lambda cfg: emb
+    with patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=_fake_integrity)) as gen:
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+    last = gen.call_args_list[3]
+    assert last.kwargs["prompt"][-1].parts[-1].text.startswith("<translation_memory>")
+    assert "<translation_memory>" not in last.kwargs["system_instruction_text"]
+
+    # 기억 폴더를 지우고 다시 돌리면 무결성 임시 결과에서 번역을 되살린다 (모델 호출 없음)
+    import shutil
+    shutil.rmtree(workspace / "novel_memory")
+    with patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=_fake_integrity)) as gen2:
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+    assert gen2.await_count == 0
+    assert app.translation_service.translation_memory.summary()["translated"] == 4
+
+
+@pytest.mark.asyncio
+async def test_integrity_mode_extracts_character_notes(workspace):
+    from domain.memory_extractor import ExtractedEntity
+    _use_integrity(workspace, enable_memory_extraction=True)
+
+    class Ex:
+        calls = []
+
+        async def extract(self, source, translation, known):
+            self.calls.append((source, translation))
+            return [ExtractedEntity(name="リリア", translated_name="릴리아", note="반말")] if "リリア" in source and not known else []
+
+    app = AppService(workspace / "config.json")
+    app.embedding_client_factory = lambda cfg: FakeEmbedder()
+    ex = Ex()
+    app.memory_extractor_factory = lambda cfg: ex
+    async def slow_model(prompt, **kwargs):
+        await asyncio.sleep(0.01)  # 실제 API처럼 이벤트 루프를 양보해야 뒤에서 도는 추출이 진행된다
+        return _fake_integrity(prompt, **kwargs)
+
+    with patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=slow_model)) as gen:
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+    assert len(ex.calls) == 4
+    assert ex.calls[0] == (LINES[0] + "\n", "[KO]" + LINES[0] + "\n")  # 추출기는 JSON이 아닌 원문·번역 줄을 받는다
+    assert '<entity name="リリア" ko="릴리아"' in gen.call_args_list[3].kwargs["system_instruction_text"]
+
+
+@pytest.mark.asyncio
+async def test_integrity_mode_memory_disabled_changes_nothing(workspace):
+    _use_integrity(workspace, enable_translation_memory=False)
+    app = AppService(workspace / "config.json")
+    app.embedding_client_factory = lambda cfg: pytest.fail("임베딩을 호출하면 안 된다")
+    with patch.object(GeminiClient, "generate_text_async", new=AsyncMock(side_effect=_fake_integrity)) as gen:
+        await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+    assert gen.await_count == 4
+    assert all("<translation_memory>" not in c.kwargs["system_instruction_text"] for c in gen.call_args_list)
+    assert not (workspace / "novel_memory").exists()

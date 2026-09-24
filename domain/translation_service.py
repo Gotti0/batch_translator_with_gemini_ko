@@ -860,13 +860,32 @@ class TranslationService:
 
         return "\n\n".join(translated_parts)
 
+    @staticmethod
+    def integrity_temp_dir_for(output_path: Union[str, Path]) -> Path:
+        """무결성 모드가 청크별 결과(chunk_<i>.json)를 저장하는 폴더."""
+        out_p = Path(output_path)
+        return out_p.parent / f"{out_p.stem}_integrity_temp"
+
+    def split_integrity_chunks(self, text: str) -> List[List[TranslationUnit]]:
+        """무결성 모드의 청크 분할 (줄마다 id를 붙인 단위 목록). 번역 기억 인덱싱도 같은 경계를 쓴다."""
+        units = [TranslationUnit(id=str(i), text=line) for i, line in enumerate(text.splitlines())]
+        max_chunk_size = self.config.get("chunk_size", 6000)
+        max_items = self.config.get("integrity_max_items", 200)  # 무결성 모드 기본값 200
+        return self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
+
+    @staticmethod
+    def integrity_chunk_text(chunk: List[TranslationUnit]) -> str:
+        """무결성 청크의 원문 (번역 기억 검색·기록용)."""
+        return "\n".join(unit.text for unit in chunk)
+
     async def translate_text_integrity(
         self, 
         text: str, 
         output_path_for_progress: Optional[Union[str, Path]] = None,
         progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
-        tqdm_file_stream: Optional[Any] = None
+        tqdm_file_stream: Optional[Any] = None,
+        on_chunk_translated: Optional[Callable[[int, List[TranslationUnit], Dict[str, str]], None]] = None,
     ) -> str:
         """
         무결성 번역: 줄 단위로 분리하여 JSON 형태로 번역하고 누락을 검사합니다.
@@ -877,6 +896,7 @@ class TranslationService:
             progress_callback: 전체 작업 진행률 콜백
             status_callback: 현재 상세 상태 메시지 콜백
             tqdm_file_stream: tqdm 프로그레스 바 출력을 위한 스트림 객체
+            on_chunk_translated: 청크 번역이 끝날 때마다 (청크 번호, 단위 목록, id→번역) 호출 (번역 기억 기록용)
             
         Returns:
             번역된 텍스트
@@ -888,17 +908,9 @@ class TranslationService:
             logger.debug("translate_text_integrity: 입력 텍스트가 비어 있음.")
             return ""
 
-        # 1. 전처리 (Parsing)
+        # 1. 전처리 (Parsing) + 2. 청크 분할. 빈 줄도 컨텍스트 보존을 위해 단위에 포함한다.
         lines = text.splitlines()
-        units = []
-        for i, line in enumerate(lines):
-            # 빈 줄도 컨텍스트 보존을 위해 포함 (단, 번역 대상에서는 제외하거나 마킹 가능)
-            units.append(TranslationUnit(id=str(i), text=line))
-
-        # 2. 청크 분할
-        max_chunk_size = self.config.get("chunk_size", 6000)
-        max_items = self.config.get("integrity_max_items", 200) # 무결성 모드 기본값 200
-        chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
+        chunks = self.split_integrity_chunks(text)
         total_chunks = len(chunks)
 
         translated_map: Dict[str, str] = {}
@@ -907,8 +919,7 @@ class TranslationService:
         translated_chunk_indices = set()
         
         if output_path_for_progress:
-            out_p = Path(output_path_for_progress)
-            temp_dir = out_p.parent / f"{out_p.stem}_integrity_temp"
+            temp_dir = self.integrity_temp_dir_for(output_path_for_progress)
             temp_dir.mkdir(parents=True, exist_ok=True)
             
             # 기존 저장된 임시 청크 파일들로부터 진행 상태 복원
@@ -1009,6 +1020,12 @@ class TranslationService:
                         translated_chunk_indices.add(i)
                     except Exception as e:
                         logger.error(f"  ❌ 무결성 임시 청크 저장 실패: {e}")
+
+                if on_chunk_translated:
+                    try:
+                        on_chunk_translated(i, chunk, chunk_results)
+                    except Exception as e:  # 기억 기록 실패는 번역을 막지 않는다
+                        logger.warning(f"  ⚠️ 청크 {i+1} 번역 후 처리 실패: {e}")
 
                 if pbar:
                     pbar.update(1)
@@ -1117,18 +1134,27 @@ class TranslationService:
                     glossary_context_str = PAGEFOLD_GLOSSARY_NOTICE
                     sys_instr = f"{sys_instr}\n\n{PDF_NEWLINE_MARKER_DIRECTIVE}".strip()
 
+            # 번역 기억은 JSON이 아닌 원문 줄로 찾는다 (인덱싱된 문단과 해시가 맞아야 한다)
+            plain_text = self.integrity_chunk_text(chunk)
+            glossary_override: Optional[str] = glossary_context_str if integrity_multimodal_parts else None
+
             if not integrity_multimodal_parts and self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
                 chunk_text_lower = chunk_json_str.lower()
                 final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
                 relevant_entries = [e for e in self.glossary_entries_for_injection if e.target_language == final_target_lang and e.keyword.lower() in chunk_text_lower]
+                semantic_extra = self._semantic_glossary_entries(plain_text, relevant_entries)
+                relevant_entries.extend(semantic_extra)
                 
-                max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3)
+                max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) + len(semantic_extra)
                 max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
                 glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
+                glossary_override = glossary_context_str
 
+            memory_block = self._translation_memory_block(plain_text)
             replacements = {
                 "{{slot}}": chunk_json_str,
-                "{{glossary_context}}": glossary_context_str
+                "{{glossary_context}}": glossary_context_str,
+                "{{translation_memory}}": memory_block,
             }
 
             api_prompt_for_gemini_client: List[genai_types.Content] = []
@@ -1164,7 +1190,8 @@ class TranslationService:
                     api_prompt_for_gemini_client = injected_history
                     user_prompt_str = self._construct_prompt(
                         chunk_json_str,
-                        glossary_context_override=glossary_context_str if integrity_multimodal_parts else None,
+                        glossary_context_override=glossary_override,
+                        translation_memory_block=memory_block,
                     )
                     if integrity_prompt_suffix not in user_prompt_str:
                         user_prompt_str += integrity_prompt_suffix
@@ -1174,13 +1201,21 @@ class TranslationService:
             else:
                 user_prompt_str = self._construct_prompt(
                     chunk_json_str,
-                    glossary_context_override=glossary_context_str if integrity_multimodal_parts else None,
+                    glossary_context_override=glossary_override,
+                    translation_memory_block=memory_block,
                 )
                 if integrity_prompt_suffix not in user_prompt_str:
                     user_prompt_str += integrity_prompt_suffix
                 api_prompt_for_gemini_client = [
                     genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
                 ]
+
+            # 템플릿·프리필 어디에도 {{translation_memory}} 자리가 없으면 시스템 지시문 끝에 붙인다
+            if memory_block and not any(
+                memory_block in (getattr(part, "text", None) or "")
+                for content in api_prompt_for_gemini_client for part in (content.parts or [])
+            ):
+                sys_instr = f"{sys_instr}\n\n{memory_block}"
 
             # 3. API 호출 (Structured Output 모드)
             gen_config = {

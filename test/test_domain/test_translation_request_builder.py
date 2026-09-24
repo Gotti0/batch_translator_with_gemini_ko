@@ -206,3 +206,32 @@ def test_semantic_glossary_entries_added_when_memory_enabled(client, config):
     config["enable_translation_memory"] = False
     text = _texts(service.build_translation_request("勇者が来た").contents[0])[0]
     assert "リリア" not in text
+
+
+@pytest.mark.asyncio
+async def test_integrity_chunk_uses_memory_with_plain_text(client, config):
+    """무결성 모드: 기억 검색은 JSON이 아닌 원문 줄로 하고, 의미 기반 용어와 기억 블록이 들어간다"""
+    from core.dtos import TranslationUnit
+    from domain.memory_graph import MemoryRecall
+
+    config.update({"enable_dynamic_glossary_injection": True, "enable_translation_memory": True})
+    client.generate_text_async = AsyncMock(return_value=[{"id": "0", "translated_text": "용사가 왔다"}])
+    service = TranslationService(client, config)
+    service.glossary_entries_for_injection = [
+        GlossaryEntryDTO(keyword="リリア", translated_keyword="릴리아", target_language="ko", occurrence_count=2),
+    ]
+    memory = MagicMock()
+    memory.search_glossary.return_value = ["リリア"]
+    memory.recall.return_value = MemoryRecall(None, [], [], [])
+    memory.format_recall.return_value = "<translation_memory>기억</translation_memory>"
+    service.translation_memory = memory
+
+    chunk = [TranslationUnit(id="0", text="勇者が来た"), TranslationUnit(id="1", text="")]
+    assert await service._translate_integrity_chunk_with_retry(chunk) == {"0": "용사가 왔다"}
+
+    assert memory.search_glossary.call_args.args[0] == "勇者が来た\n"
+    assert memory.recall.call_args.args[0] == "勇者が来た\n"
+    kwargs = client.generate_text_async.call_args.kwargs
+    user_text = _texts(kwargs["prompt"][-1])[0]
+    assert "リリア -> 릴리아" in user_text
+    assert kwargs["system_instruction_text"].endswith("<translation_memory>기억</translation_memory>")

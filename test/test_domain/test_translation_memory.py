@@ -115,3 +115,48 @@ async def test_search_glossary(tmp_path):
     assert store.summary()["glossary"] == 2
     hits = store.search_glossary(CHUNKS[2], top_k=1, min_similarity=0.0)
     assert hits == ["勇者リリア"]
+
+
+def test_split_paragraph_groups_keeps_line_numbers():
+    from domain.translation_memory import split_paragraph_groups
+    text = "\n짧다\n勇者リリアは剣を抜いた。「待っていろ、魔王」\n\n夜の森は静かだった。月が雲に隠れている。\n"
+    assert split_paragraph_groups(text) == [
+        ("짧다\n勇者リリアは剣を抜いた。「待っていろ、魔王」", [1, 2]),
+        ("夜の森は静かだった。月が雲に隠れている。", [4]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_aligned_translation_pairs_by_line(tmp_path):
+    """무결성 모드: 번역 문단 수가 원문과 달라도 줄 번호로 짝짓고, 빠진 줄이 있는 문단만 건너뛴다."""
+    emb = FakeEmbedder()
+    store = TranslationMemoryStore.open(tmp_path / "novel.txt", emb.model, emb.dim)
+    source = ["勇者リリアは剣を抜いた。「待っていろ、魔王」", "", "短い", "夜の森は静かだった。月が雲に隠れている。", "", "朝の市場はにぎやかだった。パンの匂いがする。"]
+    await store.index_source_async(["\n".join(source)], emb)
+
+    # "短い"는 앞 문단(빈 줄 뒤)에 붙어 한 문단이 된다. 번역은 길어서 split_paragraphs로는 짝이 안 맞는다
+    translated = ["용사 릴리아는 검을 뽑았다. “기다려라, 마왕.”", "", "짧은데 번역은 스무 자를 훌쩍 넘는 긴 문장이 된다",
+                  "밤의 숲은 고요했다. 달이 구름에 가려 있다.", "", ""]
+    assert store.record_aligned_translation(0, source, translated, save=False)
+    by_text = {i["text"]: i.get("translation") for i in store.items if i["kind"] == "paragraph"}
+    assert by_text[source[0]] == translated[0]
+    assert by_text["短い\n夜の森は静かだった。月が雲に隠れている。"] == f"{translated[2]}\n{translated[3]}"
+    assert by_text[source[5]] is None  # 번역이 빠진 문단은 기록하지 않는다
+    assert store.stats["mismatched_chunks"] == 0
+
+    with pytest.raises(ValueError):
+        store.record_aligned_translation(0, source, translated[:-1])
+
+
+@pytest.mark.asyncio
+async def test_reindex_with_new_chunk_boundaries_keeps_translations(tmp_path):
+    """표준 ↔ 무결성 모드 전환으로 청크 경계가 바뀌어도 같은 문단의 번역은 이어 쓴다."""
+    emb = FakeEmbedder()
+    store = TranslationMemoryStore.open(tmp_path / "novel.txt", emb.model, emb.dim)
+    await store.index_source_async(CHUNKS, emb)
+    store.record_translation(0, CHUNKS[0], "용사 릴리아는 검을 뽑았다. “기다려라, 마왕.”\n\n밤의 숲은 고요했다. 달이 구름에 가려 있다.")
+
+    paragraphs = [p for chunk in CHUNKS for p in split_paragraphs(chunk)]
+    await store.index_source_async(paragraphs, emb)  # 문단마다 청크 하나
+    assert store.summary()["translated"] == 2
+    assert len(emb.calls) == 1  # 벡터도 재사용한다
