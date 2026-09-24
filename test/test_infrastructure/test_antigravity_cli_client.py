@@ -43,10 +43,11 @@ class TestAntigravityCliClient(unittest.IsolatedAsyncioTestCase):
         result = await self.client.generate_text_async("번역할 원문")
         self.assertEqual(result, "번역된 텍스트 결과입니다.")
 
-        # 명령어 인자 검증
+        # 명령어 인자 검증 (Windows 길이 제한 방지를 위해 @tempfile 형태로 전달됨)
         called_args = mock_exec.call_args[0]
         self.assertIn("-p", called_args)
-        self.assertIn("-", called_args)
+        p_index = called_args.index("-p")
+        self.assertTrue(called_args[p_index + 1].startswith("@"))
         self.assertIn("--output-format", called_args)
         self.assertIn("json", called_args)
         self.assertIn("--model", called_args)

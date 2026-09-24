@@ -1269,6 +1269,13 @@ class TranslationService:
             translated_units = []
             for item in raw_response:
                 try:
+                    if isinstance(item, dict):
+                        # 일부 모델이 translated_text 대신 text 또는 translation 키로 번역문을 반환하는 경우 호환성 보장
+                        if "translated_text" not in item:
+                            if "text" in item:
+                                item = {**item, "translated_text": item["text"]}
+                            elif "translation" in item:
+                                item = {**item, "translated_text": item["translation"]}
                     translated_units.append(TranslatedUnit(**item))
                 except Exception:
                     continue

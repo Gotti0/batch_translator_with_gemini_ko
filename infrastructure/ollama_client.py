@@ -218,7 +218,29 @@ class OllamaClient(BaseLLMClient):
 
     @staticmethod
     def _strip_code_fence(text: str) -> str:
+        """
+        모델 응답에서 JSON 문자열을 추출하고 코드 블록이나 앞뒤 설명을 제거합니다.
+        1. ```json ... ``` 또는 ``` ... ``` 마크다운 코드 블록이 포함되어 있으면 그 안의 내용을 추출합니다.
+        2. 코드 블록이 없더라도 텍스트 내에 최외곽 JSON 배열([]) 또는 객체({})가 있으면 해당 구간을 추출합니다.
+        3. 실패하면 원본 문자열의 앞뒤 공백을 제거하여 반환합니다.
+        """
         t = text.strip()
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", t, re.IGNORECASE)
+        if fence_match:
+            candidate = fence_match.group(1).strip()
+            if candidate:
+                return candidate
+
+        # 코드 블록이 없는 경우, 최외곽 JSON 배열/객체 구간 추출
+        first_bracket = min(
+            (pos for pos in (t.find('['), t.find('{')) if pos != -1),
+            default=-1
+        )
+        if first_bracket != -1:
+            last_bracket = max(t.rfind(']'), t.rfind('}'))
+            if last_bracket > first_bracket:
+                return t[first_bracket : last_bracket + 1].strip()
+
         if t.startswith("```"):
             t = t.split("\n", 1)[1] if "\n" in t else t[3:]
             if t.rstrip().endswith("```"):

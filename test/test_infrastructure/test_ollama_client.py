@@ -143,6 +143,17 @@ class TestOllamaClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fmt["items"]["properties"]["keyword"]["type"], "string")
 
     @patch("infrastructure.ollama_client.requests.request")
+    async def test_json_with_code_block_and_commentary(self, mock_request):
+        raw = "분석 결과입니다:\n```json\n[{\"keyword\": \"勇者\", \"translated_keyword\": \"용사\"}]\n```\n참고 바랍니다."
+        mock_request.return_value = _response(payload=_chat_payload(raw))
+        result = await self.client.generate_text_async(
+            prompt="원문",
+            generation_config_dict={"response_mime_type": "application/json", "response_schema": List[_Term]},
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].translated_keyword, "용사")
+
+    @patch("infrastructure.ollama_client.requests.request")
     async def test_invalid_json_falls_back_to_text(self, mock_request):
         mock_request.return_value = _response(payload=_chat_payload("JSON이 아닌 응답"))
         result = await self.client.generate_text_async(
