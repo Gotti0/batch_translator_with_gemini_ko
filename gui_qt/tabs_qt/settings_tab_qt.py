@@ -183,11 +183,38 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         # --- API/모델 섹션 ---
         api_group = QtWidgets.QGroupBox("API / 모델")
-        api_form = QtWidgets.QFormLayout(api_group)
+        self.api_form = QtWidgets.QFormLayout(api_group)
+
+        self.provider_combo = NoWheelComboBox()
+        self.provider_combo.addItem("Google Gemini API (클라우드)", "gemini")
+        self.provider_combo.addItem("Google Antigravity CLI (로컬 CLI - agy.exe)", "antigravity_cli")
+        self.provider_combo.addItem("Anthropic Claude (로컬 CLI - claude.exe)", "claude_cli")
+        self.provider_combo.addItem("OpenAI Codex / GPT (로컬 CLI - codex.exe)", "codex_cli")
+        self.provider_combo.addItem("OpenAI 호환 API (DeepSeek, Ollama 등)", "openai_compatible")
+        TooltipQt(
+            self.provider_combo,
+            "번역에 사용할 AI 공급자를 선택합니다.\n"
+            "로컬 CLI를 선택하면 별도 API 키 없이 기존 구독(Claude Pro/ChatGPT Plus) 세션으로 번역할 수 있습니다.",
+        )
+
+        self.auth_check_btn = QtWidgets.QPushButton("인증 / 연결 테스트")
+        TooltipQt(
+            self.auth_check_btn,
+            "선택한 AI 공급자의 로그인 세션(Claude Code/ChatGPT Plus) 또는 API 키의 유효성을 사전에 테스트합니다.",
+        )
+        provider_row = QtWidgets.QHBoxLayout()
+        provider_row.addWidget(self.provider_combo, 1)
+        provider_row.addWidget(self.auth_check_btn)
+
+        self.cli_path_edit = QtWidgets.QLineEdit("claude")
+        TooltipQt(self.cli_path_edit, "로컬 CLI 실행 파일 경로 또는 커맨드 이름입니다 (예: claude 또는 codex).")
+
+        self.base_url_edit = QtWidgets.QLineEdit("https://api.openai.com/v1/chat/completions")
+        TooltipQt(self.base_url_edit, "OpenAI 호환 API 엔드포인트 URL입니다 (예: http://localhost:11434/v1/chat/completions).")
 
         self.api_keys_edit = QtWidgets.QPlainTextEdit()
         self.api_keys_edit.setPlaceholderText("API 키를 줄바꿈으로 구분하여 입력")
-        TooltipQt(self.api_keys_edit, "Gemini API 키를 줄바꿈으로 구분하여 입력합니다.\n여러 키를 사용하면 로터이션됩니다.")
+        TooltipQt(self.api_keys_edit, "API 키를 줄바꿈으로 구분하여 입력합니다.\n여러 키를 사용하면 로테이션됩니다.")
         self.use_vertex_check = QtWidgets.QCheckBox("Vertex AI 사용")
         TooltipQt(self.use_vertex_check, "Google Cloud Vertex AI를 사용하여 API를 호출합니다.\n서비스 계정 JSON 파일이 필요합니다.")
         self.sa_path_edit = QtWidgets.QLineEdit()
@@ -198,6 +225,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         sa_row = QtWidgets.QHBoxLayout()
         sa_row.addWidget(self.sa_path_edit)
         sa_row.addWidget(sa_browse)
+        self.sa_row_widget = self._wrap(sa_row)
         self.gcp_project_edit = QtWidgets.QLineEdit()
         TooltipQt(self.gcp_project_edit, "GCP 프로젝트 ID를 입력합니다.")
         self.gcp_location_edit = QtWidgets.QLineEdit()
@@ -214,10 +242,10 @@ class SettingsTabQt(QtWidgets.QWidget):
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
         ])
-        TooltipQt(self.model_name_combo, "번역에 사용할 Gemini 모델을 선택하거나 직접 입력합니다.")
+        TooltipQt(self.model_name_combo, "번역에 사용할 모델을 선택하거나 직접 입력합니다.")
 
         self.model_refresh_btn = QtWidgets.QPushButton("모델 목록 새로고침")
-        TooltipQt(self.model_refresh_btn, "API에서 사용 가능한 모델 목록을 불러옵니다.")
+        TooltipQt(self.model_refresh_btn, "API 또는 CLI에서 사용 가능한 모델 목록을 불러옵니다.")
         self.model_progress = QtWidgets.QProgressBar()
         self.model_progress.setRange(0, 0)
         self.model_progress.setTextVisible(False)
@@ -228,12 +256,15 @@ class SettingsTabQt(QtWidgets.QWidget):
         model_row.addWidget(self.model_refresh_btn)
         model_row.addWidget(self.model_progress)
 
-        api_form.addRow("API 키 목록", self.api_keys_edit)
-        api_form.addRow("Vertex AI", self.use_vertex_check)
-        api_form.addRow("서비스 계정 JSON", self._wrap(sa_row))
-        api_form.addRow("GCP 프로젝트", self.gcp_project_edit)
-        api_form.addRow("GCP 위치", self.gcp_location_edit)
-        api_form.addRow("모델 이름", self._wrap(model_row))
+        self.api_form.addRow("AI 프로바이더", self._wrap(provider_row))
+        self.api_form.addRow("CLI 실행 경로", self.cli_path_edit)
+        self.api_form.addRow("API Base URL", self.base_url_edit)
+        self.api_form.addRow("API 키 목록", self.api_keys_edit)
+        self.api_form.addRow("Vertex AI", self.use_vertex_check)
+        self.api_form.addRow("서비스 계정 JSON", self.sa_row_widget)
+        self.api_form.addRow("GCP 프로젝트", self.gcp_project_edit)
+        self.api_form.addRow("GCP 위치", self.gcp_location_edit)
+        self.api_form.addRow("모델 이름", self._wrap(model_row))
 
         # --- 번역 모드 섹션 (신규 Phase 2) ---
         mode_group = QtWidgets.QGroupBox("번역 파이프라인 모드")
@@ -408,6 +439,43 @@ class SettingsTabQt(QtWidgets.QWidget):
         safety_form.addRow("최대 분할 시도", self.max_split_spin)
         safety_form.addRow("최소 청크 크기", self.min_chunk_spin)
 
+        # --- PageFold 토큰 최적화 (PDF 압축) ---
+        pagefold_group = QtWidgets.QGroupBox("PageFold 토큰 최적화")
+        pagefold_form = QtWidgets.QFormLayout(pagefold_group)
+
+        self.enable_pagefold_check = QtWidgets.QCheckBox("PageFold 활성화 (긴 컨텍스트/용어집 PDF 압축)")
+        TooltipQt(
+            self.enable_pagefold_check,
+            "Gemini의 네이티브 PDF 문서 처리 특성을 활용하여 긴 용어집 및 컨텍스트를\n"
+            "초소형 폰트 PDF로 패키징해 입력 토큰 비용을 최대 90% 이상 절감합니다.",
+        )
+
+        self.pagefold_mode_combo = NoWheelComboBox()
+        self.pagefold_mode_combo.addItem("용어집/설정 참조 모드 (Reference - 권장)", "reference")
+        self.pagefold_mode_combo.addItem("특정 태그 <pdf> 모드 (Marked Tags)", "marked")
+        self.pagefold_mode_combo.addItem("원문 청크 전체 모드 (Chunk - 실험적)", "chunk")
+        TooltipQt(
+            self.pagefold_mode_combo,
+            "Reference: 방대한 용어집과 세계관 지침을 PDF로 접어 고정 ~280 토큰으로 참조합니다.\n"
+            "Marked Tags: 프롬프트 내 <pdf>...</pdf> 태그 안의 텍스트만 PDF로 변환합니다.\n"
+            "Chunk: 원문 번역 청크 자체를 PDF로 전달합니다 (문장 누락 주의).",
+        )
+
+        self.pagefold_font_size_spin = NoWheelDoubleSpinBox()
+        self.pagefold_font_size_spin.setRange(0.5, 12.0)
+        self.pagefold_font_size_spin.setSingleStep(0.5)
+        self.pagefold_font_size_spin.setDecimals(1)
+        self.pagefold_font_size_spin.setValue(1.0)
+        TooltipQt(
+            self.pagefold_font_size_spin,
+            "PDF 렌더링 시 사용할 폰트 크기(pt)입니다 (기본값: 1.0pt).\n"
+            "작을수록 한 페이지에 더 많은 텍스트가 압축되어 토큰을 절약할 수 있습니다.",
+        )
+
+        pagefold_form.addRow(self.enable_pagefold_check)
+        pagefold_form.addRow("작동 모드", self.pagefold_mode_combo)
+        pagefold_form.addRow("폰트 크기(pt)", self.pagefold_font_size_spin)
+
         # --- 액션/진행 표시 ---
         self.start_btn = QtWidgets.QPushButton("번역 시작")
         TooltipQt(self.start_btn, "현재 설정으로 번역을 시작합니다.")
@@ -438,6 +506,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         layout.addWidget(prompt_group)
         layout.addWidget(prefill_group)
         layout.addWidget(safety_group)
+        layout.addWidget(pagefold_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
@@ -456,11 +525,105 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.status_signal.connect(self._on_status)
         self.completion_signal.connect(self._on_completion, QtCore.Qt.QueuedConnection)
 
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.use_vertex_check.stateChanged.connect(self._on_vertex_toggle)
         self.model_name_combo.currentTextChanged.connect(self._on_model_changed)
         self.model_name_combo.editTextChanged.connect(self._on_model_changed)
         self.model_refresh_btn.clicked.connect(self._refresh_model_list)
+        self.auth_check_btn.clicked.connect(self._on_auth_check_clicked)
         self.mode_selector.mode_changed.connect(self._on_mode_changed)
+        self.enable_pagefold_check.toggled.connect(self._on_pagefold_toggled)
+
+    def _on_provider_changed(self, _=None) -> None:
+        """AI 공급자 변경 시 입력 폼 표시 및 추천 모델 목록 조정"""
+        provider = self.provider_combo.currentData() or "gemini"
+        is_gemini = (provider == "gemini")
+        is_claude = (provider == "claude_cli")
+        is_codex = (provider == "codex_cli")
+        is_agy = (provider == "antigravity_cli")
+        is_openai_compat = (provider == "openai_compatible")
+
+        self.api_form.setRowVisible(self.cli_path_edit, is_claude or is_codex or is_agy)
+        self.api_form.setRowVisible(self.base_url_edit, is_openai_compat)
+        self.api_form.setRowVisible(self.api_keys_edit, True)
+        self.api_form.setRowVisible(self.use_vertex_check, is_gemini)
+
+        # 프로바이더별 API 키 안내문(Placeholder) 동적 전환
+        if is_claude:
+            self.api_keys_edit.setPlaceholderText("선택 사항: Claude Pro 세션 대신 별도 Anthropic API 키(sk-ant-...)를 사용하려면 입력 (비워두면 로컬 구독 세션 사용)")
+        elif is_codex:
+            self.api_keys_edit.setPlaceholderText("선택 사항: ChatGPT Plus 세션 대신 별도 OpenAI API 키(sk-...)를 사용하려면 입력 (비워두면 로컬 구독 세션 사용)")
+        elif is_agy:
+            self.api_keys_edit.setPlaceholderText("선택 사항: Antigravity CLI는 기본적으로 로그인된 Google 계정 세션을 사용합니다 (비워둘 수 있음)")
+        elif is_openai_compat:
+            self.api_keys_edit.setPlaceholderText("API 키 입력 (로컬 Ollama 등 인증 불필요 시 비워둘 수 있음)")
+        else:
+            self.api_keys_edit.setPlaceholderText("API 키를 줄바꿈으로 구분하여 입력 (여러 키 등록 시 자동 로테이션)")
+
+        is_vertex = is_gemini and self.use_vertex_check.isChecked()
+        self.api_form.setRowVisible(self.sa_row_widget, is_vertex)
+        self.api_form.setRowVisible(self.gcp_project_edit, is_vertex)
+        self.api_form.setRowVisible(self.gcp_location_edit, is_vertex)
+
+        # CLI 경로 설정
+        cfg = getattr(self.app_service, "config", {}) or {}
+        if is_claude:
+            saved_path = cfg.get("claude_cli_path", "claude")
+            current = self.cli_path_edit.text().strip()
+            if not current or current in ("codex", "agy"):
+                self.cli_path_edit.setText(saved_path)
+        elif is_codex:
+            saved_path = cfg.get("codex_cli_path", "codex")
+            current = self.cli_path_edit.text().strip()
+            if not current or current in ("claude", "agy"):
+                self.cli_path_edit.setText(saved_path)
+        elif is_agy:
+            saved_path = cfg.get("antigravity_cli_path", "agy")
+            current = self.cli_path_edit.text().strip()
+            if not current or current in ("claude", "codex"):
+                self.cli_path_edit.setText(saved_path)
+        elif is_openai_compat:
+            saved_url = cfg.get("openai_compatible_base_url", "https://api.openai.com/v1/chat/completions")
+            if not self.base_url_edit.text().strip():
+                self.base_url_edit.setText(saved_url)
+
+        # PageFold 토글 가능 여부 (Gemini만 지원)
+        self.enable_pagefold_check.setEnabled(is_gemini)
+        if not is_gemini:
+            self.enable_pagefold_check.setChecked(False)
+
+        # 모델 목록 추천 항목 갱신 및 캐시 초기화
+        self._model_cache = None
+        self.model_name_combo.clear()
+
+        if is_gemini:
+            models = ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-2.5-pro", "gemini-3-pro-preview", "gemini-3-flash-preview"]
+            target_model = cfg.get("model_name", "gemini-2.0-flash")
+        elif is_claude:
+            models = ["default", "claude-sonnet-5", "claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-fable-5-1", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"]
+            target_model = cfg.get("claude_cli_model", "default")
+        elif is_codex:
+            models = ["default", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "o3", "o3-mini", "gpt-4o"]
+            target_model = cfg.get("codex_cli_model", "gpt-5.5")
+        elif is_agy:
+            models = ["default", "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.1-pro-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]
+            target_model = cfg.get("antigravity_cli_model", "default")
+        else:
+            models = ["default", "gpt-4o", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner"]
+            target_model = cfg.get("openai_compatible_model", "default")
+
+        self.model_name_combo.addItems(models)
+        if target_model and target_model not in models:
+            self.model_name_combo.addItem(target_model)
+        if target_model:
+            self.model_name_combo.setCurrentText(target_model)
+        else:
+            self.model_name_combo.setCurrentIndex(0)
+
+    def _on_pagefold_toggled(self, checked: bool) -> None:
+        """PageFold 활성화 여부에 따라 세부 옵션 활성/비활성화"""
+        self.pagefold_mode_combo.setEnabled(checked)
+        self.pagefold_font_size_spin.setEnabled(checked)
 
     def _on_mode_changed(self, mode_id: str) -> None:
         """번역 모드 변경 시 설정 업데이트 및 UI 조정"""
@@ -560,6 +723,23 @@ class SettingsTabQt(QtWidgets.QWidget):
         if hasattr(self.app_service, "config_manager"):
             defaults = self.app_service.config_manager.get_default_config()
 
+        # 프로바이더 로드
+        provider = str(cfg.get("llm_provider", defaults.get("llm_provider", "gemini")))
+        idx = self.provider_combo.findData(provider)
+        if idx != -1:
+            self.provider_combo.setCurrentIndex(idx)
+        else:
+            self.provider_combo.setCurrentIndex(0)
+
+        # CLI 경로 및 Base URL 로드
+        if provider == "codex_cli":
+            self.cli_path_edit.setText(str(cfg.get("codex_cli_path", defaults.get("codex_cli_path", "codex"))))
+        elif provider == "antigravity_cli":
+            self.cli_path_edit.setText(str(cfg.get("antigravity_cli_path", defaults.get("antigravity_cli_path", "agy"))))
+        else:
+            self.cli_path_edit.setText(str(cfg.get("claude_cli_path", defaults.get("claude_cli_path", "claude"))))
+        self.base_url_edit.setText(str(cfg.get("openai_compatible_base_url", defaults.get("openai_compatible_base_url", "https://api.openai.com/v1/chat/completions"))))
+
         # 입력/출력 파일 경로 로드
         input_files = cfg.get("input_files", []) or []
         self.input_edit.setText(input_files[0] if input_files else "")
@@ -575,10 +755,26 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.sa_path_edit.setText(str(cfg.get("service_account_file_path") or ""))
         self.gcp_project_edit.setText(str(cfg.get("gcp_project") or ""))
         self.gcp_location_edit.setText(str(cfg.get("gcp_location") or ""))
-        model_val = str(cfg.get("model_name") or defaults.get("model_name", ""))
+
+        # 프로바이더별 폼 가시성 및 추천 모델 목록 동기화
+        self._on_provider_changed()
+
+        # 프로바이더별 모델명 로드
+        if provider == "claude_cli":
+            model_val = str(cfg.get("claude_cli_model") or defaults.get("claude_cli_model", "default"))
+        elif provider == "codex_cli":
+            model_val = str(cfg.get("codex_cli_model") or defaults.get("codex_cli_model", "gpt-5.5"))
+        elif provider == "antigravity_cli":
+            model_val = str(cfg.get("antigravity_cli_model") or defaults.get("antigravity_cli_model", "default"))
+        elif provider == "openai_compatible":
+            model_val = str(cfg.get("openai_compatible_model") or defaults.get("openai_compatible_model", "default"))
+        else:
+            model_val = str(cfg.get("model_name") or defaults.get("model_name", "gemini-2.0-flash"))
+
         if model_val and model_val not in [self.model_name_combo.itemText(i) for i in range(self.model_name_combo.count())]:
             self.model_name_combo.addItem(model_val)
-        self.model_name_combo.setCurrentText(model_val)
+        if model_val:
+            self.model_name_combo.setCurrentText(model_val)
 
         temp_val = float(cfg.get("temperature", defaults.get("temperature", 0.7)))
         self.temperature_slider.setValue(int(temp_val * 100))
@@ -634,21 +830,24 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.use_content_safety_check.setChecked(bool(cfg.get("use_content_safety_retry", defaults.get("use_content_safety_retry", True))))
         self.max_split_spin.setValue(int(cfg.get("max_content_safety_split_attempts", defaults.get("max_content_safety_split_attempts", 3))))
         self.min_chunk_spin.setValue(int(cfg.get("min_content_safety_chunk_size", defaults.get("min_content_safety_chunk_size", 100))))
+
+        # PageFold 토큰 최적화 설정 로드
+        self.enable_pagefold_check.setChecked(
+            bool(cfg.get("enable_pagefold", defaults.get("enable_pagefold", True)))
+        )
+        pf_mode = str(cfg.get("pagefold_mode", defaults.get("pagefold_mode", "reference")))
+        idx = self.pagefold_mode_combo.findData(pf_mode)
+        if idx != -1:
+            self.pagefold_mode_combo.setCurrentIndex(idx)
+        else:
+            self.pagefold_mode_combo.setCurrentIndex(0)
+        pf_font_size = float(cfg.get("pagefold_font_size", defaults.get("pagefold_font_size", 1.0)))
+        self.pagefold_font_size_spin.setValue(pf_font_size)
+        self._on_pagefold_toggled(self.enable_pagefold_check.isChecked())
         
         # 번역 모드 선택 동기화 (신규)
         mode_val = str(cfg.get("translation_mode", "standard"))
         self.mode_selector._on_card_clicked(mode_val)
-
-    def _on_mode_changed(self, mode_id: str) -> None:
-        """번역 모드 변경 시 설정 업데이트 및 UI 조정"""
-        if self.app_service:
-            self.app_service.config["translation_mode"] = mode_id
-            logger.info(f"UI 번역 모드 변경됨: {mode_id}")
-            
-            # 모드에 따른 특수 UI 조정
-            is_epub = mode_id == "epub"
-            self.chunk_size_spin.setEnabled(not is_epub)
-            # EPUB 모드일 때 파일 선택 필터 힌트 등 추가 가능
 
     def _save_config_to_service(self) -> None:
         # 서비스의 설정을 직접 수정하지 않도록 복사본 생성 (Deep Copy 권장)
@@ -668,7 +867,27 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["service_account_file_path"] = self.sa_path_edit.text().strip() or None
         cfg["gcp_project"] = self.gcp_project_edit.text().strip() or None
         cfg["gcp_location"] = self.gcp_location_edit.text().strip() or None
-        cfg["model_name"] = self.model_name_combo.currentText().strip() or None
+        # 프로바이더별 설정 저장
+        provider = self.provider_combo.currentData() or "gemini"
+        cfg["llm_provider"] = provider
+        selected_model = self.model_name_combo.currentText().strip()
+
+        if provider == "claude_cli":
+            cfg["claude_cli_path"] = self.cli_path_edit.text().strip() or "claude"
+            cfg["claude_cli_model"] = selected_model or "default"
+        elif provider == "codex_cli":
+            cfg["codex_cli_path"] = self.cli_path_edit.text().strip() or "codex"
+            cfg["codex_cli_model"] = selected_model or "gpt-5.5"
+        elif provider == "antigravity_cli":
+            cfg["antigravity_cli_path"] = self.cli_path_edit.text().strip() or "agy"
+            cfg["antigravity_cli_model"] = selected_model or "default"
+        elif provider == "openai_compatible":
+            cfg["openai_compatible_base_url"] = self.base_url_edit.text().strip()
+            cfg["openai_compatible_model"] = selected_model or "default"
+            if api_keys:
+                cfg["openai_compatible_api_key"] = api_keys[0]
+        else:
+            cfg["model_name"] = selected_model or None
         cfg["temperature"] = self.temperature_slider.value() / 100.0
         cfg["top_p"] = self.top_p_slider.value() / 100.0
         cfg["thinking_budget"] = int(self.thinking_budget_slider.value()) if self.thinking_budget_slider.isEnabled() else None
@@ -686,6 +905,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["max_content_safety_split_attempts"] = int(self.max_split_spin.value())
         cfg["min_content_safety_chunk_size"] = int(self.min_chunk_spin.value())
         cfg["translation_mode"] = self.mode_selector.get_current_mode()
+        cfg["enable_pagefold"] = self.enable_pagefold_check.isChecked()
+        cfg["pagefold_mode"] = self.pagefold_mode_combo.currentData() or "reference"
+        cfg["pagefold_font_size"] = float(self.pagefold_font_size_spin.value())
         # self.app_service.config = cfg  # 직접 할당 제거 (save_app_config 내부에서 처리됨)
         try:
             self.app_service.save_app_config(cfg)
@@ -787,6 +1009,65 @@ class SettingsTabQt(QtWidgets.QWidget):
                 "불러오기 실패",
                 f"설정 불러오기 중 오류 발생: {e}"
             )
+
+    @asyncSlot()
+    async def _on_auth_check_clicked(self) -> None:
+        """현재 UI에 설정된 프로바이더 인증 및 통신 상태를 테스트"""
+        self.auth_check_btn.setEnabled(False)
+        orig_text = self.auth_check_btn.text()
+        self.auth_check_btn.setText("점검 중...")
+        try:
+            provider = self.provider_combo.currentData() or "gemini"
+            api_keys = [line.strip() for line in self.api_keys_edit.toPlainText().splitlines() if line.strip()]
+
+            temp_cfg = {
+                "llm_provider": provider,
+                "api_keys": api_keys,
+                "api_key": api_keys[0] if api_keys else "",
+                "use_vertex_ai": self.use_vertex_check.isChecked(),
+                "service_account_file_path": self.sa_path_edit.text().strip() or None,
+                "gcp_project": self.gcp_project_edit.text().strip() or None,
+                "gcp_location": self.gcp_location_edit.text().strip() or None,
+                "claude_cli_path": self.cli_path_edit.text().strip() or "claude",
+                "claude_cli_model": self.model_name_combo.currentText().strip() or "default",
+                "claude_cli_api_key": api_keys[0] if (provider == "claude_cli" and api_keys) else None,
+                "codex_cli_path": self.cli_path_edit.text().strip() or "codex",
+                "codex_cli_model": self.model_name_combo.currentText().strip() or "gpt-5.5",
+                "codex_cli_api_key": api_keys[0] if (provider == "codex_cli" and api_keys) else None,
+                "antigravity_cli_path": self.cli_path_edit.text().strip() or "agy",
+                "antigravity_cli_model": self.model_name_combo.currentText().strip() or "default",
+                "openai_compatible_base_url": self.base_url_edit.text().strip(),
+                "openai_compatible_api_key": api_keys[0] if api_keys else "",
+                "openai_compatible_model": self.model_name_combo.currentText().strip() or "default",
+                "model_name": self.model_name_combo.currentText().strip(),
+            }
+
+            if hasattr(self.app_service, "check_llm_health_async"):
+                success, message = await self.app_service.check_llm_health_async(temp_cfg)
+            else:
+                success, message = False, "AppService에 check_llm_health_async 메서드가 없습니다."
+
+            if success:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "인증 / 연결 성공",
+                    f"{message}"
+                )
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "인증 / 연결 필요",
+                    f"{message}"
+                )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "점검 실패",
+                f"인증 점검 중 오류 발생: {e}"
+            )
+        finally:
+            self.auth_check_btn.setEnabled(True)
+            self.auth_check_btn.setText(orig_text)
 
     # Qt slots (UI thread)
     @QtCore.Slot(object)

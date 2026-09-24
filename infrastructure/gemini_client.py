@@ -127,12 +127,23 @@ class ContentFilterException(GeminiContentSafetyException):
 
 
 
-class GeminiClient:
+from infrastructure.base_client import BaseLLMClient
+
+
+class GeminiClient(BaseLLMClient):
     _CONTENT_SAFETY_PATTERNS = [
         "PROHIBITED_CONTENT", "SAFETY", "response was blocked",
         "BLOCKED_PROMPT", "SAFETY_BLOCKED", "blocked due to safety",
         "INTERNAL", "500", "504", "DEADLINE_EXCEEDED"
     ]
+
+    @property
+    def provider_name(self) -> str:
+        return "gemini"
+
+    @property
+    def supports_pagefold(self) -> bool:
+        return True
 
     _VERTEX_AI_SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
 
@@ -495,7 +506,17 @@ class GeminiClient:
                     logger.error(f"모델 목록 조회 실패 (키 회전 불가 또는 Vertex 모드): {error_message}")
                     raise GeminiApiException(f"모델 목록 조회 실패: {error_message}") from e
 
-
+    async def check_health_async(self) -> tuple[bool, str]:
+        """
+        Gemini API 인증 및 모델 목록 조회 상태를 점검합니다.
+        """
+        try:
+            models = await self.list_models_async()
+            count = len(models) if models else 0
+            mode_desc = "Vertex AI" if self.auth_mode == "VERTEX_AI" else f"API 키 ({len(self.api_keys_list)}개 등록됨)"
+            return True, f"Google Gemini API 인증 성공 ({mode_desc}, 감지된 모델: {count}개)"
+        except Exception as e:
+            return False, f"Gemini API 인증/연결 실패: {e}"
 
     # ============================================================================
     # 비동기 메서드 (Phase 2: asyncio 마이그레이션)
@@ -512,7 +533,8 @@ class GeminiClient:
         max_retries: int = 5,
         initial_backoff: float = 2.0,
         max_backoff: float = 60.0,
-        stream: bool = False
+        stream: bool = False,
+        multimodal_parts: Optional[List[genai_types.Part]] = None
     ) -> Optional[Union[str, Any]]:
         """
         비동기 텍스트 생성 메서드 (generate_text의 비동기 버전)
@@ -531,6 +553,7 @@ class GeminiClient:
             initial_backoff: 초기 백오프 시간(초)
             max_backoff: 최대 백오프 시간(초)
             stream: 스트리밍 여부
+            multimodal_parts: 추가 멀티모달 파트 (PDF 문서, 이미지 등)
             
         Returns:
             생성된 텍스트 또는 구조화된 출력
@@ -544,7 +567,8 @@ class GeminiClient:
                 prompt, model_name, generation_config_dict,
                 safety_settings_list_of_dicts, thinking_budget,
                 system_instruction_text, max_retries,
-                initial_backoff, max_backoff, stream
+                initial_backoff, max_backoff, stream,
+                multimodal_parts=multimodal_parts
             )
         except asyncio.CancelledError:
             logger.info(f"API 호출이 취소됨: {model_name}")
@@ -561,7 +585,8 @@ class GeminiClient:
         max_retries: int,
         initial_backoff: float,
         max_backoff: float,
-        stream: bool
+        stream: bool,
+        multimodal_parts: Optional[List[genai_types.Part]] = None
     ) -> Optional[Union[str, Any]]:
         """generate_text의 실제 비동기 구현 (client.aio 사용)"""
         if not self.client:
@@ -573,9 +598,19 @@ class GeminiClient:
         effective_model_name = self._normalize_model_name(model_name, for_api_key_mode=is_api_key_mode_for_norm)
         
         if isinstance(prompt, str):
-            final_sdk_contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=prompt)])]
+            parts = []
+            if multimodal_parts:
+                parts.extend(multimodal_parts)
+            parts.append(genai_types.Part.from_text(text=prompt))
+            final_sdk_contents = [genai_types.Content(role="user", parts=parts)]
         elif isinstance(prompt, list) and all(isinstance(item, genai_types.Content) for item in prompt):
-            final_sdk_contents = prompt
+            final_sdk_contents = list(prompt)
+            if multimodal_parts:
+                first_user = next((c for c in final_sdk_contents if c.role == "user"), None)
+                if first_user and hasattr(first_user, "parts"):
+                    first_user.parts = list(multimodal_parts) + list(first_user.parts or [])
+                else:
+                    final_sdk_contents.insert(0, genai_types.Content(role="user", parts=list(multimodal_parts)))
         else:
             raise ValueError("프롬프트는 문자열 또는 Content 객체의 리스트여야 합니다.")
 
@@ -615,6 +650,10 @@ class GeminiClient:
                     if 'http_options' not in final_generation_config_params:
                         final_generation_config_params['http_options'] = self.http_options
                 
+                    if multimodal_parts and "media_resolution" not in final_generation_config_params:
+                        if hasattr(genai_types, "MediaResolution"):
+                            final_generation_config_params["media_resolution"] = genai_types.MediaResolution.MEDIA_RESOLUTION_LOW
+
                     if system_instruction_text and system_instruction_text.strip():
                         final_generation_config_params['system_instruction'] = system_instruction_text
                 

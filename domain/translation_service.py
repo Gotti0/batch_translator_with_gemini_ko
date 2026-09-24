@@ -35,6 +35,11 @@ try:
         TranslationJobProgressDTO
     )
     from utils.epub_processor import EpubProcessor
+    from utils.pdf_packer import (
+        pack_text_to_pdf,
+        restore_response_newlines,
+        PDF_NEWLINE_MARKER_DIRECTIVE
+    )
 except ImportError:
     from infrastructure.gemini_client import (  # type: ignore
         GeminiClient,
@@ -52,6 +57,11 @@ except ImportError:
     from utils.lang_utils import normalize_language_code # type: ignore
     from core.dtos import GlossaryEntryDTO # type: ignore
     from google.genai import types as genai_types # Fallback import
+    from utils.pdf_packer import (  # type: ignore
+        pack_text_to_pdf,
+        restore_response_newlines,
+        PDF_NEWLINE_MARKER_DIRECTIVE
+    )
 
 logger = setup_logger(__name__)
 
@@ -128,17 +138,19 @@ class TranslationService:
         self.config = config
         self.chunk_service = ChunkService()
         self.glossary_entries_for_injection: List[GlossaryEntryDTO] = [] # Renamed and type changed
+        self._cached_glossary_pdf_part: Optional[genai_types.Part] = None
         self.stop_check_callback: Optional[Callable[[], bool]] = None  # 중단 요청 확인용 콜백
 
-        if self.config.get("enable_dynamic_glossary_injection", False): # Key changed
-            self._load_glossary_data() # 함수명 변경
-            logger.info("동적 용어집 주입 활성화됨. 용어집 데이터 로드 시도.") # 메시지 변경
+        if self.config.get("enable_dynamic_glossary_injection", False) or self.config.get("enable_pagefold", True):
+            self._load_glossary_data()
+            logger.info("용어집 데이터 로드 완료 (동적 주입 또는 PageFold용).")
         else:
-            logger.info("동적 용어집 주입 비활성화됨. 용어집 컨텍스트 없이 번역합니다.") # 메시지 변경
+            logger.info("용어집 주입 비활성화됨. 용어집 컨텍스트 없이 번역합니다.")
 
     def _load_glossary_data(self): # 함수명 변경
-        # 데이터를 로드하기 전에 항상 목록을 초기화합니다.
+        # 데이터를 로드하기 전에 항상 목록 및 캐시를 초기화합니다.
         self.glossary_entries_for_injection = []
+        self._cached_glossary_pdf_part = None
         
         # 통합된 용어집 경로 사용
         lorebook_json_path_str = self.config.get("glossary_json_path")
@@ -180,6 +192,56 @@ class TranslationService:
         else:
             logger.info(f"용어집 JSON 파일({lorebook_json_path_str})이 설정되지 않았거나 존재하지 않습니다. 동적 주입을 위해 용어집을 사용하지 않습니다.") # 메시지 변경
             self.glossary_entries_for_injection = []
+
+    def _get_pagefold_glossary_pdf_part(self) -> Optional[genai_types.Part]:
+        """
+        등록된 전체 용어집을 2pt 고밀도 PDF로 실시간 빌드하여 Gemini Part로 반환합니다.
+        세션 동안 캐싱하여 반복 연산을 방지합니다.
+        """
+        if not getattr(self.gemini_client, "supports_pagefold", False):
+            return None
+
+        if not self.config.get("enable_pagefold", True):
+            return None
+
+        mode = self.config.get("pagefold_mode", "reference")
+        if mode not in ("reference", "all"):
+            return None
+
+        if not self.glossary_entries_for_injection:
+            return None
+
+        if getattr(self, "_cached_glossary_pdf_part", None) is not None:
+            return self._cached_glossary_pdf_part
+
+        final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
+        entries = [
+            e for e in self.glossary_entries_for_injection
+            if e.target_language == final_target_lang
+        ]
+        if not entries:
+            return None
+
+        lines = [
+            "=== GLOSSARY & REFERENCE KNOWLEDGE BASE ===",
+            "Translate each term strictly using the specified target translation below:",
+            ""
+        ]
+        sorted_entries = sorted(entries, key=lambda x: (-x.occurrence_count, x.keyword.lower()))
+        for entry in sorted_entries:
+            lines.append(f"- {entry.keyword} -> {entry.translated_keyword} ({entry.target_language}) (등장: {entry.occurrence_count}회)")
+
+        full_glossary_text = "\n".join(lines)
+        font_size = float(self.config.get("pagefold_font_size", 1.0))
+        packed = pack_text_to_pdf(full_glossary_text, font_size=font_size)
+        logger.info(
+            f"📄 [PageFold] 전체 용어집({len(sorted_entries)}개 항목, {len(full_glossary_text)}자)을 "
+            f"고밀도 PDF {packed.page_count}페이지(폰트 {font_size}pt)로 패키징 완료."
+        )
+
+        pdf_part = genai_types.Part.from_bytes(data=packed.pdf_bytes, mime_type="application/pdf")
+        self._cached_glossary_pdf_part = pdf_part
+        return pdf_part
 
     def _construct_prompt(self, chunk_text: str) -> str:
         prompt_template = self.config.get("prompts", "Translate to Korean: {{slot}}")
@@ -396,8 +458,15 @@ class TranslationService:
         
         # 용어집 및 프롬프트 준비 (동기 메서드와 동일)
         glossary_context_str = "용어집 컨텍스트 없음"
+        pagefold_multimodal_parts: Optional[List[genai_types.Part]] = None
+
+        if self.config.get("enable_pagefold", True):
+            glossary_pdf = self._get_pagefold_glossary_pdf_part()
+            if glossary_pdf is not None:
+                pagefold_multimodal_parts = [glossary_pdf]
+                glossary_context_str = "참조용 전체 용어집이 첨부된 고밀도 PDF 문서에 수록되어 있습니다. PDF에 명시된 용어 번역 지침을 최우선으로 일관되게 준수하세요."
         
-        if self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
+        if not pagefold_multimodal_parts and self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
             logger.info("용어집 컨텍스트 주입 활성화됨 (청크 내 관련 키워드 체크).")
             chunk_text_lower = text_chunk.lower()
             # target_language 정규화 적용
@@ -423,6 +492,7 @@ class TranslationService:
 
         api_prompt_for_gemini_client: List[genai_types.Content] = []
         api_system_instruction: Optional[str] = None
+        user_prompt_str = ""
 
         if self.config.get("enable_prefill_translation", False):
             logger.info("프리필 번역 모드 활성화됨 (Slot Injection 체크).")
@@ -461,6 +531,33 @@ class TranslationService:
                 genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
             ]
 
+        # Marked Tag (<pdf>...</pdf>) 지원
+        if getattr(self.gemini_client, "supports_pagefold", False) and self.config.get("enable_pagefold", True) and "<pdf>" in user_prompt_str and "</pdf>" in user_prompt_str:
+            def _extract_pdf_block(match):
+                block_content = match.group(1).strip()
+                if block_content:
+                    packed_block = pack_text_to_pdf(block_content, font_size=float(self.config.get("pagefold_font_size", 1.0)))
+                    part = genai_types.Part.from_bytes(data=packed_block.pdf_bytes, mime_type="application/pdf")
+                    nonlocal pagefold_multimodal_parts
+                    if pagefold_multimodal_parts is None:
+                        pagefold_multimodal_parts = []
+                    pagefold_multimodal_parts.append(part)
+                    return "[첨부된 고밀도 PDF 참조 문서]"
+                return ""
+            user_prompt_str = re.sub(r"<pdf>(.*?)</pdf>", _extract_pdf_block, user_prompt_str, flags=re.DOTALL)
+            if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "user":
+                api_prompt_for_gemini_client[-1].parts = [genai_types.Part.from_text(text=user_prompt_str)]
+        elif "<pdf>" in user_prompt_str and "</pdf>" in user_prompt_str:
+            user_prompt_str = user_prompt_str.replace("<pdf>", "").replace("</pdf>", "")
+            if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "user":
+                api_prompt_for_gemini_client[-1].parts = [genai_types.Part.from_text(text=user_prompt_str)]
+
+        if pagefold_multimodal_parts:
+            if api_system_instruction:
+                api_system_instruction = f"{api_system_instruction}\n\n{PDF_NEWLINE_MARKER_DIRECTIVE}".strip()
+            else:
+                api_system_instruction = PDF_NEWLINE_MARKER_DIRECTIVE
+
         try:
             translated_text_from_api = await self.gemini_client.generate_text_async(
                 prompt=api_prompt_for_gemini_client,
@@ -472,7 +569,8 @@ class TranslationService:
                 },
                 thinking_budget=self.config.get("thinking_budget", None),
                 system_instruction_text=api_system_instruction,
-                stream=stream
+                stream=stream,
+                multimodal_parts=pagefold_multimodal_parts
             )
 
             if translated_text_from_api is None:
@@ -481,7 +579,10 @@ class TranslationService:
             if not translated_text_from_api.strip() and text_chunk.strip():
                 raise GeminiContentSafetyException("API가 비어있지 않은 입력에 대해 빈 번역 결과를 반환했습니다.")
 
-            return translated_text_from_api.strip()
+            final_translated = translated_text_from_api.strip()
+            if self.config.get("enable_pagefold", True):
+                final_translated = restore_response_newlines(final_translated)
+            return final_translated
 
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소되었습니다")
@@ -875,7 +976,16 @@ class TranslationService:
 
             # 2. 용어집 및 프롬프트 준비
             glossary_context_str = "용어집 컨텍스트 없음"
-            if self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
+            integrity_multimodal_parts: Optional[List[genai_types.Part]] = None
+
+            if self.config.get("enable_pagefold", True):
+                glossary_pdf = self._get_pagefold_glossary_pdf_part()
+                if glossary_pdf is not None:
+                    integrity_multimodal_parts = [glossary_pdf]
+                    glossary_context_str = "참조용 전체 용어집이 첨부된 고밀도 PDF 문서에 수록되어 있습니다. PDF에 명시된 용어 번역 지침을 최우선으로 일관되게 준수하세요."
+                    sys_instr = f"{sys_instr}\n\n{PDF_NEWLINE_MARKER_DIRECTIVE}".strip()
+
+            if not integrity_multimodal_parts and self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
                 chunk_text_lower = chunk_json_str.lower()
                 final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
                 relevant_entries = [e for e in self.glossary_entries_for_injection if e.target_language == final_target_lang and e.keyword.lower() in chunk_text_lower]
@@ -947,10 +1057,28 @@ class TranslationService:
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
                 generation_config_dict=gen_config,
                 thinking_budget=self.config.get("thinking_budget", None),
-                system_instruction_text=sys_instr
+                system_instruction_text=sys_instr,
+                multimodal_parts=integrity_multimodal_parts
             )
 
             # 3. 응답 파싱 및 검증
+            if isinstance(raw_response, str):
+                try:
+                    text = raw_response.strip()
+                    if text.startswith("```json"):
+                        text = text[7:]
+                    elif text.startswith("```"):
+                        text = text[3:]
+                    if text.endswith("```"):
+                        text = text[:-3]
+                    parsed = json.loads(text.strip())
+                    if isinstance(parsed, list):
+                        raw_response = parsed
+                    elif isinstance(parsed, dict) and "units" in parsed:
+                        raw_response = parsed["units"]
+                except Exception:
+                    pass
+
             if not raw_response or not isinstance(raw_response, list):
                 # JSON 파싱 실패 또는 빈 응답 -> Binary Split.
                 # 검열 시 Gemini가 빈 응답이나 깨진 응답을 돌려주기도 하므로 분할로 푼다.
@@ -973,7 +1101,7 @@ class TranslationService:
                     continue
             
             translated_map = {
-                u.id: (u.translated_text if u.translated_text else "")
+                u.id: (restore_response_newlines(u.translated_text) if u.translated_text else "")
                 for u in translated_units
             }
             # 빈 번역문은 '받은 것'이 아니라 누락으로 센다. 키 존재만 보면 모델이
