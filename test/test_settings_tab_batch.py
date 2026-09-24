@@ -115,3 +115,15 @@ class TestSettingsTabBatch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBatchKeyField(TestSettingsTabBatch):
+    def test_batch_key_saved_and_loaded(self):
+        self.assertEqual(self.tab.batch_key_edit.echoMode(), QtWidgets.QLineEdit.Password)
+        self.tab.batch_key_edit.setText(" paid-key ")
+        self.tab._save_config_to_service()
+        self.assertEqual(self.svc.save_app_config.call_args[0][0]["batch_api_key"], "paid-key")
+
+        self.svc.config = {"llm_provider": "gemini", "batch_api_key": "loaded-key"}
+        self.tab._load_config()
+        self.assertEqual(self.tab.batch_key_edit.text(), "loaded-key")

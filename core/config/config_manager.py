@@ -140,6 +140,7 @@ class ConfigManager:
             "pagefold_service_tier": "standard", # standard, flex, priority
 
             # 배치 번역 (Gemini Batch API)
+            "batch_api_key": "",  # 배치 제출용 유료 키 (무료 티어 키는 Batch API 사용 불가). 비우면 첫 API 키
             "batch_poll_interval_seconds": 60,
             "batch_max_request_bytes": 18_000_000,  # 인라인 요청 한도 20MB에 여유를 둔 작업당 크기
 

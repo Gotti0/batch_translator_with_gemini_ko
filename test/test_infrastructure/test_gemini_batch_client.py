@@ -146,10 +146,10 @@ class TestGeminiBatchClient(unittest.IsolatedAsyncioTestCase):
             self.sdk.aio.batches.get.side_effect = _api_error(code)
             with self.assertRaises(exc):
                 await self.client.get("batches/1")
-        self.sdk.aio.batches.get.side_effect = _api_error(403, "billing required")
+        self.sdk.aio.batches.create.side_effect = _api_error(403, "billing required")
         with self.assertRaises(BtgApiClientException) as ctx:
-            await self.client.get("batches/1")
-        self.assertIn("결제", str(ctx.exception))
+            await self.client.submit("m", [], "x")
+        self.assertIn("유료 키", str(ctx.exception))
 
     async def test_find_by_display_name(self):
         self.sdk.aio.batches.list.return_value = _AsyncIter([
@@ -175,3 +175,21 @@ class TestGeminiBatchClient(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFreeTierHint(unittest.IsolatedAsyncioTestCase):
+    async def test_submit_rejection_mentions_free_tier(self):
+        from infrastructure.gemini_batch_client import FREE_TIER_HINT
+        sdk = MagicMock()
+        sdk.aio.batches.create = AsyncMock(side_effect=_api_error(400, "Batch API is not available for free tier"))
+        sdk.aio.batches.get = AsyncMock(side_effect=_api_error(403, "denied"))
+        client = GeminiBatchClient("key", sdk_client=sdk)
+
+        with self.assertRaises(BtgApiInvalidRequestException) as ctx:
+            await client.submit("gemini-3.8-flash", [], "x")
+        self.assertIn(FREE_TIER_HINT, str(ctx.exception))
+
+        # 조회 실패에는 붙이지 않는다 (이미 제출된 작업이므로 티어 문제가 아님)
+        with self.assertRaises(BtgApiClientException) as ctx:
+            await client.get("batches/1")
+        self.assertNotIn(FREE_TIER_HINT, str(ctx.exception))

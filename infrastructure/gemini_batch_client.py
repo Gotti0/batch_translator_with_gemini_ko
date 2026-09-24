@@ -30,6 +30,10 @@ from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
+# 무료 티어 키는 Batch API를 쓸 수 없다 (실사용 확인). 제출 거부 시 이유를 알려준다.
+FREE_TIER_HINT = "무료 티어 키는 Batch API를 사용할 수 없습니다. 결제가 설정된 유료 키를 '배치용 API 키'에 입력하세요."
+_TIER_KEYWORDS = ("free", "tier", "billing", "paid", "quota", "permission")
+
 # 응답이 비었을 때 검열로 보는 finish_reason
 _BLOCKED_FINISH_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY"}
 
@@ -191,12 +195,14 @@ class GeminiBatchClient:
         code = getattr(e, "code", None)
         message = getattr(e, "message", None) or str(e)
         text = f"배치 {action} 실패 ({code}): {message}" if code else f"배치 {action} 실패: {message}"
+        if action == "제출" and (code in (400, 401, 403) or any(k in str(message).lower() for k in _TIER_KEYWORDS)):
+            text = f"{text}\n{FREE_TIER_HINT}"
         if code == 429:
             return BtgApiRateLimitException(text, original_exception=e)
         if code in (400, 404):
             return BtgApiInvalidRequestException(text, original_exception=e)
         if code in (401, 403):
-            return BtgApiClientException(f"{text}. 이 키로 Batch API를 쓸 수 있는지(결제 설정 등) 확인하세요.", original_exception=e)
+            return BtgApiClientException(text, original_exception=e)
         return BtgApiClientException(text, original_exception=e)
 
     async def submit(

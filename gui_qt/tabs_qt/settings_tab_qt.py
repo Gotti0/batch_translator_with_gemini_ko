@@ -497,6 +497,16 @@ class SettingsTabQt(QtWidgets.QWidget):
         # --- 배치 작업 (배치 번역 모드 전용) ---
         self.batch_group = QtWidgets.QGroupBox("배치 작업")
         batch_vbox = QtWidgets.QVBoxLayout(self.batch_group)
+        self.batch_key_edit = QtWidgets.QLineEdit()
+        self.batch_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.batch_key_edit.setPlaceholderText("선택 사항: 비우면 API 키 목록의 첫 키로 제출")
+        TooltipQt(
+            self.batch_key_edit,
+            "배치 제출에 쓸 API 키입니다. 무료 티어 키는 Batch API를 사용할 수 없으므로 결제가 설정된 유료 키를 입력하세요.\n"
+            "작업은 제출한 키로만 조회되므로, 진행 중에는 이 키를 바꾸거나 지우지 마세요.",
+        )
+        batch_key_row = QtWidgets.QFormLayout()
+        batch_key_row.addRow("배치용 API 키 (유료)", self.batch_key_edit)
         self.batch_status_label = QtWidgets.QLabel("제출한 배치 작업이 없습니다.")
         self.batch_status_label.setWordWrap(True)
         self.batch_jobs_table = QtWidgets.QTableWidget(0, 5)
@@ -519,6 +529,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         for btn in (self.batch_refresh_btn, self.batch_cancel_btn, self.batch_realtime_btn,
                     self.batch_resubmit_btn, self.batch_keep_btn):
             batch_btn_row.addWidget(btn)
+        batch_vbox.addLayout(batch_key_row)
         batch_vbox.addWidget(self.batch_status_label)
         batch_vbox.addWidget(self.batch_jobs_table)
         batch_vbox.addLayout(batch_btn_row)
@@ -936,6 +947,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.pagefold_font_size_spin.setValue(pf_font_size)
         self._on_pagefold_toggled(self.enable_pagefold_check.isChecked())
         
+        self.batch_key_edit.setText(str(cfg.get("batch_api_key") or ""))
+
         # 번역 모드 선택 동기화 (신규)
         mode_val = str(cfg.get("translation_mode", "standard"))
         self.mode_selector._on_card_clicked(mode_val)
@@ -1001,6 +1014,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["max_content_safety_split_attempts"] = int(self.max_split_spin.value())
         cfg["min_content_safety_chunk_size"] = int(self.min_chunk_spin.value())
         cfg["translation_mode"] = self.mode_selector.get_current_mode()
+        cfg["batch_api_key"] = self.batch_key_edit.text().strip()
         cfg["enable_pagefold"] = self.enable_pagefold_check.isChecked()
         cfg["pagefold_mode"] = self.pagefold_mode_combo.currentData() or "reference"
         cfg["pagefold_font_size"] = float(self.pagefold_font_size_spin.value())

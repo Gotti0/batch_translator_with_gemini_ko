@@ -85,7 +85,7 @@ class ModeSelectorGroup(QtWidgets.QWidget):
             ("standard", "표준 번역", "빠르고 자연스러운 흐름 중심의 일반 텍스트 번역 모드입니다.", "📝"),
             ("integrity", "무결성 번역", "줄 단위 누락 방지 및 정확한 매핑을 보장하는 정밀 번역 모드입니다.", "🔒"),
             ("epub", "EPUB 번역", "HTML 구조와 스타일을 그대로 유지하며 전자책을 번역하는 모드입니다.", "📚"),
-            ("batch", "배치 번역", "Gemini Batch API로 비용을 50% 줄입니다. 결과는 최대 24시간 뒤에 받습니다.", "📦"),
+            ("batch", "배치 번역", "비용 50% 절감, 결과는 최대 24시간 뒤. 결제가 설정된 유료 API 키가 필요합니다.", "📦"),
         ]
 
         for m_id, title, desc, icon in modes:
