@@ -155,3 +155,37 @@ class TestMemorySection(TestSettingsTabBatch):
         self.assertEqual(self.tab.voyage_model_combo.currentText(), "voyage-4-large")
         self.assertEqual(self.tab.memory_top_k_spin.value(), 5)
         self.assertAlmostEqual(self.tab.memory_min_sim_spin.value(), 0.7)
+
+
+class TestMemoryGardenUI(TestSettingsTabBatch):
+    def test_depth_and_extraction_saved_loaded(self):
+        self.tab.enable_memory_check.setChecked(True)
+        self.assertFalse(self.tab.memory_extract_model_edit.isEnabled())
+        self.tab.memory_extract_check.setChecked(True)
+        self.assertTrue(self.tab.memory_extract_model_edit.isEnabled())
+        self.tab.memory_extract_model_edit.setText("gemini-lite")
+        self.tab.memory_depth_combo.setCurrentIndex(self.tab.memory_depth_combo.findData("deep"))
+        self.tab._save_config_to_service()
+        saved = self.svc.save_app_config.call_args[0][0]
+        self.assertEqual((saved["memory_depth"], saved["enable_memory_extraction"], saved["memory_extraction_model"]),
+                         ("deep", True, "gemini-lite"))
+
+        self.svc.config = {"llm_provider": "gemini", "enable_translation_memory": True, "memory_depth": "fast"}
+        self.tab._load_config()
+        self.assertEqual(self.tab.memory_depth_combo.currentData(), "fast")
+        self.assertFalse(self.tab.memory_extract_check.isChecked())
+
+    def test_memory_garden_dialog_renders(self):
+        from gui_qt.tabs_qt.settings_tab_qt import MemoryGardenDialog
+        overview = {
+            "summary": {"canon": 2, "entity": 1, "episode": 10, "edges": 5, "cold": 1},
+            "entities": [{"name": "リリア", "aliases": ["リリちゃん"], "translated": "릴리아", "note": "반말",
+                          "category": "character", "last_chunk": 4, "fire_count": 3, "cold": False,
+                          "evidence": [{"chunk": 0, "excerpt": "「行くよ」とリリアが言った。"}]}],
+            "merge_log": [{"absorbed": "リリちゃん", "into": "リリア"}],
+        }
+        dlg = MemoryGardenDialog(overview, self.tab)
+        self.assertEqual(dlg.table.rowCount(), 1)
+        self.assertEqual(dlg.table.item(0, 0).text(), "リリア (リリちゃん)")
+        self.assertEqual(dlg.table.item(0, 3).text(), "청크 5")
+        dlg.deleteLater()

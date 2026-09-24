@@ -1260,6 +1260,32 @@ class AppService:
             logger.info(f"인물 메모 추출 {len(pending)}건 마무리 대기...")
             await asyncio.gather(*pending, return_exceptions=True)
 
+    def get_memory_overview(self, input_file_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+        """기억뜰 보기용: 저장된 그래프의 인물 가지와 최근 머지 기록 (네트워크 없음)."""
+        from domain.memory_graph import MemoryGraph
+        path = TranslationMemoryStore.directory_for(Path(input_file_path)) / "graph.json"
+        if not path.exists():
+            return None
+        graph = MemoryGraph.load(path)
+        last_chunk = max((u.last_fired_chunk for u in graph.units.values()), default=-1)
+        entities = sorted(
+            (u for u in graph.units.values() if u.kind == "entity"),
+            key=lambda u: (-u.fire_count, u.name),
+        )
+        return {
+            "summary": graph.summary(last_chunk if last_chunk >= 0 else None),
+            "entities": [
+                {
+                    "name": u.name, "aliases": u.aliases, "translated": u.translated, "note": u.note,
+                    "category": u.category, "last_chunk": u.last_fired_chunk, "fire_count": u.fire_count,
+                    "cold": graph.is_cold(u, last_chunk) if last_chunk >= 0 else False,
+                    "evidence": u.evidence,
+                }
+                for u in entities
+            ],
+            "merge_log": list(reversed(graph.merge_log)),
+        }
+
     async def check_embedding_health_async(self, config_override: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
         """임베딩 프로바이더(Voyage) 연결을 점검한다."""
         cfg = config_override or self.config or {}

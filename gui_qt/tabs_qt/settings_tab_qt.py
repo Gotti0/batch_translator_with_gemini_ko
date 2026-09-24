@@ -142,6 +142,44 @@ class ResizablePlainTextEdit(QtWidgets.QWidget):
         self.text_edit.setPlainText(text)
 
 
+class MemoryGardenDialog(QtWidgets.QDialog):
+    """기억뜰 보기: 인물 가지(메모·마지막 등장·호박 여부)와 최근 자동 흡수 기록."""
+
+    def __init__(self, overview: dict, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("기억뜰")
+        self.resize(820, 520)
+        layout = QtWidgets.QVBoxLayout(self)
+        s = overview.get("summary", {})
+        layout.addWidget(QtWidgets.QLabel(
+            f"용어(캐논) {s.get('canon', 0)} · 인물 {s.get('entity', 0)} · 번역 문단 {s.get('episode', 0)} · "
+            f"연결 {s.get('edges', 0)} · 호박 속 {s.get('cold', 0)}"
+        ))
+        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["이름", "번역", "메모 (말투·호칭)", "마지막 등장", "원문 닻"])
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        for e in overview.get("entities", []):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            name = e["name"] + (f" ({', '.join(e['aliases'])})" if e.get("aliases") else "")
+            last = "호박 속" if e.get("cold") else (f"청크 {e['last_chunk'] + 1}" if e.get("last_chunk", -1) >= 0 else "")
+            anchor = e["evidence"][-1]["excerpt"] if e.get("evidence") else ""
+            for col, value in enumerate([name, e.get("translated", ""), e.get("note", ""), last, anchor]):
+                self.table.setItem(row, col, QtWidgets.QTableWidgetItem(value))
+        self.table.resizeColumnsToContents()
+        layout.addWidget(self.table, 1)
+        merges = overview.get("merge_log", [])
+        if merges:
+            layout.addWidget(QtWidgets.QLabel(
+                "최근 자동 흡수: " + " · ".join(f"{m['absorbed']} → {m['into']}" for m in merges[:10])
+            ))
+        close = QtWidgets.QPushButton("닫기")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close, 0, QtCore.Qt.AlignRight)
+
+
 class SettingsTabQt(QtWidgets.QWidget):
     """Minimal PySide6 settings tab to drive async translation"""
 
@@ -485,6 +523,26 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.memory_min_sim_spin.setDecimals(2)
         self.memory_min_sim_spin.setValue(0.55)
         TooltipQt(self.memory_min_sim_spin, "이보다 유사도가 낮은 문단은 예시로 쓰지 않습니다.")
+        self.memory_depth_combo = NoWheelComboBox()
+        self.memory_depth_combo.addItem("빠르게 — 직접 나온 이름만", "fast")
+        self.memory_depth_combo.addItem("무난하게 — 강한 연결은 멀리도", "balanced")
+        self.memory_depth_combo.addItem("깊게 — 가라앉은 기억까지", "deep")
+        self.memory_depth_combo.setCurrentIndex(1)
+        TooltipQt(
+            self.memory_depth_combo,
+            "연상 확산 깊이입니다. 원문에 나온 이름·용어에서 연결된 기억으로 얼마나 멀리 퍼질지 정합니다.\n"
+            "오래 등장하지 않은 기억은 '호박 속'으로 가라앉으며, 깊게를 고르면 약한 연결로도 다시 떠오릅니다.",
+        )
+        self.memory_extract_check = QtWidgets.QCheckBox("인물 메모 자동 추출 (청크마다 LLM 호출 1회 추가)")
+        TooltipQt(
+            self.memory_extract_check,
+            "번역이 끝난 청크에서 인물의 말투·호칭·1인칭·관계를 뽑아 기억에 넣습니다.\n"
+            "번역과 별도로 뒤에서 실행되어 번역 속도를 늦추지 않습니다. 저렴한 모델을 지정하는 것을 권장합니다.",
+        )
+        self.memory_extract_model_edit = QtWidgets.QLineEdit()
+        self.memory_extract_model_edit.setPlaceholderText("추출 모델 (비우면 번역 모델 사용)")
+        self.memory_view_btn = QtWidgets.QPushButton("기억뜰 보기")
+        TooltipQt(self.memory_view_btn, "현재 입력 파일의 기억뜰(인물 메모, 머지 기록)을 봅니다.")
         self.memory_test_btn = QtWidgets.QPushButton("Voyage 연결 테스트")
         memory_key_row = QtWidgets.QHBoxLayout()
         memory_key_row.addWidget(self.voyage_key_edit, 1)
@@ -494,6 +552,10 @@ class SettingsTabQt(QtWidgets.QWidget):
         memory_form.addRow("임베딩 모델", self.voyage_model_combo)
         memory_form.addRow("예시 수", self.memory_top_k_spin)
         memory_form.addRow("최소 유사도", self.memory_min_sim_spin)
+        memory_form.addRow("연상 깊이", self.memory_depth_combo)
+        memory_form.addRow(self.memory_extract_check)
+        memory_form.addRow("추출 모델", self.memory_extract_model_edit)
+        memory_form.addRow("", self.memory_view_btn)
 
         pagefold_group = QtWidgets.QGroupBox("PageFold 토큰 최적화")
         pagefold_form = QtWidgets.QFormLayout(pagefold_group)
@@ -637,6 +699,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.enable_pagefold_check.toggled.connect(self._on_pagefold_toggled)
         self.enable_memory_check.toggled.connect(self._on_memory_toggled)
         self.memory_test_btn.clicked.connect(self._on_memory_test_clicked)
+        self.memory_extract_check.toggled.connect(lambda _: self._on_memory_toggled(self.enable_memory_check.isChecked()))
+        self.memory_view_btn.clicked.connect(self._on_memory_view_clicked)
         self.batch_refresh_btn.clicked.connect(self._on_batch_refresh_clicked)
         self.batch_cancel_btn.clicked.connect(self._on_batch_cancel_clicked)
         self.batch_realtime_btn.clicked.connect(self._on_batch_realtime_clicked)
@@ -747,8 +811,20 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     def _on_memory_toggled(self, checked: bool) -> None:
         for w in (self.voyage_key_edit, self.voyage_model_combo, self.memory_top_k_spin,
-                  self.memory_min_sim_spin, self.memory_test_btn):
+                  self.memory_min_sim_spin, self.memory_test_btn, self.memory_depth_combo,
+                  self.memory_extract_check):
             w.setEnabled(checked)
+        self.memory_extract_model_edit.setEnabled(checked and self.memory_extract_check.isChecked())
+
+    def _on_memory_view_clicked(self) -> None:
+        overview = None
+        input_path = self.input_edit.text().strip()
+        if input_path and hasattr(self.app_service, "get_memory_overview"):
+            overview = self.app_service.get_memory_overview(input_path)
+        if not overview:
+            QtWidgets.QMessageBox.information(self, "기억뜰", "아직 이 파일의 기억뜰이 없습니다. 번역 기억을 켜고 번역하면 자라기 시작합니다.")
+            return
+        MemoryGardenDialog(overview, self).exec()
 
     @asyncSlot()
     async def _on_memory_test_clicked(self) -> None:
@@ -1014,6 +1090,10 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.voyage_model_combo.setCurrentText(str(cfg.get("voyage_model") or defaults.get("voyage_model") or "voyage-4-lite"))
         self.memory_top_k_spin.setValue(int(cfg.get("memory_top_k", defaults.get("memory_top_k", 3))))
         self.memory_min_sim_spin.setValue(float(cfg.get("memory_min_similarity", defaults.get("memory_min_similarity", 0.55))))
+        depth_idx = self.memory_depth_combo.findData(str(cfg.get("memory_depth", defaults.get("memory_depth", "balanced"))))
+        self.memory_depth_combo.setCurrentIndex(depth_idx if depth_idx != -1 else 1)
+        self.memory_extract_check.setChecked(bool(cfg.get("enable_memory_extraction", defaults.get("enable_memory_extraction", False))))
+        self.memory_extract_model_edit.setText(str(cfg.get("memory_extraction_model") or ""))
         self._on_memory_toggled(self.enable_memory_check.isChecked())
         
         self.batch_key_edit.setText(str(cfg.get("batch_api_key") or ""))
@@ -1092,6 +1172,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["voyage_model"] = self.voyage_model_combo.currentText().strip() or "voyage-4-lite"
         cfg["memory_top_k"] = int(self.memory_top_k_spin.value())
         cfg["memory_min_similarity"] = float(self.memory_min_sim_spin.value())
+        cfg["memory_depth"] = self.memory_depth_combo.currentData() or "balanced"
+        cfg["enable_memory_extraction"] = self.memory_extract_check.isChecked()
+        cfg["memory_extraction_model"] = self.memory_extract_model_edit.text().strip()
         # self.app_service.config = cfg  # 직접 할당 제거 (save_app_config 내부에서 처리됨)
         try:
             self.app_service.save_app_config(cfg)
