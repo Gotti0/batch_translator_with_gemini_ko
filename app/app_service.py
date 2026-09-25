@@ -71,6 +71,15 @@ except ImportError:
 
 logger = setup_logger(__name__)
 
+
+def _log_health_result(kind: str, provider: str, ok: bool, message: str) -> None:
+    """헬스체크 결과를 실행 로그에 남긴다 (성공은 INFO, 실패는 WARNING)."""
+    if ok:
+        logger.info(f"{kind} 헬스체크 성공 (프로바이더: {provider}): {message}")
+    else:
+        logger.warning(f"{kind} 헬스체크 실패 (프로바이더: {provider}): {message}")
+
+
 class AppService:
     """
     애플리케이션의 주요 유스케이스를 조정하는 서비스 계층입니다.
@@ -337,15 +346,19 @@ class AppService:
             tuple[bool, str]: (성공 여부, 진단 메시지)
         """
         cfg = config_override or self.config or {}
+        provider = cfg.get("llm_provider", "gemini")
+        logger.info(f"LLM 헬스체크 시작 (프로바이더: {provider})")
         try:
             temp_client = LLMClientFactory.create_client(
                 config=cfg,
                 requests_per_minute=cfg.get("requests_per_minute"),
             )
-            return await temp_client.check_health_async()
+            ok, message = await temp_client.check_health_async()
         except Exception as e:
             logger.error(f"LLM 헬스체크 중 예외: {e}", exc_info=True)
             return False, f"클라이언트 생성 또는 점검 실패: {e}"
+        _log_health_result("LLM", provider, ok, message)
+        return ok, message
 
     def extract_glossary(
         self,
@@ -1347,11 +1360,16 @@ class AppService:
     async def check_embedding_health_async(self, config_override: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
         """임베딩 프로바이더(Voyage) 연결을 점검한다."""
         cfg = config_override or self.config or {}
+        provider = cfg.get("embedding_provider", "voyage")
+        logger.info(f"임베딩 헬스체크 시작 (프로바이더: {provider})")
         try:
             factory = self.embedding_client_factory or create_embedding_client
-            return await factory(cfg).check_health_async()
+            ok, message = await factory(cfg).check_health_async()
         except Exception as e:
+            logger.error(f"임베딩 헬스체크 중 예외: {e}", exc_info=True)
             return False, f"임베딩 클라이언트 생성 또는 점검 실패: {e}"
+        _log_health_result("임베딩", provider, ok, message)
+        return ok, message
 
     # ============================================================================
     # 배치 번역 (Gemini Batch API)

@@ -7,8 +7,23 @@ Base LLM Client Interface for Neo Batch Translator (BTG)
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Union
+
+
+
+def kill_if_running(proc: Optional[asyncio.subprocess.Process]) -> None:
+    """아직 끝나지 않은 CLI 서브프로세스를 종료한다.
+
+    CLI 클라이언트는 호출이 취소(바깥 wait_for 제한 시간, 번역 중지)되거나 제한 시간을 넘길 때
+    이것으로 프로세스를 정리한다. 취소는 안쪽 TimeoutError 경로를 타지 않으므로 따로 불러야 한다.
+    """
+    if proc is not None and proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
 
 
 class BaseLLMClient(ABC):

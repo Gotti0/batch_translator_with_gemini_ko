@@ -154,3 +154,53 @@ class TestAppService:
 # 
 #     def test_resume_aborts_if_file_changed(self, mock_dependencies, tmp_path):
 #         pass
+
+
+# --- 헬스체크 로깅 ---
+
+class TestHealthCheckLogging:
+    """연결 테스트의 시작과 결과가 실행 로그에 남는지 확인한다."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_llm_health_success_logged(self, app_service_instance):
+        client = MagicMock()
+        client.check_health_async = AsyncMock(return_value=(True, "Claude CLI 인증 성공"))
+        with patch('app.app_service.LLMClientFactory.create_client', return_value=client), \
+             patch('app.app_service.logger') as log:
+            result = self._run(app_service_instance.check_llm_health_async({"llm_provider": "claude_cli"}))
+        assert result == (True, "Claude CLI 인증 성공")
+        messages = [c.args[0] for c in log.info.call_args_list]
+        assert any("LLM 헬스체크 시작" in m and "claude_cli" in m for m in messages)
+        assert any("LLM 헬스체크 성공" in m and "Claude CLI 인증 성공" in m for m in messages)
+
+    def test_llm_health_failure_logged_as_warning(self, app_service_instance):
+        client = MagicMock()
+        client.check_health_async = AsyncMock(return_value=(False, "로그인 필요"))
+        with patch('app.app_service.LLMClientFactory.create_client', return_value=client), \
+             patch('app.app_service.logger') as log:
+            ok, _ = self._run(app_service_instance.check_llm_health_async({"llm_provider": "codex_cli"}))
+        assert ok is False
+        log.warning.assert_called_once()
+        assert "LLM 헬스체크 실패" in log.warning.call_args.args[0]
+        assert "로그인 필요" in log.warning.call_args.args[0]
+
+    def test_embedding_health_result_logged(self, app_service_instance):
+        client = MagicMock()
+        client.check_health_async = AsyncMock(return_value=(False, "voyage 연결 실패: 401"))
+        app_service_instance.embedding_client_factory = lambda cfg: client
+        with patch('app.app_service.logger') as log:
+            self._run(app_service_instance.check_embedding_health_async({"embedding_provider": "voyage"}))
+        assert any("임베딩 헬스체크 시작" in c.args[0] for c in log.info.call_args_list)
+        assert "임베딩 헬스체크 실패" in log.warning.call_args.args[0]
+
+    def test_embedding_health_exception_logged(self, app_service_instance):
+        def broken_factory(cfg):
+            raise ValueError("키 없음")
+        app_service_instance.embedding_client_factory = broken_factory
+        with patch('app.app_service.logger') as log:
+            ok, message = self._run(app_service_instance.check_embedding_health_async({}))
+        assert ok is False and "키 없음" in message
+        log.error.assert_called_once()
