@@ -16,6 +16,7 @@ from app.app_service import AppService
 from core.exceptions import BtgConfigException
 from infrastructure.logger_config import setup_logger
 from gui_qt.components_qt.tooltip_qt import TooltipQt
+from gui_qt.config_coordinator import ConfigCoordinator
 
 # Qt 탭 구현 (점진 이식)
 try:
@@ -79,6 +80,7 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         self.glossary_tab = None
         self.review_tab = None
         self.log_tab = None
+        self.config_coordinator: Optional[ConfigCoordinator] = None
 
         self.setWindowTitle("BTG - Batch Translator (PySide6)")
         self.resize(1100, 800)
@@ -148,7 +150,20 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         """상태바 생성 및 테마 토글 버튼 추가"""
         statusbar = QtWidgets.QStatusBar()
         self.setStatusBar(statusbar)
-        
+
+        # 설정 저장/불러오기: 모든 탭의 설정을 대상으로 하므로 탭이 아니라 창에 둔다
+        self.save_config_btn = QtWidgets.QPushButton("설정 저장")
+        TooltipQt(self.save_config_btn, "모든 탭의 현재 설정을 config.json 파일에 저장합니다.")
+        self.save_config_btn.clicked.connect(self._on_save_config_clicked)
+        self.load_config_btn = QtWidgets.QPushButton("설정 불러오기")
+        TooltipQt(self.load_config_btn, "config.json 파일에서 설정을 불러와 모든 탭에 반영합니다.")
+        self.load_config_btn.clicked.connect(self._on_load_config_clicked)
+        for btn in (self.save_config_btn, self.load_config_btn):
+            btn.setFixedHeight(22)
+            btn.setStyleSheet("QPushButton { padding: 2px 10px; }")
+            btn.setEnabled(self.config_coordinator is not None)
+            statusbar.addPermanentWidget(btn)
+
         # 테마 토글 버튼 (상태바 오른쪽에 고정)
         # 버튼 텍스트: 현재 적용된 테마를 표시 (클릭 시 반대 테마로 전환)
         self.theme_toggle_btn = QtWidgets.QPushButton("🌙 다크")
@@ -160,6 +175,30 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
         
         # 기본 상태 메시지
         statusbar.showMessage("준비됨")
+
+    def _on_save_config_clicked(self) -> None:
+        """'설정 저장': 모든 탭의 설정을 모아 config.json에 저장"""
+        if not self.config_coordinator:
+            return
+        try:
+            self.config_coordinator.save()
+        except Exception as e:
+            logger.error(f"설정 저장 실패: {e}")
+            QtWidgets.QMessageBox.warning(self, "저장 실패", f"설정 저장 중 오류 발생: {e}")
+            return
+        self.statusBar().showMessage("config.json에 설정을 저장했습니다.", 5000)
+
+    def _on_load_config_clicked(self) -> None:
+        """'설정 불러오기': config.json을 다시 읽어 모든 탭에 반영"""
+        if not self.config_coordinator:
+            return
+        try:
+            self.config_coordinator.reload()
+        except Exception as e:
+            logger.error(f"설정 불러오기 실패: {e}")
+            QtWidgets.QMessageBox.warning(self, "불러오기 실패", f"설정 불러오기 중 오류 발생: {e}")
+            return
+        self.statusBar().showMessage("config.json에서 설정을 불러왔습니다.", 5000)
 
     def _toggle_theme(self) -> None:
         """라이트/다크 테마 전환"""
@@ -259,7 +298,25 @@ class BatchTranslatorWindow(QtWidgets.QMainWindow):
             self.log_tab = PlaceholderTab("실행 로그")
 
         tab_widget.addTab(self.log_tab, "실행 로그")
-        self.setCentralWidget(tab_widget)
+
+        # 번역 시작/취소 버튼은 어느 탭에서든 누를 수 있게 탭 영역 아래에 둔다
+        central = QtWidgets.QWidget()
+        central_layout = QtWidgets.QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.addWidget(tab_widget, 1)
+        action_bar = getattr(self.settings_tab, "action_bar", None)
+        if action_bar is not None:
+            action_bar.setParent(None)  # 설정 탭 스크롤 영역에서 떼어낸다
+            action_bar.layout().setContentsMargins(9, 6, 9, 6)
+            central_layout.addWidget(action_bar)
+        self.setCentralWidget(central)
+
+        # 설정을 가진 탭을 한 조정자로 묶어, 어느 탭에서 저장해도 모든 탭 값이 함께 저장되게 한다
+        self.config_coordinator = ConfigCoordinator(self.app_service)
+        for tab in (self.settings_tab, self.glossary_tab):
+            if hasattr(tab, "apply_to_config") and hasattr(tab, "set_config_coordinator"):
+                self.config_coordinator.register(tab)
+                tab.set_config_coordinator(self.config_coordinator)
 
     def _setup_system_tray(self) -> None:
         """시스템 트레이 아이콘 설정"""
