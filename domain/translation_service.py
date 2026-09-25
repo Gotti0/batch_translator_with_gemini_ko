@@ -105,14 +105,17 @@ def _format_glossary_for_prompt( # 함수명 변경
 def _inject_slots_into_history(
     history: List[genai_types.Content], 
     replacements: Dict[str, str]
-) -> tuple[List[genai_types.Content], bool]:
+) -> tuple[List[genai_types.Content], set]:
     """
     히스토리 내의 Content 객체들을 순회하며 슬롯({{slot}} 등)을 실제 값으로 치환합니다.
-    반환값: (수정된 히스토리, 치환 발생 여부)
+    반환값: (수정된 히스토리, 치환된 플레이스홀더 집합)
+
+    원문이 히스토리에 들어갔는지는 '{{slot}}' 포함 여부로 판단해야 한다.
+    '{{glossary_context}}'만 치환된 히스토리를 원문 주입으로 취급하면 원문이 요청에서 빠진다.
     """
     # 깊은 복사로 원본 오염 방지
     new_history = copy.deepcopy(history)
-    replacement_occurred = False
+    replaced_keys: set = set()
 
     for content in new_history:
         if not hasattr(content, 'parts'):
@@ -126,12 +129,22 @@ def _inject_slots_into_history(
                 for key, value in replacements.items():
                     if key in modified_text:
                         modified_text = modified_text.replace(key, value)
-                        replacement_occurred = True
+                        replaced_keys.add(key)
                 
                 if original_text != modified_text:
                     part.text = modified_text
     
-    return new_history, replacement_occurred
+    return new_history, replaced_keys
+
+
+def _history_has_placeholder(history_raw: Any, placeholder: str) -> bool:
+    """설정의 원시 프리필 히스토리(dict 목록)에 플레이스홀더가 있는지 확인한다."""
+    if not isinstance(history_raw, list):
+        return False
+    return any(
+        isinstance(item, dict) and any(isinstance(p, str) and placeholder in p for p in item.get("parts", []))
+        for item in history_raw
+    )
 
 # PageFold로 전체 용어집 PDF를 첨부할 때 {{glossary_context}}에 채우는 안내문
 PAGEFOLD_GLOSSARY_NOTICE = "참조용 전체 용어집이 첨부된 고밀도 PDF 문서에 수록되어 있습니다. PDF에 명시된 용어 번역 지침을 최우선으로 일관되게 준수하세요."
@@ -259,7 +272,7 @@ class TranslationService:
         return pdf_part
 
     def _construct_prompt(self, chunk_text: str, glossary_context_override: Optional[str] = None,
-                          translation_memory_block: str = "") -> str:
+                          translation_memory_block: str = "", glossary_in_history: bool = False) -> str:
         """
         프롬프트 템플릿의 플레이스홀더를 채워 최종 사용자 프롬프트를 생성합니다.
 
@@ -268,6 +281,8 @@ class TranslationService:
             glossary_context_override: 지정 시 동적 용어집 주입 대신 이 문자열로
                 {{glossary_context}}를 채웁니다 (예: PageFold 용어집 PDF 첨부 안내문).
             translation_memory_block: {{translation_memory}}에 넣을 번역 기억 블록 (없으면 빈 문자열)
+            glossary_in_history: 프리필 히스토리가 이미 {{glossary_context}}를 채웠으면 True.
+                이때는 템플릿에 {{glossary_context}}가 없어도 용어집 주입 검증을 통과시킨다.
         """
         prompt_template = self.config.get("prompts", "Translate to Korean: {{slot}}")
         if isinstance(prompt_template, (list, tuple)):
@@ -275,10 +290,13 @@ class TranslationService:
 
         # [Strict Mode] 필수 플레이스홀더 검증
         if "{{slot}}" not in prompt_template:
-            raise BtgTranslationException("번역 프롬프트 템플릿에 필수 플레이스홀더 '{{slot}}'이 누락되었습니다. 작업을 중단합니다.")
+            hint = ""
+            if not self.config.get("enable_prefill_translation", False) and                     _history_has_placeholder(self.config.get("prefill_cached_history", []), "{{slot}}"):
+                hint = " 프리필 히스토리에 '{{slot}}'이 있지만 프리필 번역이 꺼져 있어 사용되지 않았습니다. 프리필 번역을 켜세요."
+            raise BtgTranslationException(f"번역 프롬프트 템플릿에 필수 플레이스홀더 '{{{{slot}}}}'이 누락되었습니다.{hint} 작업을 중단합니다.")
 
         # [Strict Mode] 용어집 주입 활성화 시 플레이스홀더 검증
-        if self.config.get("enable_dynamic_glossary_injection", False) and "{{glossary_context}}" not in prompt_template:
+        if self.config.get("enable_dynamic_glossary_injection", False) and not glossary_in_history                 and "{{glossary_context}}" not in prompt_template:
             raise BtgTranslationException("동적 용어집 주입이 활성화되었으나, 프롬프트 템플릿에 '{{glossary_context}}' 플레이스홀더가 없습니다. 작업을 중단합니다.")
 
         final_prompt = prompt_template
@@ -585,9 +603,9 @@ class TranslationService:
                         if sdk_parts:
                             base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
 
-            injected_history, injected = _inject_slots_into_history(base_history, replacements)
+            injected_history, replaced_keys = _inject_slots_into_history(base_history, replacements)
 
-            if injected:
+            if "{{slot}}" in replaced_keys:
                 logger.info("히스토리 내부에서 '{{slot}}'이 감지되어 원문을 주입했습니다 (Jailbreak 모드).")
                 api_prompt_for_gemini_client = injected_history
                 if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "model":
@@ -600,6 +618,7 @@ class TranslationService:
                     text_chunk,
                     glossary_context_override=glossary_context_str if pagefold_multimodal_parts else None,
                     translation_memory_block=memory_block,
+                    glossary_in_history="{{glossary_context}}" in replaced_keys,
                 )
                 api_prompt_for_gemini_client.append(
                     genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
@@ -1172,9 +1191,9 @@ class TranslationService:
                             if sdk_parts:
                                 base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
 
-                injected_history, injected = _inject_slots_into_history(base_history, replacements)
+                injected_history, replaced_keys = _inject_slots_into_history(base_history, replacements)
 
-                if injected:
+                if "{{slot}}" in replaced_keys:
                     api_prompt_for_gemini_client = injected_history
                     # Jailbreak 주입 모드일 경우 마지막에 무결성 지침만 덧붙임
                     if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "model":
@@ -1192,6 +1211,7 @@ class TranslationService:
                         chunk_json_str,
                         glossary_context_override=glossary_override,
                         translation_memory_block=memory_block,
+                        glossary_in_history="{{glossary_context}}" in replaced_keys,
                     )
                     if integrity_prompt_suffix not in user_prompt_str:
                         user_prompt_str += integrity_prompt_suffix

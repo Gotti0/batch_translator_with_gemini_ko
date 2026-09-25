@@ -94,6 +94,64 @@ def test_prefill_history_without_slot_appends_prompt(client, config):
     assert _texts(req.contents[-1])[0].startswith("Translate: 原文")
 
 
+def test_prefill_history_with_slot_and_glossary(client, config):
+    """히스토리가 {{slot}}과 {{glossary_context}}를 모두 채우면 메인 템플릿은 필요 없다"""
+    config.update({
+        "enable_prefill_translation": True,
+        "enable_dynamic_glossary_injection": True,
+        "prompts": ":",
+        "prefill_cached_history": [
+            {"role": "user", "parts": ["<main>{{slot}}</main>\n<info>{{glossary_context}}</info>"]},
+            {"role": "model", "parts": ["네."]},
+        ],
+    })
+    service = TranslationService(client, config)
+    service.glossary_entries_for_injection = [
+        GlossaryEntryDTO(keyword="勇者", translated_keyword="용사", target_language="ko", occurrence_count=3),
+    ]
+    req = service.build_translation_request("勇者が来た")
+
+    first = _texts(req.contents[0])[0]
+    assert "<main>勇者が来た</main>" in first
+    assert "勇者 -> 용사" in first
+    assert "{{" not in first
+
+
+def test_prefill_history_with_glossary_only_still_sends_chunk(client, config):
+    """히스토리에 {{glossary_context}}만 있으면 원문은 메인 템플릿으로 보낸다"""
+    config.update({
+        "enable_prefill_translation": True,
+        "enable_dynamic_glossary_injection": True,
+        "prompts": "Translate: {{slot}}",
+        "prefill_cached_history": [
+            {"role": "user", "parts": ["용어집: {{glossary_context}}"]},
+            {"role": "model", "parts": ["네."]},
+        ],
+    })
+    service = TranslationService(client, config)
+    service.glossary_entries_for_injection = [
+        GlossaryEntryDTO(keyword="勇者", translated_keyword="용사", target_language="ko", occurrence_count=3),
+    ]
+    req = service.build_translation_request("勇者が来た")
+
+    assert [c.role for c in req.contents] == ["user", "model", "user"]
+    assert "勇者 -> 용사" in _texts(req.contents[0])[0]
+    assert _texts(req.contents[-1]) == ["Translate: 勇者が来た"]
+
+
+def test_missing_slot_hints_disabled_prefill(client, config):
+    """프리필이 꺼진 채 히스토리에만 {{slot}}이 있으면 오류가 원인을 알려 준다"""
+    from core.exceptions import BtgTranslationException
+
+    config.update({
+        "prompts": ":",
+        "prefill_cached_history": [{"role": "user", "parts": ["{{slot}}"]}],
+    })
+    service = TranslationService(client, config)
+    with pytest.raises(BtgTranslationException, match="프리필 번역이 꺼져"):
+        service.build_translation_request("原文")
+
+
 def test_pagefold_glossary_pdf_and_directive(client, config):
     config["enable_pagefold"] = True
     config["pagefold_mode"] = "reference"
