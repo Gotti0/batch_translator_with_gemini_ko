@@ -21,6 +21,7 @@ from core.config.config_manager import DEFAULT_REQUESTS_PER_MINUTE
 from infrastructure.logger_config import setup_logger
 from gui_qt.components_qt.tooltip_qt import TooltipQt
 from gui_qt.config_coordinator import ConfigCoordinator
+from infrastructure.reasoning_options import DEFAULT_CHOICE_LABEL, reasoning_spec_for
 
 logger = setup_logger(__name__)
 from gui_qt.components_qt.mode_card import ModeSelectorGroup
@@ -35,6 +36,16 @@ PROVIDER_KEY_FIELDS = {
     "openai_compatible": "openai_compatible_api_key",
     "ollama": "ollama_api_key",
 }
+
+# 프로바이더별 CLI 실행 경로 설정 필드와 기본 커맨드 이름
+CLI_PATH_FIELDS = {
+    "claude_cli": ("claude_cli_path", "claude"),
+    "codex_cli": ("codex_cli_path", "codex"),
+    "antigravity_cli": ("antigravity_cli_path", "agy"),
+}
+
+# "추론 강도" 행을 쓰는 프로바이더. Gemini는 기존 Thinking Level/Budget 행을 쓴다.
+EFFORT_PROVIDERS = ("claude_cli", "codex_cli", "antigravity_cli", "ollama", "openai_compatible")
 
 
 class NoWheelSpinBox(QtWidgets.QSpinBox):
@@ -209,9 +220,12 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._translation_start_chunks = 0  # 번역 시작 시점의 이미 처리된 청크 수 (이어하기 대응)
         self._total_chunks = 0  # 완료 통계용: 총 청크 수
         self._final_processed_chunks = 0  # 완료 통계용: 최종 처리 청크 수
-        # 키 입력칸은 하나지만 내용은 프로바이더별로 따로 보관한다 (다른 회사 키가 섞여 전송되지 않도록)
+        # 키·CLI 경로·추론 강도 입력칸은 하나씩이지만 값은 프로바이더별로 따로 보관한다
+        # (다른 회사 키나 다른 CLI의 실행 경로가 섞여 쓰이지 않도록)
         self._provider_key_text: dict[str, str] = {}
-        self._key_provider: Optional[str] = None  # 지금 입력칸에 보이는 키의 프로바이더
+        self._cli_path_text: dict[str, str] = {}
+        self._effort_value: dict[str, Optional[str]] = {}
+        self._shown_provider: Optional[str] = None  # 지금 입력칸에 값이 보이는 프로바이더
         # 저장은 조정자 한 곳에서 한다. 메인 창이 모든 탭을 묶은 조정자로 교체한다.
         self._config_coordinator = ConfigCoordinator(app_service, [self])
 
@@ -400,10 +414,21 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.thinking_level_combo.addItems(["low", "high"])
         TooltipQt(self.thinking_level_combo, "Gemini 3 전용 파라미터입니다.\n모델의 추론 깊이 수준을 설정합니다.\nminimal/low/medium/high (Flash는 4단계, Pro는 2단계).\n높을수록 더 신중하게 추론하지만 응답 시간이 길어집니다.")
 
+        self.reasoning_effort_combo = NoWheelComboBox()
+        TooltipQt(
+            self.reasoning_effort_combo,
+            "CLI/로컬 프로바이더의 추론 강도입니다.\n"
+            "'기본값'이면 옵션을 넘기지 않고 CLI/서버 설정을 따릅니다.\n"
+            "높을수록 더 깊이 추론하지만 느려지고 사용량이 늘어납니다.",
+        )
+
+        self.gen_form = gen_form
+        self.thinking_budget_row = self._wrap(budget_row)
         gen_form.addRow("Temperature", self._wrap(temp_row))
         gen_form.addRow("Top P", self._wrap(top_p_row))
-        gen_form.addRow("Thinking Budget", self._wrap(budget_row))
+        gen_form.addRow("Thinking Budget", self.thinking_budget_row)
         gen_form.addRow("Thinking Level", self.thinking_level_combo)
+        gen_form.addRow("추론 강도", self.reasoning_effort_combo)
 
         # --- 파일/처리 설정 ---
         file_group = QtWidgets.QGroupBox("파일 / 처리")
@@ -720,26 +745,66 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._batch_timer.timeout.connect(self._on_batch_timer)
         self.input_edit.editingFinished.connect(self._update_batch_panel)
 
-    def _swap_api_keys_to(self, provider: str) -> None:
-        """입력칸 내용을 이전 프로바이더 몫으로 보관하고 새 프로바이더의 키를 보여준다."""
-        if self._key_provider is not None:
-            self._provider_key_text[self._key_provider] = self.api_keys_edit.toPlainText()
-        if provider != self._key_provider:
+    def _swap_provider_fields_to(self, provider: str) -> None:
+        """입력칸 값(API 키, CLI 경로, 추론 강도)을 이전 프로바이더 몫으로 보관하고 새 프로바이더의 값을 보여준다."""
+        shown = self._shown_provider
+        if shown is not None:
+            self._provider_key_text[shown] = self.api_keys_edit.toPlainText()
+            if shown in CLI_PATH_FIELDS:
+                self._cli_path_text[shown] = self.cli_path_edit.text()
+            if shown in EFFORT_PROVIDERS:
+                self._effort_value[shown] = self.reasoning_effort_combo.currentData()
+        if provider != shown:
             self.api_keys_edit.setPlainText(self._provider_key_text.get(provider, ""))
-        self._key_provider = provider
+            if provider in CLI_PATH_FIELDS:
+                self.cli_path_edit.setText(self._cli_path_text.get(provider, CLI_PATH_FIELDS[provider][1]))
+            self._fill_effort_combo(provider)
+        self._shown_provider = provider
+
+    def _fill_effort_combo(self, provider: str) -> None:
+        """추론 강도 선택 항목을 프로바이더 명세로 다시 채우고 보관된 값을 고른다."""
+        spec = reasoning_spec_for(provider)
+        combo = self.reasoning_effort_combo
+        combo.blockSignals(True)
+        combo.clear()
+        if provider in EFFORT_PROVIDERS and spec.kind == "level":
+            combo.addItem(DEFAULT_CHOICE_LABEL, None)
+            for value, label in spec.choices:
+                combo.addItem(label, value)
+            stored = self._effort_value.get(provider)
+            index = combo.findData(stored) if stored is not None else 0
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
 
     def _api_keys_for(self, provider: str) -> list[str]:
         """해당 프로바이더 몫으로 입력된 키 목록 (지금 보이는 프로바이더면 입력칸에서 읽는다)."""
-        if provider == self._key_provider:
+        if provider == self._shown_provider:
             text = self.api_keys_edit.toPlainText()
         else:
             text = self._provider_key_text.get(provider, "")
         return [line.strip() for line in text.splitlines() if line.strip()]
 
+    def _cli_path_for(self, provider: str) -> str:
+        """해당 CLI 프로바이더 몫의 실행 경로 (비어 있으면 기본 커맨드 이름)."""
+        _field, default = CLI_PATH_FIELDS[provider]
+        if provider == self._shown_provider:
+            text = self.cli_path_edit.text()
+        else:
+            text = self._cli_path_text.get(provider, default)
+        return text.strip() or default
+
+    def _effort_for(self, provider: str) -> Optional[str]:
+        """해당 프로바이더 몫의 추론 강도 (None이면 옵션을 넘기지 않음)."""
+        if provider == self._shown_provider:
+            value = self.reasoning_effort_combo.currentData()
+        else:
+            value = self._effort_value.get(provider)
+        return reasoning_spec_for(provider).normalize(value)
+
     def _on_provider_changed(self, _=None) -> None:
         """AI 공급자 변경 시 입력 폼 표시 및 추천 모델 목록 조정"""
         provider = self.provider_combo.currentData() or "gemini"
-        self._swap_api_keys_to(provider)
+        self._swap_provider_fields_to(provider)
         is_gemini = (provider == "gemini")
         is_claude = (provider == "claude_cli")
         is_codex = (provider == "codex_cli")
@@ -768,24 +833,9 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         self._apply_vertex_state()
 
-        # CLI 경로 설정
+        # Base URL 설정 (CLI 경로는 프로바이더별 보관값으로 위에서 바뀐다)
         cfg = getattr(self.app_service, "config", {}) or {}
-        if is_claude:
-            saved_path = cfg.get("claude_cli_path", "claude")
-            current = self.cli_path_edit.text().strip()
-            if not current or current in ("codex", "agy"):
-                self.cli_path_edit.setText(saved_path)
-        elif is_codex:
-            saved_path = cfg.get("codex_cli_path", "codex")
-            current = self.cli_path_edit.text().strip()
-            if not current or current in ("claude", "agy"):
-                self.cli_path_edit.setText(saved_path)
-        elif is_agy:
-            saved_path = cfg.get("antigravity_cli_path", "agy")
-            current = self.cli_path_edit.text().strip()
-            if not current or current in ("claude", "codex"):
-                self.cli_path_edit.setText(saved_path)
-        elif is_openai_compat:
+        if is_openai_compat:
             saved_url = cfg.get("openai_compatible_base_url", "https://api.openai.com/v1/chat/completions")
             current = self.base_url_edit.text().strip()
             if not current or current == (cfg.get("ollama_base_url") or "http://localhost:11434"):
@@ -832,6 +882,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.model_name_combo.setCurrentText(target_model)
         else:
             self.model_name_combo.setCurrentIndex(0)
+        # 모델 이름이 그대로면 시그널이 나오지 않으므로 직접 반영
+        self._apply_reasoning_ui()
 
     def _on_memory_toggled(self, checked: bool) -> None:
         for w in (self.voyage_key_edit, self.voyage_model_combo, self.memory_top_k_spin,
@@ -985,7 +1037,15 @@ class SettingsTabQt(QtWidgets.QWidget):
         for provider_id, field in PROVIDER_KEY_FIELDS.items():
             if provider_id != "gemini":
                 self._provider_key_text[provider_id] = str(cfg.get(field) or "")
-        self._key_provider = None
+        self._cli_path_text = {
+            provider_id: str(cfg.get(field) or defaults.get(field) or default)
+            for provider_id, (field, default) in CLI_PATH_FIELDS.items()
+        }
+        self._effort_value = {
+            provider_id: reasoning_spec_for(provider_id).normalize(cfg.get(reasoning_spec_for(provider_id).config_key))
+            for provider_id in EFFORT_PROVIDERS
+        }
+        self._shown_provider = None
 
         # 프로바이더 로드
         provider = str(cfg.get("llm_provider", defaults.get("llm_provider", "gemini")))
@@ -995,15 +1055,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         else:
             self.provider_combo.setCurrentIndex(0)
         # 같은 인덱스면 시그널이 나오지 않으므로 직접 반영
-        self._swap_api_keys_to(self.provider_combo.currentData() or "gemini")
+        self._swap_provider_fields_to(self.provider_combo.currentData() or "gemini")
 
-        # CLI 경로 및 Base URL 로드
-        if provider == "codex_cli":
-            self.cli_path_edit.setText(str(cfg.get("codex_cli_path", defaults.get("codex_cli_path", "codex"))))
-        elif provider == "antigravity_cli":
-            self.cli_path_edit.setText(str(cfg.get("antigravity_cli_path", defaults.get("antigravity_cli_path", "agy"))))
-        else:
-            self.cli_path_edit.setText(str(cfg.get("claude_cli_path", defaults.get("claude_cli_path", "claude"))))
+        # Base URL 로드
         if provider == "ollama":
             self.base_url_edit.setText(str(cfg.get("ollama_base_url") or defaults.get("ollama_base_url") or "http://localhost:11434"))
         else:
@@ -1171,14 +1225,13 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["llm_provider"] = provider
         selected_model = self.model_name_combo.currentText().strip()
 
+        for provider_id, (field, _default) in CLI_PATH_FIELDS.items():
+            cfg[field] = self._cli_path_for(provider_id)
         if provider == "claude_cli":
-            cfg["claude_cli_path"] = self.cli_path_edit.text().strip() or "claude"
             cfg["claude_cli_model"] = selected_model or "default"
         elif provider == "codex_cli":
-            cfg["codex_cli_path"] = self.cli_path_edit.text().strip() or "codex"
             cfg["codex_cli_model"] = selected_model or "gpt-5.5"
         elif provider == "antigravity_cli":
-            cfg["antigravity_cli_path"] = self.cli_path_edit.text().strip() or "agy"
             cfg["antigravity_cli_model"] = selected_model or "default"
         elif provider == "openai_compatible":
             cfg["openai_compatible_base_url"] = self.base_url_edit.text().strip()
@@ -1191,8 +1244,16 @@ class SettingsTabQt(QtWidgets.QWidget):
             cfg["model_name"] = selected_model or None
         cfg["temperature"] = self.temperature_slider.value() / 100.0
         cfg["top_p"] = self.top_p_slider.value() / 100.0
-        cfg["thinking_budget"] = int(self.thinking_budget_slider.value()) if self.thinking_budget_slider.isEnabled() else None
-        cfg["thinking_level"] = self.thinking_level_combo.currentText() if self.thinking_level_combo.isEnabled() else None
+        # Gemini 추론 설정은 Gemini를 고른 상태에서만 바꾼다.
+        # 예전에는 다른 프로바이더에서 저장하면 비활성 칸이라 None으로 지워졌다.
+        if provider == "gemini":
+            gemini_spec = reasoning_spec_for("gemini", selected_model)
+            if gemini_spec.kind == "level":
+                cfg["thinking_level"] = self.thinking_level_combo.currentText()
+            elif gemini_spec.kind == "budget":
+                cfg["thinking_budget"] = int(self.thinking_budget_slider.value())
+        for provider_id in EFFORT_PROVIDERS:
+            cfg[reasoning_spec_for(provider_id).config_key] = self._effort_for(provider_id)
         cfg["chunk_size"] = int(self.chunk_size_spin.value())
         cfg["max_workers"] = int(self.max_workers_spin.value())
         cfg["requests_per_minute"] = float(self.rpm_spin.value())
@@ -1455,13 +1516,13 @@ class SettingsTabQt(QtWidgets.QWidget):
             "service_account_file_path": self.sa_path_edit.text().strip() or None,
             "gcp_project": self.gcp_project_edit.text().strip() or None,
             "gcp_location": self.gcp_location_edit.text().strip() or None,
-            "claude_cli_path": self.cli_path_edit.text().strip() or "claude",
+            "claude_cli_path": self._cli_path_for("claude_cli"),
             "claude_cli_model": self.model_name_combo.currentText().strip() or "default",
             "claude_cli_api_key": (first_key or None) if provider == "claude_cli" else None,
-            "codex_cli_path": self.cli_path_edit.text().strip() or "codex",
+            "codex_cli_path": self._cli_path_for("codex_cli"),
             "codex_cli_model": self.model_name_combo.currentText().strip() or "gpt-5.5",
             "codex_cli_api_key": (first_key or None) if provider == "codex_cli" else None,
-            "antigravity_cli_path": self.cli_path_edit.text().strip() or "agy",
+            "antigravity_cli_path": self._cli_path_for("antigravity_cli"),
             "antigravity_cli_model": self.model_name_combo.currentText().strip() or "default",
             "openai_compatible_base_url": self.base_url_edit.text().strip(),
             "openai_compatible_api_key": first_key if provider == "openai_compatible" else "",
@@ -1471,6 +1532,7 @@ class SettingsTabQt(QtWidgets.QWidget):
             "ollama_model": self.model_name_combo.currentText().strip(),
             "ollama_api_key": first_key if provider == "ollama" else "",
             "ollama_num_ctx": int(self.ollama_num_ctx_spin.value()),
+            **{reasoning_spec_for(p).config_key: self._effort_for(p) for p in EFFORT_PROVIDERS},
         }
 
     @asyncSlot()
@@ -1697,36 +1759,34 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def _on_model_changed(self, model_name: str) -> None:
-        name = (model_name or "").lower()
+        self._apply_reasoning_ui(model_name)
 
-        # 현재 선택 값을 보존하여 목록 재구성 후 다시 적용
-        current_level = self.thinking_level_combo.currentText()
+    def _apply_reasoning_ui(self, model_name: Optional[str] = None) -> None:
+        """프로바이더·모델에 맞는 추론 행만 보여준다 (reasoning_options 명세 기준)."""
+        provider = self.provider_combo.currentData() or "gemini"
+        if model_name is None:
+            model_name = self.model_name_combo.currentText()
+        spec = reasoning_spec_for(provider, model_name)
+        is_gemini = provider == "gemini"
+        gemini_level = is_gemini and spec.kind == "level"
+        gemini_budget = is_gemini and spec.kind == "budget"
 
-        # Gemini 3: Thinking Level on, Budget off
-        if "gemini-3" in name:
-            self.thinking_level_combo.setEnabled(True)
-            values = ["minimal", "low", "medium", "high"] if "flash" in name else ["low", "high"]
+        if gemini_level:
+            # 현재 선택 값을 보존하여 목록 재구성 후 다시 적용
+            current_level = self.thinking_level_combo.currentText()
             self.thinking_level_combo.blockSignals(True)
             self.thinking_level_combo.clear()
-            self.thinking_level_combo.addItems(values)
-            # keep current if valid else default high
-            if current_level in values:
-                self.thinking_level_combo.setCurrentText(current_level)
-            else:
-                self.thinking_level_combo.setCurrentText("high")
+            self.thinking_level_combo.addItems(list(spec.values))
+            self.thinking_level_combo.setCurrentText(
+                current_level if current_level in spec.values else (spec.default or spec.values[-1])
+            )
             self.thinking_level_combo.blockSignals(False)
 
-            self.thinking_budget_slider.setEnabled(False)
-
-        # Gemini 2.5: Budget on, Level off
-        elif "gemini-2.5" in name:
-            self.thinking_level_combo.setEnabled(False)
-            self.thinking_budget_slider.setEnabled(True)
-
-        # Other models: Budget on, Level off (fallback)
-        else:
-            self.thinking_level_combo.setEnabled(False)
-            self.thinking_budget_slider.setEnabled(True)
+        self.thinking_level_combo.setEnabled(gemini_level)
+        self.thinking_budget_slider.setEnabled(gemini_budget)
+        self.gen_form.setRowVisible(self.thinking_level_combo, gemini_level)
+        self.gen_form.setRowVisible(self.thinking_budget_row, gemini_budget)
+        self.gen_form.setRowVisible(self.reasoning_effort_combo, (not is_gemini) and spec.kind == "level")
 
     @asyncSlot()
     async def _refresh_model_list(self, force: bool = False) -> None:
