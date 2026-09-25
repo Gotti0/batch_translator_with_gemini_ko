@@ -165,18 +165,22 @@ class ConfigManager:
             "claude_cli_path": "claude",
             "claude_cli_model": "default",
             "claude_cli_api_key": "",  # 비우면 로그인된 구독 세션 사용
+            "claude_cli_effort": None,  # --effort (None이면 CLI 기본값)
             "codex_cli_path": "codex",
             "codex_cli_model": "gpt-5.5",
             "codex_cli_api_key": "",  # 비우면 로그인된 구독 세션 사용
+            "codex_cli_effort": None,  # model_reasoning_effort (None이면 ~/.codex/config.toml 값)
             "antigravity_cli_path": "agy",
             "antigravity_cli_model": "default",
             "antigravity_cli_effort": None,
             "openai_compatible_base_url": "https://api.openai.com/v1/chat/completions",
             "openai_compatible_api_key": "",
+            "openai_compatible_reasoning_effort": None,  # 서버가 지원할 때만 지정
             "openai_compatible_model": "gpt-4o",
             "ollama_base_url": "http://localhost:11434",
             "ollama_model": "",
             "ollama_api_key": "",
+            "ollama_think": None,  # "true"/"false"/"low"/"medium"/"high" (None이면 모델 기본값)
             "ollama_num_ctx": 16384,  # 미지정 시 Ollama 기본값(2K~4K)에서 프롬프트가 잘린다
             "ollama_keep_alive": None,  # 예: "10m", "-1" (None이면 서버 기본값)
 

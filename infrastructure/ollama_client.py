@@ -27,6 +27,7 @@ from core.exceptions import (
     BtgApiRateLimitException,
 )
 from infrastructure.base_client import BaseLLMClient
+from infrastructure.reasoning_options import OLLAMA as OLLAMA_REASONING, ollama_think_payload
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -82,6 +83,7 @@ class OllamaClient(BaseLLMClient):
         num_ctx: Optional[int] = 16384,
         keep_alive: Optional[str] = None,
         timeout_seconds: float = 600.0,
+        think: Optional[str] = None,
     ) -> None:
         """
         OllamaClient를 초기화합니다.
@@ -93,6 +95,8 @@ class OllamaClient(BaseLLMClient):
             num_ctx: 컨텍스트 길이(토큰). None 또는 0이면 서버/모델 기본값 사용
             keep_alive: 요청 후 모델을 메모리에 유지할 시간 (예: "10m", "-1"). None이면 서버 기본값
             timeout_seconds: 요청 타임아웃(초). 로컬 추론은 느리므로 넉넉하게 잡는다.
+            think: 추론 모드 ("true"/"false"/"low"/"medium"/"high"). None이면 모델 기본값.
+                추론을 지원하지 않는 모델에 값을 넘기면 서버가 거부할 수 있다.
         """
         self.base_url = self._normalize_base_url(base_url)
         self.model_name = model_name.strip() if model_name and model_name.strip() not in ("", "default") else None
@@ -100,9 +104,11 @@ class OllamaClient(BaseLLMClient):
         self.num_ctx = int(num_ctx) if num_ctx else None
         self.keep_alive = keep_alive or None
         self.timeout_seconds = float(timeout_seconds)
+        self.think = OLLAMA_REASONING.normalize(think)
 
         logger.info(
-            f"OllamaClient 초기화 완료 (서버: {self.base_url}, 모델: {self.model_name or '미지정'}, num_ctx: {self.num_ctx or '서버 기본값'})"
+            f"OllamaClient 초기화 완료 (서버: {self.base_url}, 모델: {self.model_name or '미지정'}, "
+            f"num_ctx: {self.num_ctx or '서버 기본값'}, think: {self.think or '모델 기본값'})"
         )
 
     @property
@@ -362,6 +368,9 @@ class OllamaClient(BaseLLMClient):
             payload["options"] = options
         if self.keep_alive:
             payload["keep_alive"] = self.keep_alive
+        think_value = ollama_think_payload(self.think)
+        if think_value is not None:
+            payload["think"] = think_value
         if wants_json:
             payload["format"] = self._schema_to_format(response_schema) or "json"
 

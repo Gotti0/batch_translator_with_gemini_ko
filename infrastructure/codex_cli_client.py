@@ -21,6 +21,7 @@ from core.exceptions import (
     BtgApiInvalidRequestException,
 )
 from infrastructure.base_client import BaseLLMClient, kill_if_running
+from infrastructure.reasoning_options import CODEX_CLI
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -48,6 +49,7 @@ class CodexCliClient(BaseLLMClient):
         model_name: Optional[str] = "gpt-5.5",
         api_key: Optional[str] = None,
         timeout_seconds: int = 180,
+        effort: Optional[str] = None,
     ) -> None:
         """
         CodexCliClient를 초기화합니다.
@@ -57,15 +59,19 @@ class CodexCliClient(BaseLLMClient):
             model_name: 사용할 모델명 (None 또는 'default'이면 기본값 'gpt-5.5')
             api_key: OpenAI API 키 오버라이드 (선택 사항, 미지정 시 ChatGPT Plus 세션 사용)
             timeout_seconds: 서브프로세스 실행 타임아웃(초)
+            effort: 추론 강도 (`-c model_reasoning_effort`, 허용 값은 reasoning_options.CODEX_CLI).
+                None이면 ~/.codex/config.toml 값 또는 CLI 기본값
         """
         resolved_path = shutil.which(cli_path)
         self.cli_path = resolved_path if resolved_path else cli_path
         self.model_name = model_name if model_name and model_name != "default" else "gpt-5.5"
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
+        self.effort = CODEX_CLI.normalize(effort)
 
         logger.info(
-            f"CodexCliClient 초기화 완료 (실행 경로: {self.cli_path}, 모델: {self.model_name}, API 키 지정 여부: {bool(self.api_key)})"
+            f"CodexCliClient 초기화 완료 (실행 경로: {self.cli_path}, 모델: {self.model_name}, "
+            f"추론 강도: {self.effort or 'CLI 설정값'}, API 키 지정 여부: {bool(self.api_key)})"
         )
 
     @property
@@ -137,6 +143,10 @@ class CodexCliClient(BaseLLMClient):
 
         if self.model_name:
             cmd.extend(["-m", self.model_name])
+
+        if self.effort:
+            # 값은 TOML로 해석되므로 문자열 따옴표를 붙인다
+            cmd.extend(["-c", f'model_reasoning_effort="{self.effort}"'])
 
         schema_temp_path = None
         if response_schema is not None:

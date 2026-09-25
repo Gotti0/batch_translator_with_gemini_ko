@@ -48,6 +48,7 @@ class OpenAICompatibleServerException(OpenAICompatibleApiException):
 
 import asyncio
 from infrastructure.base_client import BaseLLMClient
+from infrastructure.reasoning_options import OPENAI_COMPATIBLE as OPENAI_COMPATIBLE_REASONING
 
 
 class OpenAICompatibleClient(BaseLLMClient):
@@ -66,7 +67,8 @@ class OpenAICompatibleClient(BaseLLMClient):
                  base_url: str, # Should be the full URL to the chat completions endpoint
                  default_model: Optional[str] = None,
                  requests_per_minute: Optional[float] = None,
-                 request_timeout: Optional[int] = None):
+                 request_timeout: Optional[int] = None,
+                 reasoning_effort: Optional[str] = None):
         if not api_key:
             raise ValueError("API key must be provided.")
         if not base_url:
@@ -75,6 +77,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
         self.default_model = default_model
+        self.reasoning_effort = OPENAI_COMPATIBLE_REASONING.normalize(reasoning_effort)
         self.request_timeout = request_timeout if request_timeout is not None else self._DEFAULT_TIMEOUT_SECONDS
 
         self.requests_per_minute = requests_per_minute
@@ -354,6 +357,9 @@ class OpenAICompatibleClient(BaseLLMClient):
             gen_config["top_p"] = top_p
         if response_schema is not None:
             gen_config["response_format"] = {"type": "json_object"}
+        if self.reasoning_effort:
+            # 서버마다 지원 여부가 달라 사용자가 고른 경우에만 넣는다
+            gen_config["reasoning_effort"] = self.reasoning_effort
 
         model = kwargs.get("model_name") or self.default_model
 

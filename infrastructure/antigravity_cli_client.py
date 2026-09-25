@@ -22,6 +22,7 @@ from core.exceptions import (
     BtgApiInvalidRequestException,
 )
 from infrastructure.base_client import BaseLLMClient, kill_if_running
+from infrastructure.reasoning_options import ANTIGRAVITY_CLI
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -67,13 +68,14 @@ class AntigravityCliClient(BaseLLMClient):
         Args:
             cli_path: agy 실행 파일 경로 또는 커맨드 이름
             model_name: 사용할 모델명 (None 또는 'default'이면 기본값 사용)
-            effort: 추론 강도 ('low', 'medium', 'high', 선택 사항)
+            effort: 추론 강도 (`--effort`, 허용 값은 reasoning_options.ANTIGRAVITY_CLI, 선택 사항)
             timeout_seconds: 서브프로세스 실행 타임아웃(초)
         """
         resolved_path = shutil.which(cli_path)
         self.cli_path = resolved_path if resolved_path else cli_path
         self.model_name = model_name if model_name and model_name != "default" else None
-        self.effort = effort if effort in ("low", "medium", "high") else None
+        # agy는 max도 지원한다. 예전에는 low/medium/high만 받아 max를 조용히 버렸다.
+        self.effort = ANTIGRAVITY_CLI.normalize(effort)
         self.timeout_seconds = timeout_seconds
 
         logger.info(

@@ -67,6 +67,7 @@ class LLMClientFactory:
                 model_name=model_name,
                 api_key=api_key,
                 timeout_seconds=timeout,
+                effort=config.get("claude_cli_effort"),
             )
 
         elif provider == "codex_cli":
@@ -80,6 +81,7 @@ class LLMClientFactory:
                 model_name=model_name,
                 api_key=api_key,
                 timeout_seconds=timeout,
+                effort=config.get("codex_cli_effort"),
             )
 
         elif provider == "antigravity_cli":
@@ -108,6 +110,7 @@ class LLMClientFactory:
                 default_model=model_name,
                 requests_per_minute=rpm,
                 request_timeout=timeout,
+                reasoning_effort=config.get("openai_compatible_reasoning_effort"),
             )
 
         elif provider == "ollama":
@@ -119,6 +122,7 @@ class LLMClientFactory:
                 num_ctx=config.get("ollama_num_ctx", 16384),
                 keep_alive=config.get("ollama_keep_alive"),
                 timeout_seconds=float(config.get("api_timeout", 600.0)),
+                think=config.get("ollama_think"),
             )
 
         else:

@@ -20,6 +20,7 @@ from core.exceptions import (
     BtgApiInvalidRequestException,
 )
 from infrastructure.base_client import BaseLLMClient, kill_if_running
+from infrastructure.reasoning_options import CLAUDE_CLI
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -47,6 +48,7 @@ class ClaudeCliClient(BaseLLMClient):
         model_name: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout_seconds: int = 180,
+        effort: Optional[str] = None,
     ) -> None:
         """
         ClaudeCliClient를 초기화합니다.
@@ -56,15 +58,18 @@ class ClaudeCliClient(BaseLLMClient):
             model_name: 사용할 모델명 (None 또는 'default'이면 CLI 기본값 사용)
             api_key: Anthropic API 키 오버라이드 (선택 사항, 미지정 시 로컬 구독 세션 사용)
             timeout_seconds: 서브프로세스 실행 타임아웃(초)
+            effort: 추론 강도 (`--effort`, 허용 값은 reasoning_options.CLAUDE_CLI). None이면 CLI 기본값
         """
         resolved_path = shutil.which(cli_path)
         self.cli_path = resolved_path if resolved_path else cli_path
         self.model_name = model_name if model_name and model_name != "default" else None
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
+        self.effort = CLAUDE_CLI.normalize(effort)
 
         logger.info(
-            f"ClaudeCliClient 초기화 완료 (실행 경로: {self.cli_path}, 모델: {self.model_name or 'CLI 기본값'}, API 키 지정 여부: {bool(self.api_key)})"
+            f"ClaudeCliClient 초기화 완료 (실행 경로: {self.cli_path}, 모델: {self.model_name or 'CLI 기본값'}, "
+            f"추론 강도: {self.effort or 'CLI 기본값'}, API 키 지정 여부: {bool(self.api_key)})"
         )
 
     @property
@@ -146,6 +151,9 @@ class ClaudeCliClient(BaseLLMClient):
 
         if self.model_name:
             cmd.extend(["--model", self.model_name])
+
+        if self.effort:
+            cmd.extend(["--effort", self.effort])
 
         if system_instruction:
             cmd.extend(["--system-prompt", str(system_instruction).strip()])
