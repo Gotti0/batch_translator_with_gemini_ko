@@ -20,6 +20,7 @@ from core.dtos import TranslationJobProgressDTO
 from core.config.config_manager import DEFAULT_REQUESTS_PER_MINUTE
 from infrastructure.logger_config import setup_logger
 from gui_qt.components_qt.tooltip_qt import TooltipQt
+from gui_qt.config_coordinator import ConfigCoordinator
 
 logger = setup_logger(__name__)
 from gui_qt.components_qt.mode_card import ModeSelectorGroup
@@ -211,6 +212,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         # 키 입력칸은 하나지만 내용은 프로바이더별로 따로 보관한다 (다른 회사 키가 섞여 전송되지 않도록)
         self._provider_key_text: dict[str, str] = {}
         self._key_provider: Optional[str] = None  # 지금 입력칸에 보이는 키의 프로바이더
+        # 저장은 조정자 한 곳에서 한다. 메인 창이 모든 탭을 묶은 조정자로 교체한다.
+        self._config_coordinator = ConfigCoordinator(app_service, [self])
 
         self._build_ui()
         self._wire_signals()
@@ -657,16 +660,13 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.cancel_btn = QtWidgets.QPushButton("취소")
         TooltipQt(self.cancel_btn, "진행 중인 번역 작업을 취소합니다.")
         self.cancel_btn.setEnabled(False)
-        self.save_config_btn = QtWidgets.QPushButton("설정 저장")
-        TooltipQt(self.save_config_btn, "현재 설정을 config.json 파일에 저장합니다.")
-        self.load_config_btn = QtWidgets.QPushButton("설정 불러오기")
-        TooltipQt(self.load_config_btn, "config.json 파일에서 설정을 불러옵니다.")
 
-        btn_row = QtWidgets.QHBoxLayout()
+        # 번역 시작/취소 묶음. 동작과 상태는 이 탭이 관리하고, 메인 창이 탭 영역 밖으로 옮겨 배치한다.
+        self.action_bar = QtWidgets.QWidget()
+        btn_row = QtWidgets.QHBoxLayout(self.action_bar)
+        btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.addWidget(self.start_btn)
         btn_row.addWidget(self.cancel_btn)
-        btn_row.addWidget(self.save_config_btn)
-        btn_row.addWidget(self.load_config_btn)
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -684,7 +684,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         layout.addWidget(pagefold_group)
         layout.addWidget(self.memory_group)
         layout.addWidget(self.batch_group)
-        layout.addLayout(btn_row)
+        layout.addWidget(self.action_bar)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
         layout.addStretch(1)
@@ -696,8 +696,6 @@ class SettingsTabQt(QtWidgets.QWidget):
     def _wire_signals(self) -> None:
         self.start_btn.clicked.connect(self._on_start_clicked)
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
-        self.save_config_btn.clicked.connect(self._on_save_config_clicked)
-        self.load_config_btn.clicked.connect(self._on_load_config_clicked)
         self.progress_signal.connect(self._on_progress)
         self.status_signal.connect(self._on_status)
         self.completion_signal.connect(self._on_completion, QtCore.Qt.QueuedConnection)
@@ -1138,11 +1136,18 @@ class SettingsTabQt(QtWidgets.QWidget):
         mode_val = str(cfg.get("translation_mode", "standard"))
         self.mode_selector._on_card_clicked(mode_val)
 
+    def set_config_coordinator(self, coordinator: ConfigCoordinator) -> None:
+        self._config_coordinator = coordinator
+
+    def load_config_into_ui(self) -> None:
+        self._load_config()
+
     def _save_config_to_service(self) -> None:
-        # 서비스의 설정을 직접 수정하지 않도록 복사본 생성 (Deep Copy 권장)
-        raw_config = getattr(self.app_service, "config", {}) or {}
-        cfg = copy.deepcopy(raw_config)
-        
+        """모든 탭의 설정을 모아 저장한다 (번역 시작 등 작업 흐름은 저장 실패로 막지 않는다)."""
+        self._config_coordinator.save_quietly("설정 탭")
+
+    def apply_to_config(self, cfg: dict) -> None:
+        """설정 탭 위젯 값을 cfg에 써 넣는다. 파일 저장은 하지 않는다."""
         # 입력/출력 파일 경로 저장
         input_path = self.input_edit.text().strip()
         output_path = self.output_edit.text().strip()
@@ -1213,12 +1218,6 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["memory_depth"] = self.memory_depth_combo.currentData() or "balanced"
         cfg["enable_memory_extraction"] = self.memory_extract_check.isChecked()
         cfg["memory_extraction_model"] = self.memory_extract_model_edit.text().strip()
-        # self.app_service.config = cfg  # 직접 할당 제거 (save_app_config 내부에서 처리됨)
-        try:
-            self.app_service.save_app_config(cfg)
-        except Exception:
-            # 저장 실패는 UI에서만 알림
-            pass
 
     @asyncSlot()
     async def _on_start_clicked(self) -> None:
@@ -1441,46 +1440,6 @@ class SettingsTabQt(QtWidgets.QWidget):
             return f"저장 완료: 미완료 청크 {count}개는 실패 표시와 원문으로 채웠습니다."
 
         await self._run_batch_action("최종 파일 저장", action)
-
-    def _on_save_config_clicked(self) -> None:
-        """'설정 저장' 버튼 클릭 시 config.json에 저장"""
-        try:
-            self._save_config_to_service()
-            QtWidgets.QMessageBox.information(
-                self,
-                "저장 성공",
-                "config.json에 설정이 저장되었습니다."
-            )
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "저장 실패",
-                f"설정 저장 중 오류 발생: {e}"
-            )
-
-    def _on_load_config_clicked(self) -> None:
-        """'설정 불러오기' 버튼 클릭 시 config.json에서 다시 로드"""
-        try:
-            # AppService의 config를 다시 로드
-            if hasattr(self.app_service, 'load_app_config'):
-                self.app_service.config = self.app_service.load_app_config()
-            elif hasattr(self.app_service, 'reload_config'):
-                self.app_service.reload_config()
-            
-            # GUI에 반영
-            self._load_config()
-            
-            QtWidgets.QMessageBox.information(
-                self,
-                "불러오기 성공",
-                "config.json에서 설정을 불러왔습니다."
-            )
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "불러오기 실패",
-                f"설정 불러오기 중 오류 발생: {e}"
-            )
 
     def _build_provider_config_from_ui(self) -> dict:
         """저장하지 않은 현재 UI 상태로 클라이언트 생성용 설정을 만든다 (연결 테스트·모델 조회용)."""

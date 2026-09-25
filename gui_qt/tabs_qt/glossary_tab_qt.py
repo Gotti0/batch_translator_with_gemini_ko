@@ -17,6 +17,7 @@ from qasync import asyncSlot
 
 from core.dtos import GlossaryExtractionProgressDTO
 from gui_qt.components_qt.tooltip_qt import TooltipQt
+from gui_qt.config_coordinator import ConfigCoordinator
 from gui_qt.dialogs_qt.prefill_history_editor_qt import PrefillHistoryEditorDialogQt
 from gui_qt.dialogs_qt.glossary_editor_qt import GlossaryEditorDialogQt
 
@@ -74,6 +75,8 @@ class GlossaryTabQt(QtWidgets.QWidget):
         self._loop = asyncio.get_event_loop()
         self._extraction_task: Optional[asyncio.Task] = None
         self._prefill_history: List[Dict[str, Any]] = []
+        # 저장은 조정자 한 곳에서 한다. 메인 창이 모든 탭을 묶은 조정자로 교체한다.
+        self._config_coordinator = ConfigCoordinator(app_service, [self])
 
         self._build_ui()
         self._wire_signals()
@@ -251,8 +254,18 @@ class GlossaryTabQt(QtWidgets.QWidget):
         self.max_entries_spin.setValue(int(cfg.get("max_glossary_entries_per_chunk_injection", 3)))
         self.max_chars_spin.setValue(int(cfg.get("max_glossary_chars_per_chunk_injection", 500)))
 
+    def set_config_coordinator(self, coordinator: ConfigCoordinator) -> None:
+        self._config_coordinator = coordinator
+
+    def load_config_into_ui(self) -> None:
+        self._load_config()
+
     def _save_config(self) -> None:
-        cfg = getattr(self.app_service, "config", {}) or {}
+        """모든 탭의 설정을 모아 저장한다 (용어집 작업 흐름은 저장 실패로 막지 않는다)."""
+        self._config_coordinator.save_quietly("용어집 탭")
+
+    def apply_to_config(self, cfg: Dict[str, Any]) -> None:
+        """용어집 탭 위젯 값을 cfg에 써 넣는다. 파일 저장은 하지 않는다."""
         cfg["glossary_json_path"] = self.glossary_path_edit.text().strip() or None
         cfg["glossary_sampling_ratio"] = self.sample_ratio_slider.value() / 10.0
         cfg["glossary_extraction_temperature"] = self.extraction_temp_slider.value() / 100.0
@@ -262,11 +275,6 @@ class GlossaryTabQt(QtWidgets.QWidget):
         cfg["enable_dynamic_glossary_injection"] = self.enable_injection_check.isChecked()
         cfg["max_glossary_entries_per_chunk_injection"] = int(self.max_entries_spin.value())
         cfg["max_glossary_chars_per_chunk_injection"] = int(self.max_chars_spin.value())
-        self.app_service.config = cfg
-        try:
-            self.app_service.save_app_config(cfg)
-        except Exception:
-            pass
 
     # ---------- actions ----------
     def _browse_glossary_json(self) -> None:
