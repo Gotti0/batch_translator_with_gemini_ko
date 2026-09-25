@@ -739,10 +739,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         else:
             self.api_keys_edit.setPlaceholderText("API 키를 줄바꿈으로 구분하여 입력 (여러 키 등록 시 자동 로테이션)")
 
-        is_vertex = is_gemini and self.use_vertex_check.isChecked()
-        self.api_form.setRowVisible(self.sa_row_widget, is_vertex)
-        self.api_form.setRowVisible(self.gcp_project_edit, is_vertex)
-        self.api_form.setRowVisible(self.gcp_location_edit, is_vertex)
+        self._apply_vertex_state()
 
         # CLI 경로 설정
         cfg = getattr(self.app_service, "config", {}) or {}
@@ -988,7 +985,10 @@ class SettingsTabQt(QtWidgets.QWidget):
         elif isinstance(api_keys, str):
             self.api_keys_edit.setPlainText(api_keys)
 
+        # 로드 중에는 "서비스 계정 필요" 안내가 뜨지 않도록 시그널을 막는다 (상태는 아래에서 반영)
+        self.use_vertex_check.blockSignals(True)
         self.use_vertex_check.setChecked(bool(cfg.get("use_vertex_ai", defaults.get("use_vertex_ai", False))))
+        self.use_vertex_check.blockSignals(False)
         self.sa_path_edit.setText(str(cfg.get("service_account_file_path") or ""))
         self.gcp_project_edit.setText(str(cfg.get("gcp_project") or ""))
         self.gcp_location_edit.setText(str(cfg.get("gcp_location") or ""))
@@ -1063,7 +1063,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._update_prefill_button_text()
 
         # Vertex/모델 상태 조정
-        self._on_vertex_toggle(self.use_vertex_check.checkState())
+        self._apply_vertex_state()
+        self._update_batch_availability()
         self._on_model_changed(self.model_name_combo.currentText())
 
         self.use_content_safety_check.setChecked(bool(cfg.get("use_content_safety_retry", defaults.get("use_content_safety_retry", True))))
@@ -1673,16 +1674,23 @@ class SettingsTabQt(QtWidgets.QWidget):
         dlg.setDetailedText("\n".join(detailed_info))
         dlg.exec()
 
-    @QtCore.Slot(int)
-    def _on_vertex_toggle(self, state: int) -> None:
-        enabled = state == QtCore.Qt.Checked
-        self._update_batch_availability()
-        self.sa_path_edit.setEnabled(enabled)
-        self.gcp_project_edit.setEnabled(enabled)
-        self.gcp_location_edit.setEnabled(enabled)
+    def _apply_vertex_state(self) -> None:
+        """Vertex 체크 상태에 맞춰 서비스 계정·GCP 행 표시와 API 키 입력 가능 여부를 맞춘다."""
+        is_gemini = (self.provider_combo.currentData() or "gemini") == "gemini"
+        is_vertex = is_gemini and self.use_vertex_check.isChecked()
+        for w in (self.sa_row_widget, self.gcp_project_edit, self.gcp_location_edit):
+            self.api_form.setRowVisible(w, is_vertex)
+            w.setEnabled(is_vertex)
         # Vertex 사용 시 API 키 입력 비활성화, 미사용 시 활성화
-        self.api_keys_edit.setEnabled(not enabled)
-        if enabled and not self.sa_path_edit.text().strip():
+        self.api_keys_edit.setEnabled(not is_vertex)
+
+    @QtCore.Slot(int)
+    def _on_vertex_toggle(self, _state: int = 0) -> None:
+        # stateChanged는 int를 넘기는데 PySide6 6.4+에서는 int와 Qt.Checked 비교가 항상 False라
+        # 인자 대신 위젯 상태를 직접 읽는다.
+        self._apply_vertex_state()
+        self._update_batch_availability()
+        if self.use_vertex_check.isChecked() and not self.sa_path_edit.text().strip():
             QtWidgets.QMessageBox.information(
                 self,
                 "서비스 계정 필요",

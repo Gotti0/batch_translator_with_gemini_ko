@@ -4,7 +4,7 @@ PySide6 Settings Tab Multi-Provider (Claude / Codex CLI / OpenAI Compatible) UI 
 
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from PySide6 import QtWidgets
 
 from gui_qt.tabs_qt.settings_tab_qt import SettingsTabQt
@@ -93,6 +93,43 @@ class TestSettingsTabProvider(unittest.TestCase):
         items = [self.tab.model_name_combo.itemText(i) for i in range(self.tab.model_name_combo.count())]
         self.assertIn("default", items)
         self.assertIn("gpt-5.5", items)
+
+    def test_vertex_toggle_shows_service_account_rows(self):
+        """Vertex 체크 시 서비스 계정·GCP 행이 보이고 API 키 입력이 잠긴다"""
+        vertex_rows = (self.tab.sa_row_widget, self.tab.gcp_project_edit, self.tab.gcp_location_edit)
+        for w in vertex_rows:
+            self.assertFalse(self.tab.api_form.isRowVisible(w))
+
+        with patch.object(QtWidgets.QMessageBox, "information") as info:
+            self.tab.use_vertex_check.setChecked(True)
+        info.assert_called_once()  # 서비스 계정 경로가 비어 있으면 안내
+        for w in vertex_rows:
+            self.assertTrue(self.tab.api_form.isRowVisible(w))
+            self.assertTrue(w.isEnabled())
+        self.assertFalse(self.tab.api_keys_edit.isEnabled())
+
+        self.tab.use_vertex_check.setChecked(False)
+        for w in vertex_rows:
+            self.assertFalse(self.tab.api_form.isRowVisible(w))
+        self.assertTrue(self.tab.api_keys_edit.isEnabled())
+
+    def test_vertex_state_ignored_for_non_gemini_provider(self):
+        """Vertex가 켜져 있어도 다른 프로바이더에서는 Vertex 행을 숨기고 API 키를 연다"""
+        with patch.object(QtWidgets.QMessageBox, "information"):
+            self.tab.use_vertex_check.setChecked(True)
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("claude_cli"))
+        self.assertFalse(self.tab.api_form.isRowVisible(self.tab.sa_row_widget))
+        self.assertTrue(self.tab.api_keys_edit.isEnabled())
+
+    def test_load_config_with_vertex_does_not_prompt(self):
+        """Vertex가 저장된 설정을 불러올 때는 안내창 없이 행만 표시한다"""
+        self.mock_app_service.config = {"llm_provider": "gemini", "use_vertex_ai": True}
+        with patch.object(QtWidgets.QMessageBox, "information") as info:
+            self.tab._load_config()
+        info.assert_not_called()
+        self.assertTrue(self.tab.use_vertex_check.isChecked())
+        self.assertTrue(self.tab.api_form.isRowVisible(self.tab.sa_row_widget))
+        self.assertFalse(self.tab.api_keys_edit.isEnabled())
 
     def test_auth_check_button_exists(self):
         """인증/연결 테스트 버튼 존재 확인"""

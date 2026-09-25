@@ -5,7 +5,7 @@
 import sys
 import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from PySide6 import QtWidgets
 
@@ -68,7 +68,8 @@ class TestSettingsTabBatch(unittest.TestCase):
 
         self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("gemini"))
         self.assertTrue(card.isEnabled())
-        self.tab.use_vertex_check.setChecked(True)
+        with patch.object(QtWidgets.QMessageBox, "information"):  # 서비스 계정 안내창 억제
+            self.tab.use_vertex_check.setChecked(True)
         self.assertFalse(card.isEnabled())
         self.assertIn("Vertex", card.toolTip())
 
