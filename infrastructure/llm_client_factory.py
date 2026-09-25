@@ -59,7 +59,8 @@ class LLMClientFactory:
             cli_path = config.get("claude_cli_path", "claude")
             model_name = config.get("claude_cli_model") or config.get("model_name")
             timeout = int(config.get("api_timeout", 180))
-            api_key = config.get("claude_cli_api_key") or (config.get("api_keys")[0] if config.get("api_keys") else None)
+            # Gemini용 api_keys로 대체하지 않는다: 다른 회사 키가 ANTHROPIC_API_KEY로 새고 로그인 세션을 가린다
+            api_key = config.get("claude_cli_api_key") or None
             logger.info("LLMClientFactory: ClaudeCliClient 생성")
             return ClaudeCliClient(
                 cli_path=cli_path,
@@ -72,7 +73,7 @@ class LLMClientFactory:
             cli_path = config.get("codex_cli_path", "codex")
             model_name = config.get("codex_cli_model") or config.get("model_name") or "gpt-5.5"
             timeout = int(config.get("api_timeout", 180))
-            api_key = config.get("codex_cli_api_key") or (config.get("api_keys")[0] if config.get("api_keys") else None)
+            api_key = config.get("codex_cli_api_key") or None
             logger.info("LLMClientFactory: CodexCliClient 생성")
             return CodexCliClient(
                 cli_path=cli_path,

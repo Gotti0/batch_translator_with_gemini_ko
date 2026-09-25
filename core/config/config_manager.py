@@ -164,8 +164,10 @@ class ConfigManager:
             "llm_provider": "gemini",  # gemini, claude_cli, codex_cli, antigravity_cli, openai_compatible, ollama
             "claude_cli_path": "claude",
             "claude_cli_model": "default",
+            "claude_cli_api_key": "",  # 비우면 로그인된 구독 세션 사용
             "codex_cli_path": "codex",
             "codex_cli_model": "gpt-5.5",
+            "codex_cli_api_key": "",  # 비우면 로그인된 구독 세션 사용
             "antigravity_cli_path": "agy",
             "antigravity_cli_model": "default",
             "antigravity_cli_effort": None,

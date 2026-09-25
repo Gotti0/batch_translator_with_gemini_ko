@@ -35,6 +35,17 @@ class TestLLMClientFactory(unittest.TestCase):
         self.assertEqual(client.provider_name, "codex_cli")
         self.assertFalse(client.supports_pagefold)
 
+    def test_cli_clients_do_not_borrow_gemini_keys(self):
+        """CLI 전용 키가 없으면 Gemini api_keys를 쓰지 않고 로그인 세션(None)을 쓴다"""
+        for provider in ("claude_cli", "codex_cli"):
+            client = LLMClientFactory.create_client({"llm_provider": provider, "api_keys": ["AQ.gemini-key"]})
+            self.assertIsNone(client.api_key, provider)
+
+        client = LLMClientFactory.create_client({
+            "llm_provider": "claude_cli", "api_keys": ["AQ.gemini-key"], "claude_cli_api_key": "sk-ant-own",
+        })
+        self.assertEqual(client.api_key, "sk-ant-own")
+
     def test_create_openai_compatible_client(self):
         cfg = {
             "llm_provider": "openai_compatible",

@@ -131,6 +131,50 @@ class TestSettingsTabProvider(unittest.TestCase):
         self.assertTrue(self.tab.api_form.isRowVisible(self.tab.sa_row_widget))
         self.assertFalse(self.tab.api_keys_edit.isEnabled())
 
+    def test_api_keys_are_scoped_per_provider(self):
+        """프로바이더를 바꾸면 키 입력칸도 그 프로바이더 몫으로 바뀌고, 돌아오면 복원된다"""
+        self.mock_app_service.config = dict(self.mock_app_service.config, api_keys=["AQ.gemini-1", "AQ.gemini-2"])
+        self.tab._load_config()
+        self.assertEqual(self.tab.api_keys_edit.toPlainText(), "AQ.gemini-1\nAQ.gemini-2")
+
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("claude_cli"))
+        self.assertEqual(self.tab.api_keys_edit.toPlainText(), "")  # 비어 있으면 로그인 세션 사용
+        cfg = self.tab._build_provider_config_from_ui()
+        self.assertIsNone(cfg["claude_cli_api_key"])
+        self.assertEqual(cfg["api_keys"], [])
+
+        self.tab.api_keys_edit.setPlainText("sk-ant-own")
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("codex_cli"))
+        self.assertEqual(self.tab.api_keys_edit.toPlainText(), "")
+
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("claude_cli"))
+        self.assertEqual(self.tab.api_keys_edit.toPlainText(), "sk-ant-own")
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("gemini"))
+        self.assertEqual(self.tab.api_keys_edit.toPlainText(), "AQ.gemini-1\nAQ.gemini-2")
+
+    def test_save_keeps_each_provider_key_in_its_own_field(self):
+        """Claude 화면에서 저장해도 Gemini 키 목록이 Anthropic 키로 덮이지 않는다"""
+        self.mock_app_service.config = dict(self.mock_app_service.config, api_keys=["AQ.gemini-1"])
+        self.tab._load_config()
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("claude_cli"))
+        self.tab.api_keys_edit.setPlainText("sk-ant-own")
+
+        self.tab._save_config_to_service()
+
+        saved_cfg = self.mock_app_service.save_app_config.call_args[0][0]
+        self.assertEqual(saved_cfg["api_keys"], ["AQ.gemini-1"])
+        self.assertEqual(saved_cfg["claude_cli_api_key"], "sk-ant-own")
+        self.assertEqual(saved_cfg["codex_cli_api_key"], "")
+
+    def test_load_config_restores_cli_key(self):
+        """저장된 CLI 전용 키는 해당 프로바이더 화면에서 다시 보인다"""
+        self.mock_app_service.config = {
+            "llm_provider": "codex_cli", "api_keys": ["AQ.gemini-1"], "codex_cli_api_key": "sk-openai-own",
+        }
+        self.tab._load_config()
+        self.assertEqual(self.tab.api_keys_edit.toPlainText(), "sk-openai-own")
+        self.assertEqual(self.tab._build_provider_config_from_ui()["codex_cli_api_key"], "sk-openai-own")
+
     def test_auth_check_button_exists(self):
         """인증/연결 테스트 버튼 존재 확인"""
         self.assertTrue(hasattr(self.tab, "auth_check_btn"))
@@ -144,8 +188,11 @@ class TestSettingsTabProvider(unittest.TestCase):
 
         self.assertTrue(self.tab.api_form.isRowVisible(self.tab.cli_path_edit))
         self.assertFalse(self.tab.api_form.isRowVisible(self.tab.base_url_edit))
+        # Antigravity CLI는 키를 쓰지 않으므로 키 입력칸을 숨긴다
+        self.assertFalse(self.tab.api_form.isRowVisible(self.tab.api_keys_edit))
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("gemini"))
         self.assertTrue(self.tab.api_form.isRowVisible(self.tab.api_keys_edit))
-        self.assertIn("Antigravity CLI", self.tab.api_keys_edit.placeholderText())
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData("antigravity_cli"))
         self.assertFalse(self.tab.enable_pagefold_check.isEnabled())
 
         # AGY 추천 모델 목록 확인

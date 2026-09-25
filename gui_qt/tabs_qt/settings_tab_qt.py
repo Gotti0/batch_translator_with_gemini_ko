@@ -26,6 +26,16 @@ from gui_qt.components_qt.mode_card import ModeSelectorGroup
 from gui_qt.dialogs_qt.prefill_history_editor_qt import PrefillHistoryEditorDialogQt
 
 
+# 프로바이더별 API 키 설정 필드. Antigravity CLI는 키를 쓰지 않아 저장하지 않는다.
+PROVIDER_KEY_FIELDS = {
+    "gemini": "api_keys",
+    "claude_cli": "claude_cli_api_key",
+    "codex_cli": "codex_cli_api_key",
+    "openai_compatible": "openai_compatible_api_key",
+    "ollama": "ollama_api_key",
+}
+
+
 class NoWheelSpinBox(QtWidgets.QSpinBox):
     """QSpinBox that ignores wheel events when not focused"""
     def __init__(self, parent=None):
@@ -198,6 +208,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._translation_start_chunks = 0  # 번역 시작 시점의 이미 처리된 청크 수 (이어하기 대응)
         self._total_chunks = 0  # 완료 통계용: 총 청크 수
         self._final_processed_chunks = 0  # 완료 통계용: 최종 처리 청크 수
+        # 키 입력칸은 하나지만 내용은 프로바이더별로 따로 보관한다 (다른 회사 키가 섞여 전송되지 않도록)
+        self._provider_key_text: dict[str, str] = {}
+        self._key_provider: Optional[str] = None  # 지금 입력칸에 보이는 키의 프로바이더
 
         self._build_ui()
         self._wire_signals()
@@ -709,9 +722,26 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._batch_timer.timeout.connect(self._on_batch_timer)
         self.input_edit.editingFinished.connect(self._update_batch_panel)
 
+    def _swap_api_keys_to(self, provider: str) -> None:
+        """입력칸 내용을 이전 프로바이더 몫으로 보관하고 새 프로바이더의 키를 보여준다."""
+        if self._key_provider is not None:
+            self._provider_key_text[self._key_provider] = self.api_keys_edit.toPlainText()
+        if provider != self._key_provider:
+            self.api_keys_edit.setPlainText(self._provider_key_text.get(provider, ""))
+        self._key_provider = provider
+
+    def _api_keys_for(self, provider: str) -> list[str]:
+        """해당 프로바이더 몫으로 입력된 키 목록 (지금 보이는 프로바이더면 입력칸에서 읽는다)."""
+        if provider == self._key_provider:
+            text = self.api_keys_edit.toPlainText()
+        else:
+            text = self._provider_key_text.get(provider, "")
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
     def _on_provider_changed(self, _=None) -> None:
         """AI 공급자 변경 시 입력 폼 표시 및 추천 모델 목록 조정"""
         provider = self.provider_combo.currentData() or "gemini"
+        self._swap_api_keys_to(provider)
         is_gemini = (provider == "gemini")
         is_claude = (provider == "claude_cli")
         is_codex = (provider == "codex_cli")
@@ -722,7 +752,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.api_form.setRowVisible(self.cli_path_edit, is_claude or is_codex or is_agy)
         self.api_form.setRowVisible(self.base_url_edit, is_openai_compat or is_ollama)
         self.api_form.setRowVisible(self.ollama_num_ctx_spin, is_ollama)
-        self.api_form.setRowVisible(self.api_keys_edit, True)
+        # Antigravity CLI는 로그인된 Google 계정 세션만 쓰고 키를 받지 않는다
+        self.api_form.setRowVisible(self.api_keys_edit, provider in PROVIDER_KEY_FIELDS)
         self.api_form.setRowVisible(self.use_vertex_check, is_gemini)
 
         # 프로바이더별 API 키 안내문(Placeholder) 동적 전환
@@ -730,8 +761,6 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.api_keys_edit.setPlaceholderText("선택 사항: Claude Pro 세션 대신 별도 Anthropic API 키(sk-ant-...)를 사용하려면 입력 (비워두면 로컬 구독 세션 사용)")
         elif is_codex:
             self.api_keys_edit.setPlaceholderText("선택 사항: ChatGPT Plus 세션 대신 별도 OpenAI API 키(sk-...)를 사용하려면 입력 (비워두면 로컬 구독 세션 사용)")
-        elif is_agy:
-            self.api_keys_edit.setPlaceholderText("선택 사항: Antigravity CLI는 기본적으로 로그인된 Google 계정 세션을 사용합니다 (비워둘 수 있음)")
         elif is_ollama:
             self.api_keys_edit.setPlaceholderText("선택 사항: 인증 프록시나 원격 Ollama에 Bearer 토큰이 필요할 때만 입력 (로컬 Ollama는 비워두세요)")
         elif is_openai_compat:
@@ -950,6 +979,16 @@ class SettingsTabQt(QtWidgets.QWidget):
         if hasattr(self.app_service, "config_manager"):
             defaults = self.app_service.config_manager.get_default_config()
 
+        # 프로바이더별 키 보관함을 먼저 채운다. 입력칸에 남은 이전 내용은 버린다.
+        gemini_keys = cfg.get("api_keys") or []
+        self._provider_key_text = {
+            "gemini": "\n".join(gemini_keys) if isinstance(gemini_keys, list) else str(gemini_keys),
+        }
+        for provider_id, field in PROVIDER_KEY_FIELDS.items():
+            if provider_id != "gemini":
+                self._provider_key_text[provider_id] = str(cfg.get(field) or "")
+        self._key_provider = None
+
         # 프로바이더 로드
         provider = str(cfg.get("llm_provider", defaults.get("llm_provider", "gemini")))
         idx = self.provider_combo.findData(provider)
@@ -957,6 +996,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.provider_combo.setCurrentIndex(idx)
         else:
             self.provider_combo.setCurrentIndex(0)
+        # 같은 인덱스면 시그널이 나오지 않으므로 직접 반영
+        self._swap_api_keys_to(self.provider_combo.currentData() or "gemini")
 
         # CLI 경로 및 Base URL 로드
         if provider == "codex_cli":
@@ -979,12 +1020,6 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.input_edit.setText(input_files[0] if input_files else "")
         self.output_edit.setText(str(cfg.get("output_file", "") or ""))
         
-        api_keys = cfg.get("api_keys") or []
-        if isinstance(api_keys, list):
-            self.api_keys_edit.setPlainText("\n".join(api_keys))
-        elif isinstance(api_keys, str):
-            self.api_keys_edit.setPlainText(api_keys)
-
         # 로드 중에는 "서비스 계정 필요" 안내가 뜨지 않도록 시그널을 막는다 (상태는 아래에서 반영)
         self.use_vertex_check.blockSignals(True)
         self.use_vertex_check.setChecked(bool(cfg.get("use_vertex_ai", defaults.get("use_vertex_ai", False))))
@@ -1114,9 +1149,14 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["input_files"] = [input_path] if input_path else []
         cfg["output_file"] = output_path or None
         
-        api_keys = [line.strip() for line in self.api_keys_edit.toPlainText().splitlines() if line.strip()]
-        if api_keys:
-            cfg["api_keys"] = api_keys
+        # 키는 프로바이더별 몫만 해당 필드에 저장한다 (Gemini 목록에 다른 회사 키가 섞이지 않도록)
+        gemini_keys = self._api_keys_for("gemini")
+        if gemini_keys:
+            cfg["api_keys"] = gemini_keys
+        for provider_id, field in PROVIDER_KEY_FIELDS.items():
+            if provider_id != "gemini":
+                keys = self._api_keys_for(provider_id)
+                cfg[field] = keys[0] if keys else ""
         cfg["use_vertex_ai"] = self.use_vertex_check.isChecked()
         cfg["service_account_file_path"] = self.sa_path_edit.text().strip() or None
         cfg["gcp_project"] = self.gcp_project_edit.text().strip() or None
@@ -1138,12 +1178,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         elif provider == "openai_compatible":
             cfg["openai_compatible_base_url"] = self.base_url_edit.text().strip()
             cfg["openai_compatible_model"] = selected_model or "default"
-            if api_keys:
-                cfg["openai_compatible_api_key"] = api_keys[0]
         elif provider == "ollama":
             cfg["ollama_base_url"] = self.base_url_edit.text().strip() or "http://localhost:11434"
             cfg["ollama_model"] = selected_model
-            cfg["ollama_api_key"] = api_keys[0] if api_keys else ""
             cfg["ollama_num_ctx"] = int(self.ollama_num_ctx_spin.value())
         else:
             cfg["model_name"] = selected_model or None
@@ -1448,30 +1485,32 @@ class SettingsTabQt(QtWidgets.QWidget):
     def _build_provider_config_from_ui(self) -> dict:
         """저장하지 않은 현재 UI 상태로 클라이언트 생성용 설정을 만든다 (연결 테스트·모델 조회용)."""
         provider = self.provider_combo.currentData() or "gemini"
-        api_keys = [line.strip() for line in self.api_keys_edit.toPlainText().splitlines() if line.strip()]
+        # 현재 프로바이더 몫의 키만 쓴다
+        api_keys = self._api_keys_for(provider)
+        first_key = api_keys[0] if api_keys else ""
         return {
             "llm_provider": provider,
-            "api_keys": api_keys,
-            "api_key": api_keys[0] if api_keys else "",
+            "api_keys": api_keys if provider == "gemini" else [],
+            "api_key": first_key if provider == "gemini" else "",
             "use_vertex_ai": self.use_vertex_check.isChecked(),
             "service_account_file_path": self.sa_path_edit.text().strip() or None,
             "gcp_project": self.gcp_project_edit.text().strip() or None,
             "gcp_location": self.gcp_location_edit.text().strip() or None,
             "claude_cli_path": self.cli_path_edit.text().strip() or "claude",
             "claude_cli_model": self.model_name_combo.currentText().strip() or "default",
-            "claude_cli_api_key": api_keys[0] if (provider == "claude_cli" and api_keys) else None,
+            "claude_cli_api_key": (first_key or None) if provider == "claude_cli" else None,
             "codex_cli_path": self.cli_path_edit.text().strip() or "codex",
             "codex_cli_model": self.model_name_combo.currentText().strip() or "gpt-5.5",
-            "codex_cli_api_key": api_keys[0] if (provider == "codex_cli" and api_keys) else None,
+            "codex_cli_api_key": (first_key or None) if provider == "codex_cli" else None,
             "antigravity_cli_path": self.cli_path_edit.text().strip() or "agy",
             "antigravity_cli_model": self.model_name_combo.currentText().strip() or "default",
             "openai_compatible_base_url": self.base_url_edit.text().strip(),
-            "openai_compatible_api_key": api_keys[0] if api_keys else "",
+            "openai_compatible_api_key": first_key if provider == "openai_compatible" else "",
             "openai_compatible_model": self.model_name_combo.currentText().strip() or "default",
             "model_name": self.model_name_combo.currentText().strip(),
             "ollama_base_url": self.base_url_edit.text().strip() or "http://localhost:11434",
             "ollama_model": self.model_name_combo.currentText().strip(),
-            "ollama_api_key": api_keys[0] if (provider == "ollama" and api_keys) else "",
+            "ollama_api_key": first_key if provider == "ollama" else "",
             "ollama_num_ctx": int(self.ollama_num_ctx_spin.value()),
         }
 
