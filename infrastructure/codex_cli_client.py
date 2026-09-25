@@ -20,7 +20,7 @@ from core.exceptions import (
     BtgApiRateLimitException,
     BtgApiInvalidRequestException,
 )
-from infrastructure.base_client import BaseLLMClient
+from infrastructure.base_client import BaseLLMClient, kill_if_running
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -164,6 +164,7 @@ class CodexCliClient(BaseLLMClient):
 
         logger.debug(f"Codex CLI 실행 시작: {' '.join(cmd[:4])} ...")
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -219,12 +220,14 @@ class CodexCliClient(BaseLLMClient):
             # agent_message가 추출되지 않은 경우 raw stdout에서 반환
             return stdout_text
 
+        except asyncio.CancelledError:
+            # 바깥 wait_for(헬스체크 제한 시간)나 번역 중지로 취소되면 안쪽 TimeoutError 경로를 타지 않는다.
+            # 그대로 두면 CLI 프로세스가 살아남아 호출을 계속하므로 여기서 정리한다.
+            kill_if_running(proc)
+            raise
         except asyncio.TimeoutError as e:
             logger.error(f"Codex CLI 실행 시간 초과 ({self.timeout_seconds}초)")
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            kill_if_running(proc)
             raise BtgApiClientException(
                 f"Codex CLI 실행 시간 초과 ({self.timeout_seconds}초)", original_exception=e
             ) from e

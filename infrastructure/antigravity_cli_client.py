@@ -21,10 +21,20 @@ from core.exceptions import (
     BtgApiRateLimitException,
     BtgApiInvalidRequestException,
 )
-from infrastructure.base_client import BaseLLMClient
+from infrastructure.base_client import BaseLLMClient, kill_if_running
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
+
+
+def _is_rate_limited(err_msg: str) -> bool:
+    """사용량 제한·할당량 소진 오류인지 판별한다.
+
+    agy는 할당량 소진을 `RESOURCE_EXHAUSTED (code 429)`로 보고하며 "rate limit" 문구를 쓰지 않는다.
+    오류 ID에 숫자가 섞여 있으므로 429는 "code 429" 형태로만 본다.
+    """
+    lowered = err_msg.lower()
+    return any(k in lowered for k in ("rate limit", "too many requests", "resource_exhausted", "code 429"))
 
 
 class AntigravityCliClient(BaseLLMClient):
@@ -185,6 +195,7 @@ class AntigravityCliClient(BaseLLMClient):
 
         prompt_temp_path = None
         schema_temp_path = None
+        proc = None
         try:
             cmd = [
                 self.cli_path,
@@ -277,7 +288,7 @@ class AntigravityCliClient(BaseLLMClient):
                     f"Antigravity CLI 비정상 종료 (code: {proc.returncode}): {stderr_text or stdout_text}"
                 )
                 err_msg = stderr_text or stdout_text
-                if "rate limit" in err_msg.lower() or "too many requests" in err_msg.lower():
+                if _is_rate_limited(err_msg):
                     raise BtgApiRateLimitException(f"Antigravity CLI 사용량 제한: {err_msg}")
                 if "login" in err_msg.lower() or "auth" in err_msg.lower():
                     raise BtgApiClientException(
@@ -294,9 +305,10 @@ class AntigravityCliClient(BaseLLMClient):
                 data = json.loads(stdout_text)
                 if isinstance(data, dict):
                     if data.get("status") == "ERROR":
-                        raise BtgApiClientException(
-                            f"Antigravity CLI 응답 오류: {data.get('response') or data.get('error') or stdout_text}"
-                        )
+                        detail = str(data.get('response') or data.get('error') or stdout_text)
+                        if _is_rate_limited(detail):
+                            raise BtgApiRateLimitException(f"Antigravity CLI 사용량 제한: {detail}")
+                        raise BtgApiClientException(f"Antigravity CLI 응답 오류: {detail}")
                     agy_structured_output = data.get("structured_output")
                     resp = data.get("response")
                     if resp is not None:
@@ -351,12 +363,14 @@ class AntigravityCliClient(BaseLLMClient):
                 logger.warning(f"AGY JSON 파싱 실패 ({e_parse}), 원문 반환: {resp_content[:200]}")
                 return resp_content
 
+        except asyncio.CancelledError:
+            # 바깥 wait_for(헬스체크 제한 시간)나 번역 중지로 취소되면 안쪽 TimeoutError 경로를 타지 않는다.
+            # 그대로 두면 CLI 프로세스가 살아남아 호출을 계속하므로 여기서 정리한다.
+            kill_if_running(proc)
+            raise
         except asyncio.TimeoutError as e:
             logger.error(f"Antigravity CLI 실행 시간 초과 ({self.timeout_seconds}초)")
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            kill_if_running(proc)
             raise BtgApiClientException(
                 f"Antigravity CLI 실행 시간 초과 ({self.timeout_seconds}초)", original_exception=e
             ) from e
@@ -378,6 +392,7 @@ class AntigravityCliClient(BaseLLMClient):
         if not shutil.which(self.cli_path) and not os.path.exists(self.cli_path):
             return list(self.FALLBACK_MODELS)
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 resolved_path,
@@ -400,7 +415,11 @@ class AntigravityCliClient(BaseLLMClient):
                 if models:
                     return ["default"] + models
         except Exception as e:
-            logger.warning(f"agy models 조회 실패, 폴백 사용: {e}")
+            kill_if_running(proc)
+            logger.warning(f"agy models 조회 실패, 폴백 사용: {e!r}")
+        except asyncio.CancelledError:
+            kill_if_running(proc)
+            raise
 
         return list(self.FALLBACK_MODELS)
 
@@ -424,7 +443,14 @@ class AntigravityCliClient(BaseLLMClient):
             clean_resp = response.replace("\n", " ").strip()
             return True, f"Google Antigravity CLI 인증 성공 (AGY 세션 정상 활성화됨. 응답: {clean_resp[:30]})"
         except asyncio.TimeoutError:
-            return False, "Antigravity CLI 연결 시간 초과 (60초 내 응답 없음)."
+            return (
+                False,
+                "Antigravity CLI 연결 시간 초과 (60초 내 응답 없음).\n"
+                "할당량이 소진되면 agy가 안에서 몇 분간 재시도한 뒤에야 오류를 돌려주므로, "
+                "할당량 소진일 수 있습니다. 잠시 후 다시 시도하거나 터미널에서 `agy`로 상태를 확인해 주세요.",
+            )
+        except BtgApiRateLimitException as e:
+            return False, f"Antigravity CLI 사용량 제한 또는 할당량 소진: {e}"
         except BtgApiClientException as e:
             msg = str(e)
             if "login" in msg.lower() or "auth" in msg.lower():
