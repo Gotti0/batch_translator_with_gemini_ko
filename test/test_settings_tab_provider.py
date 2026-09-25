@@ -303,6 +303,99 @@ class TestSettingsTabProvider(unittest.TestCase):
         self.assertEqual(cfg["ollama_base_url"], "http://localhost:11434")
         self.assertEqual(cfg["ollama_api_key"], "")
 
+    # --- 추론 강도 ---
+
+    def _select(self, provider):
+        self.tab.provider_combo.setCurrentIndex(self.tab.provider_combo.findData(provider))
+
+    def _effort_values(self):
+        combo = self.tab.reasoning_effort_combo
+        return [combo.itemData(i) for i in range(combo.count())]
+
+    def test_reasoning_rows_follow_provider_and_model(self):
+        """Gemini는 모델에 맞는 Thinking 행만, 다른 프로바이더는 '추론 강도' 행만 보인다"""
+        form = self.tab.gen_form
+        self.tab.model_name_combo.setCurrentText("gemini-3-flash-preview")
+        self.assertTrue(form.isRowVisible(self.tab.thinking_level_combo))
+        self.assertFalse(form.isRowVisible(self.tab.thinking_budget_row))
+        self.assertFalse(form.isRowVisible(self.tab.reasoning_effort_combo))
+
+        self.tab.model_name_combo.setCurrentText("gemini-2.5-pro")
+        self.assertFalse(form.isRowVisible(self.tab.thinking_level_combo))
+        self.assertTrue(form.isRowVisible(self.tab.thinking_budget_row))
+
+        self._select("claude_cli")
+        self.assertFalse(form.isRowVisible(self.tab.thinking_level_combo))
+        self.assertFalse(form.isRowVisible(self.tab.thinking_budget_row))
+        self.assertTrue(form.isRowVisible(self.tab.reasoning_effort_combo))
+        self.assertEqual(self._effort_values(), [None, "low", "medium", "high", "xhigh", "max"])
+
+        self._select("antigravity_cli")
+        self.assertEqual(self._effort_values(), [None, "low", "medium", "high", "max"])
+
+    def test_effort_is_kept_per_provider(self):
+        self._select("claude_cli")
+        combo = self.tab.reasoning_effort_combo
+        combo.setCurrentIndex(combo.findData("xhigh"))
+        self._select("codex_cli")
+        self.assertIsNone(combo.currentData())  # 기본값
+        combo.setCurrentIndex(combo.findData("minimal"))
+        self._select("claude_cli")
+        self.assertEqual(combo.currentData(), "xhigh")
+
+        self.assertEqual(self.tab._build_provider_config_from_ui()["claude_cli_effort"], "xhigh")
+        self.tab._save_config_to_service()
+        saved = self.mock_app_service.save_app_config.call_args[0][0]
+        self.assertEqual(saved["claude_cli_effort"], "xhigh")
+        self.assertEqual(saved["codex_cli_effort"], "minimal")
+        self.assertIsNone(saved["ollama_think"])
+
+    def test_load_restores_saved_effort(self):
+        self.mock_app_service.config = {"llm_provider": "ollama", "ollama_think": "false", "antigravity_cli_effort": "max"}
+        self.tab._load_config()
+        self.assertEqual(self.tab.reasoning_effort_combo.currentData(), "false")
+        self._select("antigravity_cli")
+        self.assertEqual(self.tab.reasoning_effort_combo.currentData(), "max")
+
+    def test_gemini_thinking_level_survives_save_under_other_provider(self):
+        """예전에는 다른 프로바이더에서 저장하면 비활성 칸이라 thinking_level이 None으로 지워졌다"""
+        self.mock_app_service.config = dict(self.mock_app_service.config,
+                                            model_name="gemini-3-flash-preview", thinking_level="low")
+        self.tab._load_config()
+        self.assertEqual(self.tab.thinking_level_combo.currentText(), "low")
+        self._select("ollama")
+        self.tab._save_config_to_service()
+        saved = self.mock_app_service.save_app_config.call_args[0][0]
+        self.assertEqual(saved["thinking_level"], "low")
+
+    # --- CLI 실행 경로 ---
+
+    def test_cli_path_is_kept_per_provider(self):
+        """Claude에 지정한 전체 경로가 Codex로 넘어가지 않는다"""
+        self._select("claude_cli")
+        self.tab.cli_path_edit.setText("C:\\tools\\claude.exe")
+        self._select("codex_cli")
+        self.assertEqual(self.tab.cli_path_edit.text(), "codex")
+        cfg = self.tab._build_provider_config_from_ui()
+        self.assertEqual(cfg["codex_cli_path"], "codex")
+        self.assertEqual(cfg["claude_cli_path"], "C:\\tools\\claude.exe")
+
+        self._select("claude_cli")
+        self.assertEqual(self.tab.cli_path_edit.text(), "C:\\tools\\claude.exe")
+        self.tab._save_config_to_service()
+        saved = self.mock_app_service.save_app_config.call_args[0][0]
+        self.assertEqual(saved["claude_cli_path"], "C:\\tools\\claude.exe")
+        self.assertEqual(saved["codex_cli_path"], "codex")
+        self.assertEqual(saved["antigravity_cli_path"], "agy")
+
+    def test_load_restores_cli_paths(self):
+        self.mock_app_service.config = {"llm_provider": "gemini", "codex_cli_path": "D:\\codex\\codex.exe"}
+        self.tab._load_config()
+        self._select("codex_cli")
+        self.assertEqual(self.tab.cli_path_edit.text(), "D:\\codex\\codex.exe")
+        self._select("antigravity_cli")
+        self.assertEqual(self.tab.cli_path_edit.text(), "agy")
+
 
 if __name__ == "__main__":
     unittest.main()
