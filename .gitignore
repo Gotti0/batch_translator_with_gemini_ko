@@ -63,3 +63,6 @@ main_gui_backup.py
 DESIGN.md
 IMPLEMENTATION.md
 .agents/
+
+# GCP 서비스 계정 키 (<project-id>-<key-id 12자리>.json)
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json

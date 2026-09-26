@@ -7,10 +7,12 @@ LLM Client Factory for Neo Batch Translator (BTG)
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from infrastructure.base_client import BaseLLMClient
-from infrastructure.gemini_client import GeminiClient
+from infrastructure.gemini_client import GeminiClient, GeminiInvalidRequestException
 from infrastructure.claude_cli_client import ClaudeCliClient
 from infrastructure.codex_cli_client import CodexCliClient
 from infrastructure.antigravity_cli_client import AntigravityCliClient
@@ -34,6 +36,29 @@ class LLMClientFactory:
         "openai_compatible",
         "ollama",
     ]
+
+    @staticmethod
+    def _is_service_account(value: Any) -> bool:
+        """값이 서비스 계정 정보(dict 또는 JSON 문자열)인지 판정한다."""
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return False
+        return isinstance(value, dict) and value.get("type") == "service_account"
+
+    @classmethod
+    def _read_service_account_file(cls, path: str) -> Optional[str]:
+        """서비스 계정 JSON 파일 내용을 읽는다. 읽을 수 없거나 서비스 계정이 아니면 None."""
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"Vertex AI 서비스 계정 파일을 읽지 못했습니다 ({Path(path).name}): {e}")
+            return None
+        if not cls._is_service_account(text):
+            logger.warning(f"Vertex AI 서비스 계정 파일이 아닙니다 ({Path(path).name})")
+            return None
+        return text
 
     @classmethod
     def create_client(
@@ -132,8 +157,20 @@ class LLMClientFactory:
             location = config.get("gcp_location")
             sa_path = config.get("service_account_file_path")
 
-            if use_vertex and sa_path:
-                creds = sa_path
+            if use_vertex:
+                # Vertex에서는 API 키로 대체하지 않는다. 서비스 계정이 없으면 GeminiClient가 ADC를 쓴다.
+                # GeminiClient는 문자열을 SA JSON 또는 API 키로 해석하므로 경로가 아니라 파일 내용을 넘긴다.
+                # 헬스체크·모델 조회처럼 auth_credentials 없이 설정만 넘기는 호출도 있어 여기서 읽는다.
+                sa_json = cls._read_service_account_file(sa_path) if sa_path else None
+                if sa_json is not None:
+                    creds = sa_json
+                elif sa_path and not cls._is_service_account(auth_credentials):
+                    # 경로를 지정했는데 못 읽으면 다른 계정(ADC)으로 조용히 넘어가지 않는다
+                    raise GeminiInvalidRequestException(
+                        f"Vertex AI 서비스 계정 파일을 사용할 수 없습니다: {Path(sa_path).name}"
+                    )
+                else:
+                    creds = auth_credentials
             elif auth_credentials is not None:
                 creds = auth_credentials
             else:
@@ -156,4 +193,5 @@ class LLMClientFactory:
                 overload_pause_threshold=config.get("overload_pause_threshold", 3),
                 overload_pause_seconds=config.get("overload_pause_seconds", 300.0),
                 overload_max_pause_seconds=config.get("overload_max_pause_seconds", 1800.0),
+                use_vertex=bool(use_vertex),
             )

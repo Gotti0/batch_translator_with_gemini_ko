@@ -14,7 +14,8 @@ from google import genai
 from google.genai import types as genai_types # ThinkingConfig 포함
 from google.genai.types import FinishReason  
 from google.genai import errors as genai_errors
-from google.auth.exceptions import GoogleAuthError, RefreshError
+import google.auth
+from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError, RefreshError
 from google.api_core import exceptions as api_core_exceptions
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 
@@ -193,8 +194,9 @@ class GeminiClient(BaseLLMClient):
                  scheduler: Optional[RequestScheduler] = None,
                  overload_pause_threshold: int = 3,
                  overload_pause_seconds: float = 300.0,
-                 overload_max_pause_seconds: float = 1800.0):
-        
+                 overload_max_pause_seconds: float = 1800.0,
+                 use_vertex: bool = False):
+
         logger.debug(f"[GeminiClient.__init__] 시작. auth_credentials 타입: {type(auth_credentials)}, project: '{project}', location: '{location}'")
         
         # Initialize all attributes first
@@ -283,12 +285,18 @@ class GeminiClient(BaseLLMClient):
 
         # Handle Vertex AI mode
         use_vertex_env_str = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower()
-        explicit_vertex_flag = use_vertex_env_str == "true"
+        explicit_vertex_flag = use_vertex or use_vertex_env_str == "true"
 
-        if service_account_info: 
+        if service_account_info:
             # Vertex AI with service account
             self._setup_vertex_ai_with_service_account(service_account_info, project, location)
-        elif explicit_vertex_flag: 
+        elif explicit_vertex_flag:
+            # Vertex가 켜져 있으면 API 키로 대체하지 않는다. 대체되면 사용자가 모르게 API 키 쿼터로 호출된다.
+            if is_api_key_mode:
+                logger.warning("Vertex AI 모드에서는 API 키를 쓰지 않습니다. ADC로 인증합니다.")
+                self.api_keys_list = []
+                self.client_pool = {}
+                self.current_api_key = None
             # Vertex AI with ADC
             self._setup_vertex_ai_with_adc(project, location)
         elif is_api_key_mode:
@@ -380,11 +388,19 @@ class GeminiClient(BaseLLMClient):
     def _setup_vertex_ai_with_adc(self, project: Optional[str], location: Optional[str]):
         """ADC (Application Default Credentials)를 사용하여 Vertex AI 모드 설정"""
         self.auth_mode = "VERTEX_AI"
-        logger.info("GOOGLE_GENAI_USE_VERTEXAI=true 감지. Vertex AI 모드로 설정 (ADC 또는 환경 기반 인증 기대).")
-        self.vertex_project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        logger.info("Vertex AI 모드(서비스 계정 없음). ADC로 인증합니다.")
+        # SDK는 첫 요청 때 ADC를 읽으므로, 없으면 여기서 바로 알린다.
+        try:
+            self.vertex_credentials, adc_project = google.auth.default(scopes=self._VERTEX_AI_SCOPES)
+        except DefaultCredentialsError as e:
+            raise GeminiInvalidRequestException(
+                "Vertex AI 인증 정보를 찾을 수 없습니다. 서비스 계정 JSON 파일을 지정하거나 "
+                "'gcloud auth application-default login'으로 ADC를 설정하세요."
+            ) from e
+        self.vertex_project = project or os.environ.get("GOOGLE_CLOUD_PROJECT") or adc_project
         self.vertex_location = location or os.environ.get("GOOGLE_CLOUD_LOCATION") or "asia-northeast3"
         if not self.vertex_project:
-            raise GeminiInvalidRequestException("Vertex AI 사용 시 프로젝트 ID가 필수입니다 (인자 또는 GOOGLE_CLOUD_PROJECT 환경 변수).")
+            raise GeminiInvalidRequestException("Vertex AI 사용 시 프로젝트 ID가 필수입니다 (인자, GOOGLE_CLOUD_PROJECT 환경 변수 또는 ADC 프로젝트).")
         if not self.vertex_location: 
             raise GeminiInvalidRequestException("Vertex AI 사용 시 위치(location)가 필수입니다.")
         logger.info(f"Vertex AI 모드 (ADC) 설정: project='{self.vertex_project}', location='{self.vertex_location}'")
