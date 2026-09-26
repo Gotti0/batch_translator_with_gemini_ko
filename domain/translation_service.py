@@ -952,13 +952,18 @@ class TranslationService:
                 if translated_chunk_indices:
                     logger.info(f"기존 무결성 번역 진행 상태 로드됨: {len(translated_chunk_indices)}개 청크 완료")
 
+        def _completed() -> List[int]:
+            # 청크 설정이 바뀌어 범위를 벗어난 옛 결과 파일은 완료로 치지 않는다
+            return sorted(i for i in translated_chunk_indices if i < total_chunks)
+
         if progress_callback:
             progress_callback(TranslationJobProgressDTO(
                 total_chunks=total_chunks,
                 processed_chunks=len(translated_chunk_indices),
                 successful_chunks=len(translated_chunk_indices),
                 failed_chunks=0,
-                current_status_message=f"무결성 번역 시작 ({len(translated_chunk_indices)}/{total_chunks} 청크 완료됨)"
+                current_status_message=f"무결성 번역 시작 ({len(translated_chunk_indices)}/{total_chunks} 청크 완료됨)",
+                completed_chunk_indices=_completed(),
             ))
 
         pbar = None
@@ -1003,7 +1008,8 @@ class TranslationService:
                                 successful_chunks=len(translated_chunk_indices),
                                 failed_chunks=0,
                                 current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 건너뜀",
-                                current_chunk_processing=i + 1
+                                current_chunk_processing=i + 1,
+                                completed_chunk_indices=_completed(),
                             ))
                         continue
                     except Exception as e:
@@ -1021,7 +1027,8 @@ class TranslationService:
                             successful_chunks=len(translated_chunk_indices),
                             failed_chunks=0,
                             current_status_message=message,
-                            current_chunk_processing=_i + 1
+                            current_chunk_processing=_i + 1,
+                            completed_chunk_indices=_completed(),
                         ))
 
                 chunk_results = await self._translate_chunk_waiting_out_overload(
@@ -1056,7 +1063,8 @@ class TranslationService:
                         successful_chunks=len(translated_chunk_indices),
                         failed_chunks=0,
                         current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 완료",
-                        current_chunk_processing=i + 1
+                        current_chunk_processing=i + 1,
+                        completed_chunk_indices=_completed(),
                     ))
         finally:
             if pbar:

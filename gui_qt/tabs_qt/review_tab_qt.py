@@ -921,17 +921,9 @@ class ReviewTabQt(QtWidgets.QWidget):
         ) != QtWidgets.QMessageBox.Yes:
             return
         try:
-            translated = self.current_metadata.get("translated_chunks", {}) if self.current_metadata else {}
-            failed = self.current_metadata.get("failed_chunks", {}) if self.current_metadata else {}
-            for idx in chunk_indices:
-                key = str(idx)
-                translated.pop(key, None)
-                failed.pop(key, None)
-            if self.current_metadata is not None:
-                self.current_metadata["translated_chunks"] = translated
-                self.current_metadata["failed_chunks"] = failed
-                self.current_metadata["status"] = "in_progress"
-                file_handler.save_metadata(self.current_input_file, self.current_metadata)
+            if self.current_metadata is not None and self.provider is not None:
+                # 파이프라인마다 이어하기 기준이 달라 provider가 지운다 (무결성은 임시 JSON도 삭제)
+                self.provider.reset_chunks(self.current_input_file, self.current_metadata, chunk_indices)
             QtWidgets.QMessageBox.information(self, "성공", f"{count}개 청크 초기화 완료")
             asyncio.create_task(self._load_metadata_from_path(self.current_input_file, silent=True))
         except Exception as e:

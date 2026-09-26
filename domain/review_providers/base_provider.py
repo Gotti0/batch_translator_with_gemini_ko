@@ -57,3 +57,23 @@ class BaseReviewProvider(ABC):
         수정사항이 모두 반영된 최종 출력 파일을 생성하고 경로를 반환합니다.
         """
         pass
+
+    def reset_chunks(self, file_path: str, metadata: Dict[str, Any], chunk_indices: List[int]) -> None:
+        """
+        선택 청크의 번역 기록을 지워 다음 번역 실행에서 다시 번역되게 합니다.
+
+        기본 구현은 메타데이터만 지웁니다. 표준 파이프라인은 메타데이터의 translated_chunks로
+        이어하기를 판단하므로 이것으로 충분합니다. 다른 곳에서 진행 상태를 복원하는
+        파이프라인은 그 저장소도 함께 지워야 합니다.
+        """
+        from infrastructure.file_handler import save_metadata
+
+        translated = metadata.get("translated_chunks") or {}
+        failed = metadata.get("failed_chunks") or {}
+        for idx in chunk_indices:
+            translated.pop(str(idx), None)
+            failed.pop(str(idx), None)
+        metadata["translated_chunks"] = translated
+        metadata["failed_chunks"] = failed
+        metadata["status"] = "in_progress"
+        save_metadata(file_path, metadata)

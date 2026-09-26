@@ -938,8 +938,17 @@ class AppService:
                     translated_dict = loaded_metadata.get("translated_chunks", {})
                     if not isinstance(translated_dict, dict):
                         translated_dict = {}
-                    for idx in range(dto.successful_chunks):
-                        translated_dict[str(idx)] = {"status": "success"}
+                    if dto.completed_chunk_indices is not None:
+                        # 무결성 모드의 완료 기준은 임시 폴더의 청크 결과 파일이다. 메타데이터를 그 목록에 맞춘다.
+                        # 개수로 0..N-1을 채우면 중간이 빈 경우(검토 탭 초기화 등) 엉뚱한 번호가 성공으로 찍힌다.
+                        translated_dict = {
+                            str(idx): translated_dict.get(str(idx)) or {"status": "success"}
+                            for idx in dto.completed_chunk_indices
+                        }
+                        failed_dict = loaded_metadata.get("failed_chunks", {})
+                        if isinstance(failed_dict, dict):
+                            for key in translated_dict:
+                                failed_dict.pop(key, None)
                     loaded_metadata["translated_chunks"] = translated_dict
                     loaded_metadata["status"] = "in_progress" if dto.processed_chunks < dto.total_chunks else "completed"
                     loaded_metadata["last_updated"] = time.time()

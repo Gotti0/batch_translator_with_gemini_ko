@@ -40,6 +40,8 @@ class TranslationJobProgressDTO:
     current_status_message: str
     current_chunk_processing: Optional[int] = None # 수정: 필드 추가
     last_error_message: Optional[str] = None 
+    # 완료된 청크 번호 목록 (무결성 모드). 완료가 앞에서부터 연속이라는 보장이 없어 개수 대신 번호를 넘긴다.
+    completed_chunk_indices: Optional[List[int]] = None
 
 
 # --- 고유명사 추출 작업 상태 DTO ---
