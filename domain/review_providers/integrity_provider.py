@@ -158,6 +158,18 @@ class IntegrityReviewProvider(BaseReviewProvider):
         with open(translated_path, "w", encoding="utf-8") as f:
             f.write("\n".join(final_lines))
 
+    def reset_chunks(self, file_path: str, metadata: Dict[str, Any], chunk_indices: List[int]) -> None:
+        """
+        무결성 파이프라인은 이어하기를 임시 폴더의 chunk_<i>.json 존재 여부로 판단하고,
+        번역 기억도 이 파일들에서 복원합니다. 메타데이터만 지우면 다음 실행이 청크를 건너뛰고
+        진행 콜백이 기록을 되살리므로, 결과 파일을 먼저 지운 뒤 메타데이터를 갱신합니다.
+        파일 삭제가 실패하면 메타데이터를 건드리지 않아 둘이 어긋나지 않게 합니다.
+        """
+        _, _, temp_dir = self._resolve_paths(file_path)
+        for idx in chunk_indices:
+            (temp_dir / f"chunk_{idx}.json").unlink(missing_ok=True)
+        super().reset_chunks(file_path, metadata, chunk_indices)
+
     def generate_final_file(self, file_path: str, current_all_chunks: Dict[int, str]) -> str:
         # 이미 save_translated_chunk에서 직접 덮어쓰므로 경로만 반환합니다.
         p = Path(file_path)
