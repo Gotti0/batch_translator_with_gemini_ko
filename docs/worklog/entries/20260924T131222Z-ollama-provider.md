@@ -36,3 +36,9 @@ summary: 로컬 GPU의 오픈 모델로 API 과금 없이 번역하도록 Ollama
 - `test_llm_client_factory.py`(Ollama 생성)와 `test_settings_tab_provider.py`(전환·저장·로드·UI 설정 구성) 추가분 통과.
 - 가짜 Ollama HTTP 서버를 띄우고 AppService로 표준 번역, 무결성 번역, 용어집 추출, 헬스체크, 모델 조회를 끝까지 실행해 확인했다. 실제 Ollama 서버와 모델로는 검증하지 않았다.
 - 전체: 267 passed, 7 skipped.
+
+## 미해결
+
+- 실제 Ollama 서버와 모델로는 검증하지 않았다.
+
+(2026-09-26 보완: 형식 검증을 통과시키려고 추가한 섹션이며, 원 기록 본문의 내용을 옮겨 적었다.)
