@@ -7,6 +7,7 @@ LLM Client Factory for Neo Batch Translator (BTG)
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from infrastructure.base_client import BaseLLMClient
@@ -34,6 +35,15 @@ class LLMClientFactory:
         "openai_compatible",
         "ollama",
     ]
+
+    @staticmethod
+    def _read_service_account_file(path: str) -> Optional[str]:
+        """서비스 계정 JSON 파일 내용을 읽는다. 읽을 수 없으면 None."""
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"Vertex AI 서비스 계정 파일을 읽지 못했습니다 ({Path(path).name}): {e}")
+            return None
 
     @classmethod
     def create_client(
@@ -132,8 +142,12 @@ class LLMClientFactory:
             location = config.get("gcp_location")
             sa_path = config.get("service_account_file_path")
 
-            if use_vertex and sa_path:
-                creds = sa_path
+            # GeminiClient는 문자열을 SA JSON 또는 API 키로 해석하므로 경로가 아니라 파일 내용을 넘긴다.
+            # 헬스체크·모델 조회처럼 auth_credentials 없이 설정만 넘기는 호출도 있어 여기서 읽는다.
+            sa_json = cls._read_service_account_file(sa_path) if use_vertex and sa_path else None
+
+            if sa_json is not None:
+                creds = sa_json
             elif auth_credentials is not None:
                 creds = auth_credentials
             else:

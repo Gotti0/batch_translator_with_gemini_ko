@@ -2,7 +2,10 @@
 LLM Client Factory Unit Tests
 """
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from infrastructure.llm_client_factory import LLMClientFactory
@@ -20,6 +23,35 @@ class TestLLMClientFactory(unittest.TestCase):
         self.assertIsInstance(client, GeminiClient)
         self.assertEqual(client.provider_name, "gemini")
         self.assertTrue(client.supports_pagefold)
+
+    @patch("infrastructure.gemini_client.ServiceAccountCredentials")
+    @patch("infrastructure.gemini_client.genai.Client")
+    def test_vertex_reads_service_account_file(self, mock_genai, mock_sa_creds):
+        """SA 파일 경로가 API 키로 쓰이지 않고 파일 내용으로 Vertex 모드가 된다 (auth_credentials 없는 호출 포함)"""
+        sa_info = {"type": "service_account", "project_id": "sa-project"}
+        with tempfile.TemporaryDirectory() as tmp:
+            sa_path = Path(tmp) / "sa.json"
+            sa_path.write_text(json.dumps(sa_info), encoding="utf-8")
+            cfg = {"llm_provider": "gemini", "use_vertex_ai": True,
+                   "service_account_file_path": str(sa_path), "gcp_location": "global"}
+            client = LLMClientFactory.create_client(cfg)
+
+        self.assertEqual(client.auth_mode, "VERTEX_AI")
+        self.assertEqual(client.api_keys_list, [])
+        self.assertEqual(client.vertex_project, "sa-project")
+        self.assertEqual(client.vertex_location, "global")
+        self.assertEqual(mock_sa_creds.from_service_account_info.call_args.args[0], sa_info)
+
+    @patch("infrastructure.gemini_client.ServiceAccountCredentials")
+    @patch("infrastructure.gemini_client.genai.Client")
+    def test_vertex_missing_file_falls_back_to_auth_credentials(self, mock_genai, mock_sa_creds):
+        sa_info = {"type": "service_account", "project_id": "fallback-project"}
+        cfg = {"llm_provider": "gemini", "use_vertex_ai": True,
+               "service_account_file_path": str(Path(tempfile.gettempdir()) / "no-such-sa.json")}
+        client = LLMClientFactory.create_client(cfg, auth_credentials=json.dumps(sa_info))
+
+        self.assertEqual(client.auth_mode, "VERTEX_AI")
+        self.assertEqual(client.vertex_project, "fallback-project")
 
     def test_create_claude_cli_client(self):
         cfg = {"llm_provider": "claude_cli", "claude_cli_model": "claude-3-5-sonnet-20241022"}
