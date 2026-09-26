@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from infrastructure.llm_client_factory import LLMClientFactory
-from infrastructure.gemini_client import GeminiClient
+from google.auth.exceptions import DefaultCredentialsError
+
+from infrastructure.gemini_client import GeminiClient, GeminiInvalidRequestException
 from infrastructure.claude_cli_client import ClaudeCliClient
 from infrastructure.codex_cli_client import CodexCliClient
 from infrastructure.OpenAICompatibleClient import OpenAICompatibleClient
@@ -52,6 +54,40 @@ class TestLLMClientFactory(unittest.TestCase):
 
         self.assertEqual(client.auth_mode, "VERTEX_AI")
         self.assertEqual(client.vertex_project, "fallback-project")
+
+    @patch("infrastructure.gemini_client.google.auth.default", return_value=(MagicMock(), "adc-project"))
+    @patch("infrastructure.gemini_client.genai.Client")
+    def test_vertex_without_service_account_uses_adc_not_api_keys(self, mock_genai, mock_adc):
+        """Vertex 토글만 켜면 설정의 API 키로 대체하지 않고 ADC로 Vertex 모드가 된다"""
+        cfg = {"llm_provider": "gemini", "use_vertex_ai": True, "api_keys": ["AQ.gemini-key"]}
+        client = LLMClientFactory.create_client(cfg)
+
+        self.assertEqual(client.auth_mode, "VERTEX_AI")
+        self.assertEqual(client.api_keys_list, [])
+        self.assertEqual(client.vertex_project, "adc-project")
+        self.assertTrue(mock_genai.call_args.kwargs["vertexai"])
+        self.assertNotIn("api_key", mock_genai.call_args.kwargs)
+
+    @patch("infrastructure.gemini_client.genai.Client")
+    def test_vertex_unusable_service_account_file_raises(self, mock_genai):
+        """SA 경로를 지정했는데 쓸 수 없으면 API 키나 ADC로 넘어가지 않고 오류를 낸다"""
+        with tempfile.TemporaryDirectory() as tmp:
+            not_sa = Path(tmp) / "not-sa.json"
+            not_sa.write_text('{"type": "authorized_user"}', encoding="utf-8")
+            for path in (str(Path(tmp) / "missing.json"), str(not_sa)):
+                cfg = {"llm_provider": "gemini", "use_vertex_ai": True,
+                       "service_account_file_path": path, "api_keys": ["AQ.gemini-key"]}
+                with self.assertRaises(GeminiInvalidRequestException, msg=path):
+                    LLMClientFactory.create_client(cfg)
+        mock_genai.assert_not_called()
+
+    @patch("infrastructure.gemini_client.google.auth.default", side_effect=DefaultCredentialsError("no adc"))
+    @patch("infrastructure.gemini_client.genai.Client")
+    def test_vertex_without_adc_raises(self, mock_genai, mock_adc):
+        with self.assertRaises(GeminiInvalidRequestException):
+            LLMClientFactory.create_client({"llm_provider": "gemini", "use_vertex_ai": True,
+                                            "api_keys": ["AQ.gemini-key"]})
+        mock_genai.assert_not_called()
 
     def test_create_claude_cli_client(self):
         cfg = {"llm_provider": "claude_cli", "claude_cli_model": "claude-3-5-sonnet-20241022"}

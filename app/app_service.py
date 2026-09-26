@@ -239,8 +239,8 @@ class AppService:
                         should_initialize_client = True
                     elif isinstance(auth_credentials_for_gemini_client, dict):
                         should_initialize_client = True
-                elif use_vertex and not auth_credentials_for_gemini_client and \
-                     (gcp_project_from_config or os.environ.get("GOOGLE_CLOUD_PROJECT")):
+                elif use_vertex:
+                    # 프로젝트는 설정·환경 변수·ADC에서 찾고, 인증 정보가 없으면 클라이언트 생성이 오류로 알린다
                     should_initialize_client = True
                     logger.info("Vertex AI ADC 모드로 클라이언트 초기화 예정")
 
