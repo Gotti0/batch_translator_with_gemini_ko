@@ -442,9 +442,33 @@ class GlossaryTabQt(QtWidgets.QWidget):
         if updated_json is None:
             return
 
-        # 최신 내용을 표시하고 저장
         self._display_glossary_content(updated_json)
+        target = self._glossary_save_target(input_path)
+        if target is not None:
+            try:
+                target.write_text(updated_json, encoding="utf-8")
+                self.glossary_path_edit.setText(str(target))
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "저장 실패", f"용어집 파일 저장 실패: {e}")
         self._save_config()
+
+    def _glossary_save_target(self, input_path: Optional[str]) -> Optional[Path]:
+        """편집한 용어집을 쓸 파일. 번역이 실제로 읽는 파일이어야 한다.
+
+        번역은 입력 파일 옆 <입력파일명><접미사>를 설정 경로보다 먼저 쓰므로(AppService) 입력 파일이
+        있으면 그 파일에 쓴다(없으면 만든다). 입력 파일이 없으면 설정 경로, 그것도 없으면 사용자에게 묻는다.
+        """
+        if input_path:
+            suffix = self.app_service.config.get("glossary_output_json_filename_suffix", "_simple_glossary.json")
+            p = Path(input_path)
+            return p.parent / f"{p.stem}{suffix}"
+        configured = self.glossary_path_edit.text().strip()
+        if configured:
+            return Path(configured)
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "용어집 JSON으로 저장", filter="JSON Files (*.json);;All Files (*)"
+        )
+        return Path(file_path) if file_path else None
 
     def _open_prefill_editor(self) -> None:
         result = PrefillHistoryEditorDialogQt.edit(
