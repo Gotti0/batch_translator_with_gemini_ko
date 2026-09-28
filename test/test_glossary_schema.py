@@ -104,3 +104,27 @@ def test_dict_list_converts_to_dto():
 
     assert len(entries) == 1
     assert entries[0].keyword == "source-term"
+
+
+@pytest.mark.asyncio
+async def test_extract_glossary_recovers_from_json_string():
+    """GeminiClient 또는 비-Gemini 클라이언트가 마크다운 코드 블록으로 감싸진 문자열을 반환해도 복구한다."""
+    class _MockStringClient:
+        async def generate_text_async(self, **kwargs):
+            return """```json
+[
+  {"keyword": "惠蓉", "translated_keyword": "혜용", "target_language": "ko", "occurrence_count": 33},
+  {"keyword": "可儿", "translated_keyword": "가아", "target_language": "ko", "occurrence_count": 10}
+]
+```"""
+
+    service = SimpleGlossaryService(gemini_client=_MockStringClient(), config={"model_name": "gemini-3.8-flash"})
+    entries = await service._extract_glossary_entries_from_segment_via_api_async("테스트 텍스트입니다.")
+
+    assert len(entries) == 2
+    assert entries[0].keyword == "惠蓉"
+    assert entries[0].translated_keyword == "혜용"
+    assert entries[0].occurrence_count == 33
+    assert entries[1].keyword == "可儿"
+    assert entries[1].translated_keyword == "가아"
+    assert entries[1].occurrence_count == 10
