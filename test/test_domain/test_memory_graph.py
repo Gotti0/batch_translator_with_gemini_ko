@@ -140,6 +140,7 @@ def test_format_recall():
 def test_extractor_response_normalization():
     assert _to_dicts('```json\n[{"name": "リリア", "note": "반말"}]\n```')[0]["name"] == "リリア"
     assert _to_dicts({"entities": [{"name": "A"}]}) == [{"name": "A"}]
+    assert _to_dicts({"characters": [{"name": "惠蓉"}]}) == [{"name": "惠蓉"}]
     assert _to_dicts([ExtractedEntity(name="B")])[0]["name"] == "B"
     assert _to_dicts("not json") == [] and _to_dicts(None) == []
     assert _to_dicts([{"name": ""}, "x"]) == []

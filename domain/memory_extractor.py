@@ -65,7 +65,17 @@ def _to_dicts(response: Any) -> List[Dict[str, Any]]:
             logger.warning(f"인물 메모 추출 응답을 JSON으로 해석하지 못했습니다: {text[:200]}")
             return []
     if isinstance(response, dict):
-        response = response.get("entities") or response.get("items") or [response]
+        for k in ("characters", "entities", "items", "data", "results", "result", "list"):
+            if k in response and isinstance(response[k], list):
+                response = response[k]
+                break
+        else:
+            for v in response.values():
+                if isinstance(v, list):
+                    response = v
+                    break
+            else:
+                response = [response]
     rows = []
     for item in response if isinstance(response, list) else []:
         if isinstance(item, BaseModel):

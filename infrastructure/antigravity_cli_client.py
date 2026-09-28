@@ -346,12 +346,10 @@ class AntigravityCliClient(BaseLLMClient):
                             raise
 
                 if isinstance(parsed, dict):
-                    if "units" in parsed and isinstance(parsed["units"], list):
-                        parsed = parsed["units"]
-                    elif "items" in parsed and isinstance(parsed["items"], list):
-                        parsed = parsed["items"]
-                    elif "terms" in parsed and isinstance(parsed["terms"], list):
-                        parsed = parsed["terms"]
+                    for k in ("units", "items", "terms", "characters", "entities", "data", "results", "result", "list"):
+                        if k in parsed and isinstance(parsed[k], list):
+                            parsed = parsed[k]
+                            break
 
                 if response_schema is not None and not isinstance(response_schema, dict):
                     try:
