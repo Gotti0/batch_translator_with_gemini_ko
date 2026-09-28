@@ -1,5 +1,6 @@
 # c:\Users\Hyunwoo_Room\Downloads\Utility\Neo_Batch_Translator\infrastructure\OpenAICompatibleClient.py
 import os
+import re
 import json
 import logging
 import time
@@ -75,7 +76,10 @@ class OpenAICompatibleClient(BaseLLMClient):
             raise ValueError("Base URL (chat completions endpoint) must be provided.")
 
         self.api_key = api_key
-        self.base_url = base_url.rstrip('/')
+        url = base_url.rstrip('/')
+        if not url.endswith("/chat/completions"):
+            url = f"{url}/chat/completions"
+        self.base_url = url
         self.default_model = default_model
         self.reasoning_effort = OPENAI_COMPATIBLE_REASONING.normalize(reasoning_effort)
         self.request_timeout = request_timeout if request_timeout is not None else self._DEFAULT_TIMEOUT_SECONDS
@@ -120,11 +124,70 @@ class OpenAICompatibleClient(BaseLLMClient):
             "Accept": "application/json" # For non-streaming
         }
 
+    @classmethod
+    def _content_to_text(cls, item: Any) -> str:
+        if isinstance(item, str):
+            return item
+        parts = item.get("parts") if isinstance(item, dict) else getattr(item, "parts", None)
+        if parts is None:
+            if isinstance(item, dict):
+                return str(item.get("content") or item.get("text") or "")
+            return str(getattr(item, "text", "") or "")
+        texts = []
+        for p in parts or []:
+            if isinstance(p, str):
+                texts.append(p)
+            else:
+                text = p.get("text") if isinstance(p, dict) else getattr(p, "text", None)
+                if text:
+                    texts.append(str(text))
+        return "".join(texts)
+
+    @staticmethod
+    def _strip_code_fence(text: str) -> str:
+        """
+        모델 응답에서 JSON 문자열을 추출하고 코드 블록이나 앞뒤 설명을 제거합니다.
+        """
+        t = text.strip()
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", t, re.IGNORECASE)
+        if fence_match:
+            candidate = fence_match.group(1).strip()
+            if candidate:
+                return candidate
+
+        first_bracket = min(
+            (pos for pos in (t.find('['), t.find('{')) if pos != -1),
+            default=-1
+        )
+        if first_bracket != -1:
+            last_bracket = max(t.rfind(']'), t.rfind('}'))
+            if last_bracket > first_bracket:
+                return t[first_bracket : last_bracket + 1].strip()
+
+        if t.startswith("```"):
+            t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+            if t.rstrip().endswith("```"):
+                t = t.rstrip()[:-3]
+        return t.strip()
+
+    @staticmethod
+    def _coerce_to_schema(parsed: Any, response_schema: Any) -> Any:
+        """GeminiClient의 response.parsed와 같은 형태(Pydantic 객체)로 맞춘다. 실패하면 원본 JSON."""
+        if response_schema is None or isinstance(response_schema, dict):
+            return parsed
+        try:
+            from pydantic import TypeAdapter
+            return TypeAdapter(response_schema).validate_python(parsed)
+        except Exception as e:
+            logger.warning(f"OpenAI 호환 응답을 스키마로 검증하지 못해 원본 JSON을 반환합니다: {e}")
+            return parsed
+
     def _prepare_messages(self,
-                          prompt: Union[str, List[Dict[str, str]]],
+                          prompt: Union[str, Any],
                           system_instruction_text: Optional[str] = None) -> List[Dict[str, str]]:
         """
         Prepares the 'messages' list for the OpenAI API.
+        Supports str, list of message dicts, and list of google-genai Content objects.
         """
         messages: List[Dict[str, str]] = []
 
@@ -134,26 +197,26 @@ class OpenAICompatibleClient(BaseLLMClient):
         if isinstance(prompt, str):
             messages.append({"role": "user", "content": prompt})
         elif isinstance(prompt, list):
-            # Basic validation for prompt list
             for item in prompt:
-                if not (isinstance(item, dict) and "role" in item and "content" in item):
-                    raise ValueError("Each item in the prompt list must be a dictionary with 'role' and 'content' keys.")
-            messages.extend(prompt)
-        else:
-            raise ValueError("Prompt must be a string or a list of message dictionaries.")
-        
-        if not any(msg['role'] == 'user' for msg in messages) and not system_instruction_text:
-             # If only system prompt is from a list, and no user prompt, add a default user prompt
-            if all(msg['role'] == 'system' for msg in messages):
-                 messages.append({"role": "user", "content": "Continue."}) # Or raise error
-            # Or if messages is empty and no system_instruction_text
-            elif not messages:
-                 raise ValueError("Prompt must contain at least one user message or a system instruction.")
+                if isinstance(item, str):
+                    messages.append({"role": "user", "content": item})
+                    continue
+                role = item.get("role") if isinstance(item, dict) else getattr(item, "role", None)
+                role = str(role or "user").lower()
+                if role == "model":
+                    role = "assistant"
+                elif role not in ("system", "user", "assistant"):
+                    role = "user"
+                messages.append({"role": role, "content": self._content_to_text(item)})
+        elif prompt is not None:
+            text = self._content_to_text(prompt) if hasattr(prompt, "parts") else str(prompt)
+            messages.append({"role": "user", "content": text})
 
-
-        # TODO: Implement LBI-specific flags if needed:
-        # has_first_system_prompt, requires_alternate_role, must_start_with_user_input
-        # For now, this basic preparation is used.
+        if not any(msg["role"] == "user" for msg in messages):
+            if system_instruction_text:
+                messages.append({"role": "user", "content": "Continue."})
+            else:
+                raise ValueError("Prompt must contain at least one user message or a system instruction.")
 
         return messages
 
@@ -350,18 +413,37 @@ class OpenAICompatibleClient(BaseLLMClient):
         """
         비동기적으로 텍스트 생성을 수행합니다.
         """
+        gen_config_dict: Dict[str, Any] = dict(kwargs.get("generation_config_dict") or {})
+        system_text = system_instruction or kwargs.get("system_instruction_text")
+
+        if temperature is None and "temperature" in gen_config_dict:
+            temperature = gen_config_dict["temperature"]
+        if top_p is None and "top_p" in gen_config_dict:
+            top_p = gen_config_dict["top_p"]
+        if response_schema is None:
+            response_schema = gen_config_dict.get("response_schema")
+
+        wants_json = response_schema is not None or gen_config_dict.get("response_mime_type") == "application/json"
+
         gen_config: Dict[str, Any] = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
         if top_p is not None:
             gen_config["top_p"] = top_p
-        if response_schema is not None:
+        if wants_json:
             gen_config["response_format"] = {"type": "json_object"}
         if self.reasoning_effort:
-            # 서버마다 지원 여부가 달라 사용자가 고른 경우에만 넣는다
             gen_config["reasoning_effort"] = self.reasoning_effort
 
-        model = kwargs.get("model_name") or self.default_model
+        # 모델 선택: 도메인 서비스가 전달하는 gemini-* 모델명은 무시하고 클라이언트에 지정된 default_model 사용
+        req_model = kwargs.get("model_name")
+        if self.default_model:
+            if not req_model or req_model.startswith("gemini-") or req_model.startswith("models/"):
+                model = self.default_model
+            else:
+                model = req_model
+        else:
+            model = req_model
 
         loop = asyncio.get_running_loop()
         res = await loop.run_in_executor(
@@ -370,13 +452,27 @@ class OpenAICompatibleClient(BaseLLMClient):
                 prompt=prompt,
                 model_name=model,
                 generation_config=gen_config,
-                system_instruction_text=system_instruction,
+                system_instruction_text=system_text,
                 stream=False,
             ),
         )
-        if isinstance(res, dict):
-            return json.dumps(res, ensure_ascii=False)
-        return str(res)
+
+        if not wants_json:
+            if isinstance(res, dict):
+                return json.dumps(res, ensure_ascii=False)
+            return str(res)
+
+        # JSON / 구조화 출력 처리
+        if isinstance(res, (dict, list)):
+            return self._coerce_to_schema(res, response_schema)
+
+        text_content = str(res)
+        try:
+            parsed = json.loads(self._strip_code_fence(text_content))
+            return self._coerce_to_schema(parsed, response_schema)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"OpenAI 호환 API JSON 응답 파싱 실패, 원문 텍스트를 반환합니다: {e}")
+            return text_content
 
     async def list_models_async(self) -> List[str]:
         """사용 가능한 기본 모델 목록 반환"""

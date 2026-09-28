@@ -403,6 +403,36 @@ class SimpleGlossaryService:
                 logger.warning(f"용어집 추출 API로부터 응답을 받지 못했습니다.")
                 return []
             elif isinstance(response_data, str):
+                # 문자열 응답에서 마크다운 코드 블록 제거 및 JSON 파싱 시도 (비-Gemini 또는 원시 텍스트 fallback)
+                cleaned_str = response_data.strip()
+                fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned_str, re.IGNORECASE)
+                if fence_match:
+                    cleaned_str = fence_match.group(1).strip()
+
+                parsed_json = None
+                try:
+                    parsed_json = json.loads(cleaned_str)
+                except json.JSONDecodeError:
+                    first_bracket = min((pos for pos in (cleaned_str.find('['), cleaned_str.find('{')) if pos != -1), default=-1)
+                    if first_bracket != -1:
+                        last_bracket = max(cleaned_str.rfind(']'), cleaned_str.rfind('}'))
+                        if last_bracket > first_bracket:
+                            try:
+                                parsed_json = json.loads(cleaned_str[first_bracket:last_bracket+1])
+                            except json.JSONDecodeError:
+                                pass
+
+                if parsed_json is not None:
+                    if isinstance(parsed_json, list):
+                        logger.info(f"문자열 응답에서 {len(parsed_json)}개의 JSON 항목을 성공적으로 복구했습니다.")
+                        return self._parse_dict_list_to_dto(parsed_json)
+                    elif isinstance(parsed_json, dict):
+                        for key in ("terms", "items", "glossary", "data"):
+                            if key in parsed_json and isinstance(parsed_json[key], list):
+                                logger.info(f"문자열 응답 '{key}' 키에서 {len(parsed_json[key])}개의 JSON 항목을 성공적으로 복구했습니다.")
+                                return self._parse_dict_list_to_dto(parsed_json[key])
+                        return self._parse_dict_list_to_dto([parsed_json])
+
                 logger.warning(f"GeminiClient가 문자열을 반환했습니다 (JSON 파싱 실패 추정): {response_data[:200]}...")
                 return []
             else:
