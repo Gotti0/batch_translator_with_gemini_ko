@@ -453,6 +453,45 @@ def test_minute_quota_cools_key_for_server_retry_delay(env):
     assert not pool.is_cooling_down(KEYS[0], "gemini-test")
 
 
+def err_429_daily_preview_alias():
+    """preview 모델에 대한 실제 하루 한도 429의 형태(2026-09-28 실호출).
+
+    요청은 gemini-3.1-pro-preview로 보냈지만 quotaDimensions.model은 -preview를 뗀 이름이다.
+    """
+    dims = {"location": "global", "model": "gemini-3.1-pro"}
+    violations = [{"quotaId": q, "quotaDimensions": dims} for q in (
+        "GenerateContentInputTokensPerModelPerDay-FreeTier",
+        "GenerateContentInputTokensPerModelPerMinute-FreeTier",
+        "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+        "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+    )]
+    body = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "You exceeded your current quota.",
+                      "details": [
+                          {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": violations},
+                          {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "20s"},
+                      ]}}
+    return genai_errors.ClientError(429, body)
+
+
+def test_daily_quota_on_preview_model_skips_key_in_later_requests(env):
+    """서버가 할당량 모델을 요청과 다른 이름으로 알려줘도, 소진된 키는 다음 요청(다음 청크)에서 건너뛴다.
+
+    쿨다운을 서버가 준 이름으로 기록하고 요청 이름으로 조회하던 때는 청크마다 첫 키로 돌아가 429를 다시 맞았다.
+    """
+    model = "gemini-3.1-pro-preview"
+    client, api = env.build(lambda k, n: err_429_daily_preview_alias() if k == KEYS[0] else ok_response(),
+                            rpm=60.0)
+
+    async def scenario():
+        for _ in range(3):
+            await _gen(client, model_name=model)
+
+    asyncio.run(env.clock.run(scenario()))
+
+    assert api.keys() == [KEYS[0], KEYS[1], KEYS[1], KEYS[1]]
+    assert client._key_pool.is_cooling_down(KEYS[0], model)
+
+
 def test_consecutive_500_leads_to_chunk_splitting_in_translation_service(env):
     """연속 500 → GeminiContentSafetyException → TranslationService의 청크 분할 재번역까지 이어진다."""
     from domain.translation_service import TranslationService
