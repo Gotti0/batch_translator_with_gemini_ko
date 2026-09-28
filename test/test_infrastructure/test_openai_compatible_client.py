@@ -118,6 +118,27 @@ class TestOpenAICompatibleClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res[0].translated_keyword, "혜용")
         self.assertEqual(res[0].occurrence_count, 33)
 
+    @patch.object(OpenAICompatibleClient, "generate_text")
+    async def test_generate_text_async_does_not_force_json_object_for_arrays(self, mock_gen):
+        """무결성 번역처럼 response_mime_type만 있고 스키마가 없거나 배열인 경우 response_format json_object를 강제하지 않는다."""
+        mock_gen.return_value = '[{"id": 0, "translated_text": "테스트"}]'
+        client = OpenAICompatibleClient(
+            api_key="key",
+            base_url="https://openrouter.ai/api/v1",
+            default_model="z-ai/glm-5.3-flash"
+        )
+
+        res = await client.generate_text_async(
+            prompt="배열로 번역해줘",
+            generation_config_dict={"response_mime_type": "application/json", "temperature": 0.3}
+        )
+
+        call_config = mock_gen.call_args.kwargs["generation_config"]
+        # response_format: {"type": "json_object"}가 페이로드에 들어가지 않아야 모델이 배열([])을 반환할 수 있음
+        self.assertNotIn("response_format", call_config)
+        self.assertIsInstance(res, list)
+        self.assertEqual(res[0]["translated_text"], "테스트")
+
 
 if __name__ == "__main__":
     unittest.main()

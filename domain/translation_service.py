@@ -1286,19 +1286,37 @@ class TranslationService:
             if isinstance(raw_response, str):
                 try:
                     text = raw_response.strip()
-                    if text.startswith("```json"):
-                        text = text[7:]
+                    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+                    if fence_match:
+                        text = fence_match.group(1).strip()
                     elif text.startswith("```"):
-                        text = text[3:]
-                    if text.endswith("```"):
-                        text = text[:-3]
-                    parsed = json.loads(text.strip())
-                    if isinstance(parsed, list):
+                        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                        if text.rstrip().endswith("```"):
+                            text = text.rstrip()[:-3]
+                    
+                    parsed = None
+                    try:
+                        parsed = json.loads(text.strip())
+                    except json.JSONDecodeError:
+                        first_bracket = min((pos for pos in (text.find('['), text.find('{')) if pos != -1), default=-1)
+                        if first_bracket != -1:
+                            last_bracket = max(text.rfind(']'), text.rfind('}'))
+                            if last_bracket > first_bracket:
+                                try:
+                                    parsed = json.loads(text[first_bracket:last_bracket+1])
+                                except json.JSONDecodeError:
+                                    pass
+
+                    if isinstance(parsed, (list, dict)):
                         raw_response = parsed
-                    elif isinstance(parsed, dict) and "units" in parsed:
-                        raw_response = parsed["units"]
                 except Exception:
                     pass
+
+            if isinstance(raw_response, dict):
+                for k in ("units", "translations", "items", "data", "result", "translation"):
+                    if k in raw_response and isinstance(raw_response[k], list):
+                        raw_response = raw_response[k]
+                        break
 
             if not raw_response or not isinstance(raw_response, list):
                 # JSON 파싱 실패 또는 빈 응답 -> Binary Split.

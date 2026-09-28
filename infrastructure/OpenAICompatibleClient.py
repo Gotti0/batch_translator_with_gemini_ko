@@ -428,9 +428,12 @@ class OpenAICompatibleClient(BaseLLMClient):
         gen_config: Dict[str, Any] = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
-        if top_p is not None:
-            gen_config["top_p"] = top_p
-        if wants_json:
+        # OpenAI API의 response_format json_object는 출력을 {...} 단일 객체로만 강제하여
+        # 프롬프트가 [...] 배열을 요구할 때(예: 무결성 번역, 용어집 추출) 모델이 단일 객체만 반환하거나 잘리는 문제를 유발하므로,
+        # 명시적으로 response_format이 지정되었거나 단일 객체 스키마일 때만 전달한다.
+        if "response_format" in gen_config_dict:
+            gen_config["response_format"] = gen_config_dict["response_format"]
+        elif response_schema is not None and isinstance(response_schema, type) and not issubclass(response_schema, (list, tuple)):
             gen_config["response_format"] = {"type": "json_object"}
         if self.reasoning_effort:
             gen_config["reasoning_effort"] = self.reasoning_effort
