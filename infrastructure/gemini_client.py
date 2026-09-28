@@ -858,8 +858,12 @@ class GeminiClient(BaseLLMClient):
                         raise GeminiInvalidRequestException(f"복구 불가능한 요청 오류: {error_message}") from e
                     raise GeminiApiException(f"할당량 소진: {error_message}") from e
                 if decision.cooldown_seconds is not None:
-                    self._key_pool.mark_exhausted(key, decision.cooldown_seconds, model=decision.cooldown_model)
-                    scope = f"모델 {decision.cooldown_model}" if decision.cooldown_model else "모든 모델"
+                    # 모델 쿨다운은 서버가 알려준 이름이 아니라 요청에 쓴 이름으로 건다. 다음 요청은 요청 이름으로
+                    # 조회하는데, 서버는 preview·alias 모델의 한도를 다른 이름(gemini-3.1-pro-preview → gemini-3.1-pro)으로
+                    # 알려주므로 그 이름으로 걸면 소진된 키를 청크마다 다시 고른다.
+                    cooldown_model = quota_model if decision.cooldown_model else None
+                    self._key_pool.mark_exhausted(key, decision.cooldown_seconds, model=cooldown_model)
+                    scope = f"모델 {cooldown_model}" if cooldown_model else "모든 모델"
                     label = {ErrorKind.QUOTA_DAILY: "하루 한도", ErrorKind.QUOTA_MINUTE: "분당 한도"}.get(classified.kind, "할당량")
                     logger.warning(f"{label} 소진: {key_id}, {scope}에 대해 {decision.cooldown_seconds:.0f}초 쿨다운")
                 switched_from, need_key = key, True
