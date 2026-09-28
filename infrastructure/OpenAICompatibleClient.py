@@ -471,7 +471,7 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         text_content = str(res)
         try:
-            parsed = json.loads(self._strip_code_fence(text_content))
+            parsed = json.loads(self._strip_code_fence(text_content), strict=False)
             return self._coerce_to_schema(parsed, response_schema)
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"OpenAI 호환 API JSON 응답 파싱 실패, 원문 텍스트를 반환합니다: {e}")

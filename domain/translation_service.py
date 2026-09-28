@@ -1148,6 +1148,64 @@ class TranslationService:
                 if on_retry:
                     on_retry(attempts)
 
+    @staticmethod
+    def _recover_integrity_units_from_raw_text(text: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        JSON 문법 오류(대사 내 큰따옴표 이스케이프 누락, 객체 간 쉼표 누락 등)로 인해
+        json.loads가 실패한 텍스트에서 무결성 번역 단위 {"id": N, "translated_text": "..."}를
+        정규식 및 블록 분할 기법으로 복구합니다.
+        """
+        if not text or not isinstance(text, str):
+            return None
+
+        # 1차 패턴: {"id": N, "translated_text": "..."}
+        pattern = re.compile(
+            r'\{\s*["\']?id["\']?\s*:\s*["\']?(\d+)["\']?\s*,\s*["\']?(?:translated_text|text|translation)["\']?\s*:\s*["\']?',
+            re.MULTILINE | re.IGNORECASE
+        )
+        matches = list(pattern.finditer(text))
+        if not matches:
+            # 반대 순서: {"translated_text": "...", "id": N}
+            pattern_rev = re.compile(
+                r'\{\s*["\']?(?:translated_text|text|translation)["\']?\s*:\s*["\']?(.*?)(?:["\']?\s*,\s*["\']?id["\']?\s*:\s*["\']?(\d+)["\']?\s*\})',
+                re.DOTALL | re.IGNORECASE
+            )
+            rev_matches = list(pattern_rev.finditer(text))
+            if rev_matches:
+                results = []
+                for m in rev_matches:
+                    val_str = m.group(1).strip()
+                    uid = int(m.group(2))
+                    val_str = val_str.replace('\\"', '"').replace('\\n', '\n').replace('\\t', '\t')
+                    results.append({"id": str(uid), "translated_text": val_str})
+                return results if results else None
+            return None
+
+        results = []
+        for i, m in enumerate(matches):
+            uid = str(m.group(1))
+            val_start = m.end()
+            if i + 1 < len(matches):
+                segment = text[val_start:matches[i + 1].start()]
+            else:
+                segment = text[val_start:]
+
+            # segment의 마지막 닫는 중괄호 '}' 앞까지가 번역문 내용
+            rbrace = segment.rfind('}')
+            if rbrace != -1:
+                val_str = segment[:rbrace].strip()
+            else:
+                val_str = segment.strip().rstrip(']').rstrip(',').strip()
+
+            # 앞뒤 따옴표 정리
+            if val_str.endswith(('"', "'")):
+                val_str = val_str[:-1]
+
+            val_str = val_str.replace('\\"', '"').replace('\\n', '\n').replace('\\t', '\t')
+            results.append({"id": uid, "translated_text": val_str})
+
+        return results if results else None
+
     async def _translate_integrity_chunk_with_retry(
         self, 
         chunk: List[TranslationUnit], 
@@ -1206,7 +1264,7 @@ class TranslationService:
 
             api_prompt_for_gemini_client: List[genai_types.Content] = []
             
-            integrity_prompt_suffix = "\n\nTranslate each item in the following JSON array. Keep the 'id' exactly as given. Return ONLY a valid JSON array."
+            integrity_prompt_suffix = "\n\nTranslate each item in the following JSON array. Keep the 'id' exactly as given. Ensure any double quotes inside translated_text are properly escaped (\\\") or use Korean quotation marks (「...」, '...'). Return ONLY a valid JSON array."
 
             if self.config.get("enable_prefill_translation", False):
                 prefill_cached_history_raw = self.config.get("prefill_cached_history", [])
@@ -1296,21 +1354,27 @@ class TranslationService:
                     
                     parsed = None
                     try:
-                        parsed = json.loads(text.strip())
-                    except json.JSONDecodeError:
+                        parsed = json.loads(text.strip(), strict=False)
+                    except (json.JSONDecodeError, ValueError):
                         first_bracket = min((pos for pos in (text.find('['), text.find('{')) if pos != -1), default=-1)
                         if first_bracket != -1:
                             last_bracket = max(text.rfind(']'), text.rfind('}'))
                             if last_bracket > first_bracket:
                                 try:
-                                    parsed = json.loads(text[first_bracket:last_bracket+1])
-                                except json.JSONDecodeError:
+                                    parsed = json.loads(text[first_bracket:last_bracket+1], strict=False)
+                                except (json.JSONDecodeError, ValueError):
                                     pass
 
                     if isinstance(parsed, (list, dict)):
                         raw_response = parsed
-                except Exception:
-                    pass
+                    else:
+                        # 3차 시도: LLM의 문법 결함(따옴표 이스케이프 누락, 쉼표 누락 등) 복구
+                        recovered = self._recover_integrity_units_from_raw_text(text)
+                        if recovered:
+                            logger.info(f"무결성 번역 JSON 파싱 실패 후 정규식 Fallback으로 {len(recovered)}개 단위 복구 성공")
+                            raw_response = recovered
+                except Exception as e:
+                    logger.warning(f"무결성 응답 파싱 중 오류: {e}")
 
             if isinstance(raw_response, dict):
                 for k in ("units", "translations", "items", "data", "result", "translation"):
@@ -1336,18 +1400,22 @@ class TranslationService:
             for item in raw_response:
                 try:
                     if isinstance(item, dict):
+                        item = dict(item)
+                        if "id" in item:
+                            item["id"] = str(item["id"])
                         # 일부 모델이 translated_text 대신 text 또는 translation 키로 번역문을 반환하는 경우 호환성 보장
                         if "translated_text" not in item:
                             if "text" in item:
-                                item = {**item, "translated_text": item["text"]}
+                                item["translated_text"] = item["text"]
                             elif "translation" in item:
-                                item = {**item, "translated_text": item["translation"]}
+                                item["translated_text"] = item["translation"]
                     translated_units.append(TranslatedUnit(**item))
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"무결성 단위 변환 실패 (건너뜀): {item} - {e}")
                     continue
             
             translated_map = {
-                u.id: (restore_response_newlines(u.translated_text) if u.translated_text else "")
+                str(u.id): (restore_response_newlines(u.translated_text) if u.translated_text else "")
                 for u in translated_units
             }
             # 빈 번역문은 '받은 것'이 아니라 누락으로 센다. 키 존재만 보면 모델이

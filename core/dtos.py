@@ -163,7 +163,7 @@ class TranslationUnit(BaseModel):
 
 class TranslatedUnit(BaseModel):
     """LLM 응답 스키마"""
-    id: str
+    id: Union[str, int]
     translated_text: str
 
 class NodeType(str, Enum):
