@@ -139,6 +139,38 @@ class TestOpenAICompatibleClient(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(res, list)
         self.assertEqual(res[0]["translated_text"], "테스트")
 
+    @patch.object(OpenAICompatibleClient, "generate_text")
+    async def test_generate_text_async_reasoning_effort_openrouter(self, mock_gen):
+        """OpenRouter 엔드포인트는 reasoning: {'effort': ...} 구조로 전달한다."""
+        mock_gen.return_value = "OK"
+        client = OpenAICompatibleClient(
+            api_key="key",
+            base_url="https://openrouter.ai/api/v1",
+            default_model="z-ai/glm-5.3-flash",
+            reasoning_effort="low"
+        )
+
+        await client.generate_text_async(prompt="test")
+        call_config = mock_gen.call_args.kwargs["generation_config"]
+        self.assertEqual(call_config.get("reasoning"), {"effort": "low"})
+        self.assertNotIn("reasoning_effort", call_config)
+
+    @patch.object(OpenAICompatibleClient, "generate_text")
+    async def test_generate_text_async_reasoning_effort_standard_openai(self, mock_gen):
+        """표준 OpenAI 엔드포인트는 최상위 reasoning_effort 문자열로 전달한다."""
+        mock_gen.return_value = "OK"
+        client = OpenAICompatibleClient(
+            api_key="key",
+            base_url="https://api.openai.com/v1",
+            default_model="o3-mini",
+            reasoning_effort="low"
+        )
+
+        await client.generate_text_async(prompt="test")
+        call_config = mock_gen.call_args.kwargs["generation_config"]
+        self.assertEqual(call_config.get("reasoning_effort"), "low")
+        self.assertNotIn("reasoning", call_config)
+
 
 if __name__ == "__main__":
     unittest.main()

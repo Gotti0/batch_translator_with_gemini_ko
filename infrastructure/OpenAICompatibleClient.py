@@ -293,6 +293,11 @@ class OpenAICompatibleClient(BaseLLMClient):
         }
         if generation_config:
             payload.update(generation_config)
+        if "reasoning" not in payload and "reasoning_effort" not in payload and self.reasoning_effort:
+            if "openrouter.ai" in self.base_url:
+                payload["reasoning"] = {"effort": self.reasoning_effort}
+            else:
+                payload["reasoning_effort"] = self.reasoning_effort
 
         headers = self._prepare_headers()
         if stream:
@@ -436,7 +441,10 @@ class OpenAICompatibleClient(BaseLLMClient):
         elif response_schema is not None and isinstance(response_schema, type) and not issubclass(response_schema, (list, tuple)):
             gen_config["response_format"] = {"type": "json_object"}
         if self.reasoning_effort:
-            gen_config["reasoning_effort"] = self.reasoning_effort
+            if "openrouter.ai" in self.base_url:
+                gen_config["reasoning"] = {"effort": self.reasoning_effort}
+            else:
+                gen_config["reasoning_effort"] = self.reasoning_effort
 
         # 모델 선택: 도메인 서비스가 전달하는 gemini-* 모델명은 무시하고 클라이언트에 지정된 default_model 사용
         req_model = kwargs.get("model_name")
