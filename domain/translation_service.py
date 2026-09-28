@@ -531,6 +531,50 @@ class TranslationService:
         by_keyword = {e.keyword: e for e in self.glossary_entries_for_injection if e.target_language == final_target_lang}
         return [by_keyword[k] for k in keywords if k in by_keyword and k not in have]
 
+    def _dynamic_glossary_context(self, match_text: str, memory_text: str, pagefold_active: bool) -> Optional[str]:
+        """청크에 주입할 용어집 컨텍스트. 동적 주입을 하지 않으면 None.
+
+        표준·무결성·배치 모드가 모두 이 함수를 거쳐, 청크마다 같은 형식의 요약 한 줄을 INFO로 남긴다.
+        0개일 때도 이유를 적는다(로그가 없으면 사용자는 주입이 꺼진 것으로 읽는다). 주입 내용은 DEBUG로 둔다.
+
+        Args:
+            match_text: 키워드가 들어 있는지 찾을 텍스트 (무결성 모드는 청크 JSON)
+            memory_text: 의미 기반 용어 검색에 쓸 원문
+            pagefold_active: 용어집을 PageFold PDF로 이미 붙였는지
+        """
+        if pagefold_active:
+            logger.info("용어집: PageFold PDF로 첨부 (동적 주입 안 함)")
+            return None
+        if not self.config.get("enable_dynamic_glossary_injection", False):
+            logger.info("용어집: 0개 (동적 주입 꺼짐)")
+            return None
+        if not self.glossary_entries_for_injection:
+            logger.info("용어집: 0개 (로드된 용어집 없음)")
+            return None
+
+        text_lower = match_text.lower()
+        final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
+        # entry.target_language는 _load_glossary_data에서 이미 정규화됨
+        relevant_entries = [e for e in self.glossary_entries_for_injection
+                            if e.target_language == final_target_lang and e.keyword.lower() in text_lower]
+        keyword_count = len(relevant_entries)
+        semantic_extra = self._semantic_glossary_entries(memory_text, relevant_entries)
+        relevant_entries.extend(semantic_extra)
+
+        max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) + len(semantic_extra)
+        max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
+        context = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
+
+        injected = sum(1 for line in context.splitlines() if line.startswith("- "))
+        if not relevant_entries:
+            logger.info("용어집: 0개 (청크에 해당 용어 없음)")
+        else:
+            dropped = len(relevant_entries) - injected
+            limit_note = f", 상한으로 {dropped}개 제외" if dropped else ""
+            logger.info(f"용어집: {injected}개 주입 (키워드 {keyword_count}, 의미 {len(semantic_extra)}{limit_note})")
+            logger.debug(f"주입한 용어집 컨텍스트:\n{context}")
+        return context
+
     def build_generation_config_dict(self) -> Dict[str, Any]:
         """번역 요청의 생성 파라미터 (실시간·배치 공용)."""
         return {
@@ -555,27 +599,10 @@ class TranslationService:
                 pagefold_multimodal_parts = [glossary_pdf]
                 glossary_context_str = PAGEFOLD_GLOSSARY_NOTICE
         
-        if not pagefold_multimodal_parts and self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
-            logger.info("용어집 컨텍스트 주입 활성화됨 (청크 내 관련 키워드 체크).")
-            chunk_text_lower = text_chunk.lower()
-            # target_language 정규화 적용
-            final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
-            relevant_entries = []
-            
-            for entry in self.glossary_entries_for_injection:
-                # entry.target_language는 _load_glossary_data에서 이미 정규화됨
-                if entry.target_language == final_target_lang and entry.keyword.lower() in chunk_text_lower:
-                    relevant_entries.append(entry)
-            semantic_extra = self._semantic_glossary_entries(text_chunk, relevant_entries)
-            relevant_entries.extend(semantic_extra)
+        dynamic_context = self._dynamic_glossary_context(text_chunk, text_chunk, bool(pagefold_multimodal_parts))
+        if dynamic_context is not None:
+            glossary_context_str = dynamic_context
 
-            max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) + len(semantic_extra)
-            max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
-            glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
-            
-            if relevant_entries:
-                logger.info(f"API 요청에 주입할 용어집 컨텍스트 생성됨. 내용 일부: {glossary_context_str[:100]}...")
-        
         memory_block = self._translation_memory_block(text_chunk)
         replacements = {
             "{{slot}}": text_chunk,
@@ -1165,16 +1192,9 @@ class TranslationService:
             plain_text = self.integrity_chunk_text(chunk)
             glossary_override: Optional[str] = glossary_context_str if integrity_multimodal_parts else None
 
-            if not integrity_multimodal_parts and self.config.get("enable_dynamic_glossary_injection", False) and self.glossary_entries_for_injection:
-                chunk_text_lower = chunk_json_str.lower()
-                final_target_lang = normalize_language_code(self.config.get("target_translation_language", "ko"))
-                relevant_entries = [e for e in self.glossary_entries_for_injection if e.target_language == final_target_lang and e.keyword.lower() in chunk_text_lower]
-                semantic_extra = self._semantic_glossary_entries(plain_text, relevant_entries)
-                relevant_entries.extend(semantic_extra)
-                
-                max_entries = self.config.get("max_glossary_entries_per_chunk_injection", 3) + len(semantic_extra)
-                max_chars = self.config.get("max_glossary_chars_per_chunk_injection", 500)
-                glossary_context_str = _format_glossary_for_prompt(relevant_entries, max_entries, max_chars)
+            dynamic_context = self._dynamic_glossary_context(chunk_json_str, plain_text, bool(integrity_multimodal_parts))
+            if dynamic_context is not None:
+                glossary_context_str = dynamic_context
                 glossary_override = glossary_context_str
 
             memory_block = self._translation_memory_block(plain_text)
