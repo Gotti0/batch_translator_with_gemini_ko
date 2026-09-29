@@ -1328,6 +1328,7 @@ class TranslationService:
                 "temperature": self.config.get("temperature", 0.3), # 유저 설정값 우선, 없으면 0.3
                 "top_p": self.config.get("top_p", 0.9),
                 "response_mime_type": "application/json",
+                "response_schema": list[TranslatedUnit],
                 "thinking_level": self.config.get("thinking_level", "high")
             }
 
@@ -1399,6 +1400,9 @@ class TranslationService:
             translated_units = []
             for item in raw_response:
                 try:
+                    if isinstance(item, TranslatedUnit):
+                        translated_units.append(item)
+                        continue
                     if isinstance(item, dict):
                         item = dict(item)
                         if "id" in item:

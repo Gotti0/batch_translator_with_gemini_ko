@@ -79,3 +79,35 @@ async def test_translate_integrity_chunk_recovers_from_broken_json():
     assert result["1"] == '그는 "안녕"이라고 말했다.'
     # split이 발생하지 않고 단 1회 호출로 모두 복구되었음을 확인
     assert client.generate_text_async.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_translate_integrity_chunk_passes_response_schema_and_accepts_translated_units():
+    """무결성 번역 호출 시 response_schema에 list[TranslatedUnit]를 전달하고, 모델/클라이언트가 반환한 TranslatedUnit 인스턴스를 정상 처리한다."""
+    from core.dtos import TranslatedUnit
+
+    client = MagicMock()
+    client.generate_text_async = AsyncMock(return_value=[
+        TranslatedUnit(id="0", translated_text="직접 번역 0"),
+        TranslatedUnit(id="1", translated_text="직접 번역 1"),
+    ])
+
+    service = TranslationService(
+        gemini_client=client,
+        config={"model_name": "test-model"}
+    )
+
+    chunk = [
+        TranslationUnit(id="0", text="Sentence 0"),
+        TranslationUnit(id="1", text="Sentence 1"),
+    ]
+
+    result = await service._translate_integrity_chunk_with_retry(chunk)
+
+    assert result["0"] == "직접 번역 0"
+    assert result["1"] == "직접 번역 1"
+
+    call_config = client.generate_text_async.call_args.kwargs["generation_config_dict"]
+    assert call_config["response_schema"] == list[TranslatedUnit]
+    assert call_config["response_mime_type"] == "application/json"
+
