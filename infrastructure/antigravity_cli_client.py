@@ -354,8 +354,17 @@ class AntigravityCliClient(BaseLLMClient):
                 if response_schema is not None and not isinstance(response_schema, dict):
                     try:
                         from pydantic import TypeAdapter
-
-                        return TypeAdapter(response_schema).validate_python(parsed)
+                        adapter = TypeAdapter(response_schema)
+                        if isinstance(parsed, dict):
+                            try:
+                                return adapter.validate_python(parsed)
+                            except Exception:
+                                pass
+                            try:
+                                return adapter.validate_python([parsed])
+                            except Exception:
+                                pass
+                        return adapter.validate_python(parsed)
                     except Exception as e_validate:
                         logger.warning(f"AGY 응답 Pydantic 스키마 검증 실패, 파싱된 JSON 반환: {e_validate}")
                 return parsed

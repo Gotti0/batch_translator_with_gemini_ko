@@ -144,6 +144,31 @@ class TestOpenAICompatibleClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res[0].translated_name, "혜용")
 
     @patch.object(OpenAICompatibleClient, "generate_text")
+    async def test_generate_text_async_unwraps_single_dict_into_list_for_schema(self, mock_gen):
+        """모델이 list[T] 스키마에 대해 배열이 아닌 단일 객체 {...}만 반환해도 리스트로 감싸서 정상 검증한다."""
+        from domain.memory_extractor import ExtractedEntity
+        mock_gen.return_value = '{"name": "冯慧兰", "translated_name": "풍혜란", "category": "character", "note": "반말"}'
+        client = OpenAICompatibleClient(
+            api_key="key",
+            base_url="https://openrouter.ai/api/v1",
+            default_model="z-ai/glm-5.3-flash"
+        )
+
+        res = await client.generate_text_async(
+            prompt="추출해줘",
+            generation_config_dict={
+                "response_mime_type": "application/json",
+                "response_schema": list[ExtractedEntity],
+            }
+        )
+
+        self.assertIsInstance(res, list)
+        self.assertEqual(len(res), 1)
+        self.assertIsInstance(res[0], ExtractedEntity)
+        self.assertEqual(res[0].name, "冯慧兰")
+        self.assertEqual(res[0].translated_name, "풍혜란")
+
+    @patch.object(OpenAICompatibleClient, "generate_text")
     async def test_generate_text_async_does_not_force_json_object_for_arrays(self, mock_gen):
         """무결성 번역처럼 response_mime_type만 있고 스키마가 없거나 배열인 경우 response_format json_object를 강제하지 않는다."""
         mock_gen.return_value = '[{"id": 0, "translated_text": "테스트"}]'

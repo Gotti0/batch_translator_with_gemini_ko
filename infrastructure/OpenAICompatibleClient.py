@@ -182,18 +182,23 @@ class OpenAICompatibleClient(BaseLLMClient):
                 try:
                     return adapter.validate_python(parsed)
                 except Exception:
-                    for k in ("characters", "entities", "items", "terms", "data", "results", "result", "list"):
-                        if k in parsed and isinstance(parsed[k], list):
-                            try:
-                                return adapter.validate_python(parsed[k])
-                            except Exception:
-                                pass
-                    for v in parsed.values():
-                        if isinstance(v, list):
-                            try:
-                                return adapter.validate_python(v)
-                            except Exception:
-                                pass
+                    pass
+                try:
+                    return adapter.validate_python([parsed])
+                except Exception:
+                    pass
+                for k in ("characters", "entities", "items", "terms", "data", "results", "result", "list"):
+                    if k in parsed and isinstance(parsed[k], list):
+                        try:
+                            return adapter.validate_python(parsed[k])
+                        except Exception:
+                            pass
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        try:
+                            return adapter.validate_python(v)
+                        except Exception:
+                            pass
             return adapter.validate_python(parsed)
         except Exception as e:
             logger.warning(f"OpenAI 호환 응답을 스키마로 검증하지 못해 원본 JSON을 반환합니다: {e}")
