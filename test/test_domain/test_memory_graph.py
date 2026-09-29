@@ -142,6 +142,10 @@ def test_extractor_response_normalization():
     assert _to_dicts({"entities": [{"name": "A"}]}) == [{"name": "A"}]
     assert _to_dicts({"characters": [{"name": "惠蓉"}]}) == [{"name": "惠蓉"}]
     assert _to_dicts([ExtractedEntity(name="B")])[0]["name"] == "B"
+    # 잘린 JSON 복구 테스트 (닫는 따옴표와 괄호가 누락된 경우)
+    truncated_raw = '{\n  "name": "舒慧",\n  "aliases": ["死丫头"],\n  "translated_name": "서혜",\n  "category": "character",\n  "note": "주인공을 놀림'
+    recovered = _to_dicts(truncated_raw)
+    assert len(recovered) == 1 and recovered[0]["name"] == "舒慧" and recovered[0]["translated_name"] == "서혜"
     assert _to_dicts("not json") == [] and _to_dicts(None) == []
     assert _to_dicts([{"name": ""}, "x"]) == []
     assert find_excerpt("一行目\n「行くよ」とリリアが言った。\n三行目", ["リリア"]) == "「行くよ」とリリアが言った。"
