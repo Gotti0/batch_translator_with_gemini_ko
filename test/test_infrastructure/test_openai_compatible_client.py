@@ -238,6 +238,75 @@ class TestOpenAICompatibleClient(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res, '{"name": "test", broken_json')
             self.assertTrue(any("오류 부근 스니펫" in msg and "array/raw" in msg for msg in cm.output))
 
+    def test_build_json_schema_response_format_for_single_and_list_models(self):
+        """단일 모델은 object로, list[T] 모델은 items로 래핑된 object json_schema로 변환된다."""
+        from domain.memory_extractor import ExtractedEntity
+
+        # 1. 단일 모델
+        single_rf = OpenAICompatibleClient._build_json_schema_response_format(ExtractedEntity)
+        self.assertEqual(single_rf["type"], "json_schema")
+        self.assertTrue(single_rf["json_schema"]["strict"])
+        self.assertEqual(single_rf["json_schema"]["name"], "ExtractedEntity")
+        self.assertEqual(single_rf["json_schema"]["schema"]["type"], "object")
+        self.assertFalse(single_rf["json_schema"]["schema"]["additionalProperties"])
+        self.assertIn("name", single_rf["json_schema"]["schema"]["properties"])
+
+        # 2. 리스트 모델 (OpenAI root array 제약 회피를 위한 wrapper)
+        list_rf = OpenAICompatibleClient._build_json_schema_response_format(list[ExtractedEntity])
+        self.assertEqual(list_rf["type"], "json_schema")
+        self.assertTrue(list_rf["json_schema"]["strict"])
+        self.assertEqual(list_rf["json_schema"]["name"], "ExtractedEntity_list")
+        self.assertEqual(list_rf["json_schema"]["schema"]["type"], "object")
+        self.assertEqual(list_rf["json_schema"]["schema"]["required"], ["items"])
+        self.assertEqual(list_rf["json_schema"]["schema"]["properties"]["items"]["type"], "array")
+
+    @patch("requests.post")
+    def test_generate_text_injects_openrouter_response_healing_plugin(self, mock_post):
+        """OpenRouter 엔드포인트 호출 시 payload에 response-healing 플러그인이 주입된다."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        mock_post.return_value = mock_resp
+
+        client = OpenAICompatibleClient(
+            api_key="key",
+            base_url="https://openrouter.ai/api/v1",
+            default_model="z-ai/glm-5.3-flash"
+        )
+        client.generate_text(prompt="hello")
+
+        call_json = mock_post.call_args.kwargs["json"]
+        self.assertIn("plugins", call_json)
+        self.assertEqual(call_json["plugins"], [{"id": "response-healing"}])
+
+    @patch("requests.post")
+    def test_generate_text_falls_back_to_json_object_when_json_schema_returns_400(self, mock_post):
+        """호환 프로바이더가 json_schema에 대해 400을 반환하면 1회 json_object 모드로 fallback 재시도한다."""
+        err_resp = MagicMock()
+        err_resp.status_code = 400
+        err_resp.text = "json_schema not supported"
+        err_resp.json.return_value = {"error": {"message": "json_schema not supported"}}
+
+        succ_resp = MagicMock()
+        succ_resp.status_code = 200
+        succ_resp.json.return_value = {"choices": [{"message": {"content": '{"ok": true}'}}]}
+
+        mock_post.side_effect = [err_resp, succ_resp]
+
+        client = OpenAICompatibleClient(
+            api_key="key",
+            base_url="https://api.openai.com/v1",
+            default_model="gpt-4o"
+        )
+        res = client.generate_text(
+            prompt="test",
+            generation_config={"response_format": {"type": "json_schema", "json_schema": {}}}
+        )
+        self.assertEqual(res, '{"ok": true}')
+        self.assertEqual(mock_post.call_count, 2)
+        second_call_json = mock_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(second_call_json["response_format"], {"type": "json_object"})
+
 
 if __name__ == "__main__":
     unittest.main()
