@@ -215,11 +215,28 @@ class TestOpenAICompatibleClient(unittest.IsolatedAsyncioTestCase):
             default_model="o3-mini",
             reasoning_effort="low"
         )
-
         await client.generate_text_async(prompt="test")
         call_config = mock_gen.call_args.kwargs["generation_config"]
         self.assertEqual(call_config.get("reasoning_effort"), "low")
         self.assertNotIn("reasoning", call_config)
+
+    @patch.object(OpenAICompatibleClient, "generate_text")
+    async def test_generate_text_async_json_decode_error_logs_snippet_and_schema(self, mock_gen):
+        """JSON 파싱 실패 시 경고 로그에 스키마 이름과 오류 부근 스니펫(±40자)이 포함된다."""
+        mock_gen.return_value = '{"name": "test", broken_json'
+        client = OpenAICompatibleClient(
+            api_key="key",
+            base_url="https://openrouter.ai/api/v1",
+            default_model="z-ai/glm-5.3-flash"
+        )
+
+        with self.assertLogs("infrastructure.OpenAICompatibleClient", level="WARNING") as cm:
+            res = await client.generate_text_async(
+                prompt="test",
+                generation_config_dict={"response_mime_type": "application/json"}
+            )
+            self.assertEqual(res, '{"name": "test", broken_json')
+            self.assertTrue(any("오류 부근 스니펫" in msg and "array/raw" in msg for msg in cm.output))
 
 
 if __name__ == "__main__":

@@ -504,7 +504,15 @@ class OpenAICompatibleClient(BaseLLMClient):
             parsed = json.loads(self._strip_code_fence(text_content), strict=False)
             return self._coerce_to_schema(parsed, response_schema)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"OpenAI 호환 API JSON 응답 파싱 실패, 원문 텍스트를 반환합니다: {e}")
+            snippet = ""
+            if isinstance(e, json.JSONDecodeError):
+                clean_text = self._strip_code_fence(text_content)
+                pos = getattr(e, "pos", 0)
+                start = max(0, pos - 40)
+                end = min(len(clean_text), pos + 40)
+                snippet = f" | 오류 부근 스니펫: ...{clean_text[start:end]!r}..."
+            schema_name = getattr(response_schema, "__name__", str(response_schema)) if response_schema else "array/raw"
+            logger.warning(f"OpenAI 호환 API JSON 응답 파싱 실패 (스키마: {schema_name}), 원문 텍스트를 반환합니다: {e}{snippet}")
             return text_content
 
     async def list_models_async(self) -> List[str]:
