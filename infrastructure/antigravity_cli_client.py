@@ -20,8 +20,9 @@ from core.exceptions import (
     BtgApiClientException,
     BtgApiRateLimitException,
     BtgApiInvalidRequestException,
+    BtgApiContentSafetyException,
 )
-from infrastructure.base_client import BaseLLMClient, kill_if_running
+from infrastructure.base_client import BaseLLMClient, kill_if_running, is_content_safety_error
 from infrastructure.reasoning_options import ANTIGRAVITY_CLI
 from infrastructure.logger_config import setup_logger
 
@@ -290,6 +291,8 @@ class AntigravityCliClient(BaseLLMClient):
                     f"Antigravity CLI 비정상 종료 (code: {proc.returncode}): {stderr_text or stdout_text}"
                 )
                 err_msg = stderr_text or stdout_text
+                if is_content_safety_error(err_msg):
+                    raise BtgApiContentSafetyException(f"Antigravity CLI 콘텐츠 안전 차단: {err_msg}")
                 if _is_rate_limited(err_msg):
                     raise BtgApiRateLimitException(f"Antigravity CLI 사용량 제한: {err_msg}")
                 if "login" in err_msg.lower() or "auth" in err_msg.lower():
@@ -308,6 +311,8 @@ class AntigravityCliClient(BaseLLMClient):
                 if isinstance(data, dict):
                     if data.get("status") == "ERROR":
                         detail = str(data.get('response') or data.get('error') or stdout_text)
+                        if is_content_safety_error(detail):
+                            raise BtgApiContentSafetyException(f"Antigravity CLI 콘텐츠 안전 차단: {detail}")
                         if _is_rate_limited(detail):
                             raise BtgApiRateLimitException(f"Antigravity CLI 사용량 제한: {detail}")
                         raise BtgApiClientException(f"Antigravity CLI 응답 오류: {detail}")
@@ -340,24 +345,33 @@ class AntigravityCliClient(BaseLLMClient):
                     try:
                         parsed = self._extract_json_data(resp_content)
                     except Exception:
+                        if is_content_safety_error(resp_content):
+                            raise BtgApiContentSafetyException(f"Antigravity CLI 콘텐츠 안전 차단: {resp_content}")
                         if agy_structured_output is not None:
                             parsed = agy_structured_output
                         else:
                             raise
 
                 if isinstance(parsed, dict):
-                    if "units" in parsed and isinstance(parsed["units"], list):
-                        parsed = parsed["units"]
-                    elif "items" in parsed and isinstance(parsed["items"], list):
-                        parsed = parsed["items"]
-                    elif "terms" in parsed and isinstance(parsed["terms"], list):
-                        parsed = parsed["terms"]
+                    for k in ("units", "items", "terms", "characters", "entities", "data", "results", "result", "list"):
+                        if k in parsed and isinstance(parsed[k], list):
+                            parsed = parsed[k]
+                            break
 
                 if response_schema is not None and not isinstance(response_schema, dict):
                     try:
                         from pydantic import TypeAdapter
-
-                        return TypeAdapter(response_schema).validate_python(parsed)
+                        adapter = TypeAdapter(response_schema)
+                        if isinstance(parsed, dict):
+                            try:
+                                return adapter.validate_python(parsed)
+                            except Exception:
+                                pass
+                            try:
+                                return adapter.validate_python([parsed])
+                            except Exception:
+                                pass
+                        return adapter.validate_python(parsed)
                     except Exception as e_validate:
                         logger.warning(f"AGY 응답 Pydantic 스키마 검증 실패, 파싱된 JSON 반환: {e_validate}")
                 return parsed

@@ -53,6 +53,32 @@ EXTRACTION_PROMPT = """다음은 소설 원문 한 부분과 그 한국어 번�
 </translation>"""
 
 
+def _recover_entities_from_raw_text(text: str) -> List[Dict[str, Any]]:
+    """잘렸거나 문법이 깨진 응답에서 정규식으로 엔티티 항목들을 추출한다."""
+    if not text:
+        return []
+    rows: List[Dict[str, Any]] = []
+    pattern = re.compile(r'\{\s*"name"\s*:\s*"([^"]+)"(.*?)(?=\}\s*,\s*\{|\}\s*\]|\Z)', re.DOTALL)
+    for m in pattern.finditer(text):
+        name = m.group(1).strip()
+        body = m.group(2)
+        row: Dict[str, Any] = {"name": name}
+        tr_match = re.search(r'"translated_name"\s*:\s*"([^"]*)"', body)
+        if tr_match:
+            row["translated_name"] = tr_match.group(1).strip()
+        cat_match = re.search(r'"category"\s*:\s*"([^"]*)"', body)
+        if cat_match:
+            row["category"] = cat_match.group(1).strip()
+        note_match = re.search(r'"note"\s*:\s*"([^"]*)', body)
+        if note_match:
+            row["note"] = note_match.group(1).strip()
+        aliases_match = re.search(r'"aliases"\s*:\s*\[(.*?)\]', body, re.DOTALL)
+        if aliases_match:
+            row["aliases"] = [a.strip().strip('"\'') for a in aliases_match.group(1).split(",") if a.strip().strip('"\'')]
+        rows.append(row)
+    return rows
+
+
 def _to_dicts(response: Any) -> List[Dict[str, Any]]:
     """프로바이더마다 다른 응답(Pydantic 목록, dict 목록, JSON 문자열)을 dict 목록으로 맞춘다."""
     if response is None:
@@ -60,12 +86,38 @@ def _to_dicts(response: Any) -> List[Dict[str, Any]]:
     if isinstance(response, str):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.IGNORECASE)
         try:
-            response = json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning(f"인물 메모 추출 응답을 JSON으로 해석하지 못했습니다: {text[:200]}")
-            return []
+            response = json.loads(text, strict=False)
+        except (json.JSONDecodeError, ValueError):
+            repaired = False
+            for suffix in ('"}', '"}]', '"} \n}', '"} \n]', ']}', '}', ']'):
+                try:
+                    response = json.loads(text.rstrip() + suffix, strict=False)
+                    repaired = True
+                    break
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if not repaired:
+                recovered = _recover_entities_from_raw_text(text)
+                if recovered:
+                    response = recovered
+                else:
+                    logger.warning(f"인물 메모 추출 응답을 JSON으로 해석하지 못했습니다: {text[:200]}")
+                    return []
     if isinstance(response, dict):
-        response = response.get("entities") or response.get("items") or [response]
+        if "name" in response:
+            response = [response]
+        else:
+            for k in ("characters", "entities", "items", "data", "results", "result", "list"):
+                if k in response and isinstance(response[k], list):
+                    response = response[k]
+                    break
+            else:
+                for v in response.values():
+                    if isinstance(v, list) and v and isinstance(v[0], (dict, BaseModel)):
+                        response = v
+                        break
+                else:
+                    response = [response]
     rows = []
     for item in response if isinstance(response, list) else []:
         if isinstance(item, BaseModel):

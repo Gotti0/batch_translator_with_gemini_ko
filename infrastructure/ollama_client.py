@@ -216,8 +216,29 @@ class OllamaClient(BaseLLMClient):
             return parsed
         try:
             from pydantic import TypeAdapter
-
-            return TypeAdapter(response_schema).validate_python(parsed)
+            adapter = TypeAdapter(response_schema)
+            if isinstance(parsed, dict):
+                try:
+                    return adapter.validate_python(parsed)
+                except Exception:
+                    pass
+                try:
+                    return adapter.validate_python([parsed])
+                except Exception:
+                    pass
+                for k in ("characters", "entities", "items", "terms", "data", "results", "result", "list"):
+                    if k in parsed and isinstance(parsed[k], list):
+                        try:
+                            return adapter.validate_python(parsed[k])
+                        except Exception:
+                            pass
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        try:
+                            return adapter.validate_python(v)
+                        except Exception:
+                            pass
+            return adapter.validate_python(parsed)
         except Exception as e:
             logger.warning(f"Ollama 응답을 스키마로 검증하지 못해 원본 JSON을 반환합니다: {e}")
             return parsed

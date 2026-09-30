@@ -42,6 +42,7 @@ from infrastructure.gemini_batch_client import (
     key_fingerprint,
 )
 from infrastructure.gemini_client import GeminiClient, GeminiContentSafetyException
+from core.exceptions import BtgApiContentSafetyException
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -444,7 +445,7 @@ class BatchTranslationService:
         if result.text is not None:
             try:
                 text = self.translation_service.finalize_translation_text(source, result.text)
-            except GeminiContentSafetyException as e:
+            except (GeminiContentSafetyException, BtgApiContentSafetyException) as e:
                 update_metadata_for_chunk_failure(input_file_path, idx, f"{BLOCKED_PREFIX} {e}")
                 return "blocked"
             save_chunk_with_index_to_file(chunked, idx, text)

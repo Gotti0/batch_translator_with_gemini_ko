@@ -26,6 +26,42 @@ def kill_if_running(proc: Optional[asyncio.subprocess.Process]) -> None:
             pass
 
 
+CONTENT_SAFETY_PATTERNS = (
+    "안전 필터",
+    "안전 정책",
+    "정책 위반",
+    "prohibited use policy",
+    "generative ai prohibited",
+    "acceptable use policy",
+    "safety filter",
+    "content filter",
+    "content_filter",
+    "safety policy",
+    "content safety",
+    "blocked by safety",
+    "safety reasons",
+    "safety guideline",
+    "safety guidelines",
+    "responsible ai",
+    "harmful content",
+    "prohibited content",
+    "sensitive content",
+    "성적으로 노골적",
+    "use-policy",
+    "finish_reason: safety",
+    "finish_reason': 'safety",
+    'finish_reason": "safety',
+)
+
+
+def is_content_safety_error(err_msg: str) -> bool:
+    """콘텐츠 안전 정책 위반 또는 검열(Content Safety/Filter) 오류인지 판별한다."""
+    if not err_msg:
+        return False
+    lowered = err_msg.lower()
+    return any(p in lowered for p in CONTENT_SAFETY_PATTERNS)
+
+
 class BaseLLMClient(ABC):
     """
     모든 LLM 클라이언트의 기반 추상 클래스.

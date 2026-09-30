@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import copy
 import logging
 import time
 import random
@@ -48,7 +49,8 @@ class OpenAICompatibleServerException(OpenAICompatibleApiException):
     pass
 
 import asyncio
-from infrastructure.base_client import BaseLLMClient
+from core.exceptions import BtgApiContentSafetyException
+from infrastructure.base_client import BaseLLMClient, is_content_safety_error
 from infrastructure.reasoning_options import OPENAI_COMPATIBLE as OPENAI_COMPATIBLE_REASONING
 
 
@@ -171,13 +173,120 @@ class OpenAICompatibleClient(BaseLLMClient):
         return t.strip()
 
     @staticmethod
+    def _inline_json_schema_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Pydantic이 만든 `$defs`/`$ref`를 펼쳐 단일 스키마로 만든다."""
+        defs = schema.get("$defs") or schema.get("definitions") or {}
+
+        def _resolve(node: Any) -> Any:
+            if isinstance(node, dict):
+                ref = node.get("$ref")
+                if isinstance(ref, str) and ref.startswith("#/"):
+                    name = ref.rsplit("/", 1)[-1]
+                    if name in defs:
+                        return _resolve(copy.deepcopy(defs[name]))
+                return {k: _resolve(v) for k, v in node.items() if k not in ("$defs", "definitions")}
+            if isinstance(node, list):
+                return [_resolve(v) for v in node]
+            return node
+
+        return _resolve(schema)
+
+    @classmethod
+    def _build_json_schema_response_format(cls, response_schema: Any) -> Optional[Dict[str, Any]]:
+        """
+        Pydantic 모델이나 dict 스키마를 OpenAI 규격의 Structured Outputs response_format으로 변환합니다.
+        OpenAI API 제약:
+        1. 최상위(root)는 반드시 type: "object" 여야 합니다.
+        2. 최상위가 array인 경우 {"type": "object", "properties": {"items": array_schema}, "required": ["items"], "additionalProperties": false} 형태로 감쌉니다.
+        """
+        if response_schema is None:
+            return None
+        try:
+            if isinstance(response_schema, dict):
+                raw_schema = dict(response_schema)
+            elif hasattr(response_schema, "model_json_schema"):
+                raw_schema = response_schema.model_json_schema()
+            else:
+                from pydantic import TypeAdapter
+                raw_schema = TypeAdapter(response_schema).json_schema()
+
+            inlined = cls._inline_json_schema_refs(raw_schema)
+            schema_type = inlined.get("type")
+
+            if schema_type == "array" or isinstance(response_schema, (list, tuple)) or getattr(response_schema, "_name", None) in ("List", "Tuple"):
+                final_schema = {
+                    "type": "object",
+                    "properties": {
+                        "items": inlined
+                    },
+                    "required": ["items"],
+                    "additionalProperties": False
+                }
+            elif schema_type == "object" or "properties" in inlined:
+                final_schema = dict(inlined)
+                if "additionalProperties" not in final_schema:
+                    final_schema["additionalProperties"] = False
+            else:
+                final_schema = {
+                    "type": "object",
+                    "properties": {
+                        "result": inlined
+                    },
+                    "required": ["result"],
+                    "additionalProperties": False
+                }
+
+            schema_name = getattr(response_schema, "__name__", None)
+            if (schema_name in (None, "list", "tuple", "List", "Tuple")) and hasattr(response_schema, "__args__") and response_schema.__args__:
+                inner = response_schema.__args__[0]
+                inner_name = getattr(inner, "__name__", "item")
+                schema_name = f"{inner_name}_list"
+            elif not schema_name:
+                schema_name = "response_schema"
+            clean_name = re.sub(r"[^a-zA-Z0-9_-]", "_", str(schema_name))[:64] or "response"
+
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": clean_name,
+                    "strict": True,
+                    "schema": final_schema
+                }
+            }
+        except Exception as e:
+            logger.warning(f"OpenAI 호환 JSON Schema 변환 실패, json_object 모드로 대체합니다: {e}")
+            return {"type": "json_object"}
+
+    @staticmethod
     def _coerce_to_schema(parsed: Any, response_schema: Any) -> Any:
         """GeminiClient의 response.parsed와 같은 형태(Pydantic 객체)로 맞춘다. 실패하면 원본 JSON."""
         if response_schema is None or isinstance(response_schema, dict):
             return parsed
         try:
             from pydantic import TypeAdapter
-            return TypeAdapter(response_schema).validate_python(parsed)
+            adapter = TypeAdapter(response_schema)
+            if isinstance(parsed, dict):
+                try:
+                    return adapter.validate_python(parsed)
+                except Exception:
+                    pass
+                try:
+                    return adapter.validate_python([parsed])
+                except Exception:
+                    pass
+                for k in ("items", "translations", "units", "characters", "entities", "terms", "data", "results", "result", "list"):
+                    if k in parsed and isinstance(parsed[k], list):
+                        try:
+                            return adapter.validate_python(parsed[k])
+                        except Exception:
+                            pass
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        try:
+                            return adapter.validate_python(v)
+                        except Exception:
+                            pass
+            return adapter.validate_python(parsed)
         except Exception as e:
             logger.warning(f"OpenAI 호환 응답을 스키마로 검증하지 못해 원본 JSON을 반환합니다: {e}")
             return parsed
@@ -232,6 +341,9 @@ class OpenAICompatibleClient(BaseLLMClient):
             message = response.text
 
         logger.error(f"API Error: Status {status_code}, Message: {message}, Info: {error_info}")
+
+        if is_content_safety_error(message):
+            raise BtgApiContentSafetyException(f"OpenAI 호환 API 콘텐츠 안전 차단: {message}")
 
         if status_code == 401:
             raise OpenAICompatibleAuthException(f"Authentication failed (401): {message}", status_code, error_info)
@@ -293,6 +405,13 @@ class OpenAICompatibleClient(BaseLLMClient):
         }
         if generation_config:
             payload.update(generation_config)
+        if "reasoning" not in payload and "reasoning_effort" not in payload and self.reasoning_effort:
+            if "openrouter.ai" in self.base_url:
+                payload["reasoning"] = {"effort": self.reasoning_effort}
+            else:
+                payload["reasoning_effort"] = self.reasoning_effort
+        if "plugins" not in payload and "openrouter.ai" in self.base_url:
+            payload["plugins"] = [{"id": "response-healing"}]
 
         headers = self._prepare_headers()
         if stream:
@@ -318,6 +437,17 @@ class OpenAICompatibleClient(BaseLLMClient):
                 )
 
                 if response.status_code != 200:
+                    # 호환 API 프로바이더가 json_schema 형식을 지원하지 않아 400을 반환한 경우, 1회 json_object 모드로 대체 재시도
+                    if (
+                        response.status_code == 400
+                        and isinstance(payload.get("response_format"), dict)
+                        and payload["response_format"].get("type") == "json_schema"
+                    ):
+                        logger.warning(
+                            f"호환 API 프로바이더가 json_schema 형식을 거부했습니다 ({response.text[:200]}). json_object 모드로 대체 재시도합니다."
+                        )
+                        payload["response_format"] = {"type": "json_object"}
+                        continue
                     self._handle_api_error(response) # This will raise an exception
 
                 # Successful response
@@ -331,7 +461,10 @@ class OpenAICompatibleClient(BaseLLMClient):
                     
                     # Standard OpenAI format
                     if response_data.get("choices") and isinstance(response_data["choices"], list) and len(response_data["choices"]) > 0:
-                        message_content = response_data["choices"][0].get("message", {}).get("content")
+                        choice = response_data["choices"][0]
+                        if choice.get("finish_reason") == "content_filter":
+                            raise BtgApiContentSafetyException("OpenAI 호환 API 콘텐츠 안전 차단: finish_reason='content_filter'")
+                        message_content = choice.get("message", {}).get("content")
                         if message_content is not None:
                             return message_content
                         # Handle function/tool calls if necessary in the future
@@ -428,15 +561,21 @@ class OpenAICompatibleClient(BaseLLMClient):
         gen_config: Dict[str, Any] = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
-        # OpenAI API의 response_format json_object는 출력을 {...} 단일 객체로만 강제하여
-        # 프롬프트가 [...] 배열을 요구할 때(예: 무결성 번역, 용어집 추출) 모델이 단일 객체만 반환하거나 잘리는 문제를 유발하므로,
-        # 명시적으로 response_format이 지정되었거나 단일 객체 스키마일 때만 전달한다.
+        # OpenAI API Structured Outputs:
+        # 1. gen_config_dict에 명시적으로 response_format이 지정된 경우 최우선 존중
+        # 2. response_schema가 제공되면 OpenAI 규격의 {"type": "json_schema", "json_schema": ...}로 자동 변환
+        #    (루트가 list/array인 경우 OpenAI 제약에 맞춰 {"type": "object", "properties": {"items": ...}}로 자동 래핑)
+        # 3. response_schema가 없고 wants_json만 켜진 경우(예: 무결성 번역):
+        #    배열 출력을 요구하는 프롬프트와의 충돌을 막기 위해 response_format을 강제하지 않음
         if "response_format" in gen_config_dict:
             gen_config["response_format"] = gen_config_dict["response_format"]
-        elif response_schema is not None and isinstance(response_schema, type) and not issubclass(response_schema, (list, tuple)):
-            gen_config["response_format"] = {"type": "json_object"}
+        elif response_schema is not None:
+            gen_config["response_format"] = self._build_json_schema_response_format(response_schema)
         if self.reasoning_effort:
-            gen_config["reasoning_effort"] = self.reasoning_effort
+            if "openrouter.ai" in self.base_url:
+                gen_config["reasoning"] = {"effort": self.reasoning_effort}
+            else:
+                gen_config["reasoning_effort"] = self.reasoning_effort
 
         # 모델 선택: 도메인 서비스가 전달하는 gemini-* 모델명은 무시하고 클라이언트에 지정된 default_model 사용
         req_model = kwargs.get("model_name")
@@ -471,10 +610,18 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         text_content = str(res)
         try:
-            parsed = json.loads(self._strip_code_fence(text_content))
+            parsed = json.loads(self._strip_code_fence(text_content), strict=False)
             return self._coerce_to_schema(parsed, response_schema)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"OpenAI 호환 API JSON 응답 파싱 실패, 원문 텍스트를 반환합니다: {e}")
+            snippet = ""
+            if isinstance(e, json.JSONDecodeError):
+                clean_text = self._strip_code_fence(text_content)
+                pos = getattr(e, "pos", 0)
+                start = max(0, pos - 40)
+                end = min(len(clean_text), pos + 40)
+                snippet = f" | 오류 부근 스니펫: ...{clean_text[start:end]!r}..."
+            schema_name = getattr(response_schema, "__name__", str(response_schema)) if response_schema else "array/raw"
+            logger.warning(f"OpenAI 호환 API JSON 응답 파싱 실패 (스키마: {schema_name}), 원문 텍스트를 반환합니다: {e}{snippet}")
             return text_content
 
     async def list_models_async(self) -> List[str]:

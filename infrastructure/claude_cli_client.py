@@ -18,8 +18,9 @@ from core.exceptions import (
     BtgApiClientException,
     BtgApiRateLimitException,
     BtgApiInvalidRequestException,
+    BtgApiContentSafetyException,
 )
-from infrastructure.base_client import BaseLLMClient, kill_if_running
+from infrastructure.base_client import BaseLLMClient, kill_if_running, is_content_safety_error
 from infrastructure.reasoning_options import CLAUDE_CLI
 from infrastructure.logger_config import setup_logger
 
@@ -190,6 +191,8 @@ class ClaudeCliClient(BaseLLMClient):
                     f"Claude CLI 비정상 종료 (code: {proc.returncode}): {stderr_text or stdout_text}"
                 )
                 err_msg = stderr_text or stdout_text
+                if is_content_safety_error(err_msg):
+                    raise BtgApiContentSafetyException(f"Claude CLI 콘텐츠 안전 차단: {err_msg}")
                 if "rate limit" in err_msg.lower() or "too many requests" in err_msg.lower():
                     raise BtgApiRateLimitException(f"Claude CLI 사용량 제한: {err_msg}")
                 if "login" in err_msg.lower() or "auth" in err_msg.lower():
@@ -205,8 +208,11 @@ class ClaudeCliClient(BaseLLMClient):
                 data = json.loads(stdout_text)
                 if isinstance(data, dict):
                     if data.get("is_error"):
+                        err_res = str(data.get('result') or stdout_text)
+                        if is_content_safety_error(err_res):
+                            raise BtgApiContentSafetyException(f"Claude CLI 콘텐츠 안전 차단: {err_res}")
                         raise BtgApiClientException(
-                            f"Claude CLI 응답 오류: {data.get('result') or stdout_text}"
+                            f"Claude CLI 응답 오류: {err_res}"
                         )
                     result_text = data.get("result", "")
                     if result_text:

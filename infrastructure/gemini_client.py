@@ -37,6 +37,8 @@ except ImportError:
     from infrastructure.error_classifier import classify, ErrorKind
     from infrastructure.retry_policy import Action, RetryPolicy
     from infrastructure.circuit_breaker import CircuitBreaker
+from core.exceptions import BtgApiContentSafetyException
+
 logger = setup_logger(__name__)
 
 class GeminiApiException(Exception):
@@ -49,7 +51,7 @@ class GeminiRateLimitException(GeminiApiException):
     """API 사용량 제한 관련 예외 (429, QUOTA_EXCEEDED)"""
     pass
 
-class GeminiContentSafetyException(GeminiApiException):
+class GeminiContentSafetyException(GeminiApiException, BtgApiContentSafetyException):
     """콘텐츠 안전 관련 예외 (SAFETY 필터링)"""
     pass
 

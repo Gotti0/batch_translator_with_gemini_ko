@@ -7,7 +7,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from core.exceptions import BtgApiClientException, BtgApiRateLimitException
+from core.exceptions import BtgApiClientException, BtgApiRateLimitException, BtgApiContentSafetyException
 from infrastructure.codex_cli_client import CodexCliClient
 
 
@@ -81,6 +81,19 @@ class TestCodexCliClient(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(BtgApiRateLimitException):
             await self.client.generate_text_async("Hello")
+
+    @patch("asyncio.create_subprocess_exec")
+    async def test_generate_text_async_content_safety(self, mock_subprocess):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.kill = MagicMock()
+        jsonl_output = '{"type":"item.completed","item":{"type":"agent_message","text":"I cannot complete this request due to content safety policy violation."}}'
+        mock_proc.communicate.return_value = (jsonl_output.encode("utf-8"), b"")
+        mock_subprocess.return_value = mock_proc
+
+        schema = {"type": "object", "properties": {"ko": {"type": "string"}}}
+        with self.assertRaises(BtgApiContentSafetyException):
+            await self.client.generate_text_async("Sensitive", response_schema=schema)
 
     @patch("asyncio.create_subprocess_exec")
     async def test_generate_text_async_timeout(self, mock_subprocess):
