@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from infrastructure.OpenAICompatibleClient import OpenAICompatibleClient
 from domain.glossary_service import ApiGlossaryTerm
+from core.exceptions import BtgApiContentSafetyException
 
 
 class TestOpenAICompatibleClient(unittest.IsolatedAsyncioTestCase):
@@ -306,6 +307,40 @@ class TestOpenAICompatibleClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_post.call_count, 2)
         second_call_json = mock_post.call_args_list[1].kwargs["json"]
         self.assertEqual(second_call_json["response_format"], {"type": "json_object"})
+
+    @patch("requests.post")
+    def test_generate_text_content_filter_finish_reason(self, mock_post):
+        """finish_reason이 content_filter인 경우 BtgApiContentSafetyException을 발생시킨다."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [{
+                "message": {"content": ""},
+                "finish_reason": "content_filter"
+            }]
+        }
+        mock_post.return_value = resp
+
+        client = OpenAICompatibleClient(api_key="key", base_url="https://api.openai.com/v1", default_model="gpt-4o")
+        with self.assertRaises(BtgApiContentSafetyException) as ctx:
+            client.generate_text("sensitive prompt")
+        self.assertIn("content_filter", str(ctx.exception))
+
+    @patch("requests.post")
+    def test_handle_api_error_content_safety(self, mock_post):
+        """400 또는 403 오류 응답에 안전 정책 위반 내용이 포함된 경우 BtgApiContentSafetyException을 발생시킨다."""
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.text = '{"error": {"message": "The response was filtered due to the prompt triggering Azure OpenAI safety policy."}}'
+        resp.json.return_value = {
+            "error": {"message": "The response was filtered due to the prompt triggering Azure OpenAI safety policy."}
+        }
+        mock_post.return_value = resp
+
+        client = OpenAICompatibleClient(api_key="key", base_url="https://api.openai.com/v1", default_model="gpt-4o")
+        with self.assertRaises(BtgApiContentSafetyException) as ctx:
+            client.generate_text("sensitive prompt")
+        self.assertIn("안전 차단", str(ctx.exception))
 
 
 if __name__ == "__main__":

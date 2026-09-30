@@ -7,7 +7,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from core.exceptions import BtgApiClientException, BtgApiRateLimitException
+from core.exceptions import BtgApiClientException, BtgApiRateLimitException, BtgApiContentSafetyException
 from infrastructure.claude_cli_client import ClaudeCliClient
 
 
@@ -61,6 +61,20 @@ class TestClaudeCliClient(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(BtgApiRateLimitException):
             await self.client.generate_text_async("Hello")
+
+    @patch("asyncio.create_subprocess_exec")
+    async def test_generate_text_async_content_safety(self, mock_subprocess):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        refusal_json = json.dumps({
+            "is_error": True,
+            "result": "Blocked by safety policy: harmful content detected"
+        })
+        mock_proc.communicate.return_value = (refusal_json.encode("utf-8"), b"")
+        mock_subprocess.return_value = mock_proc
+
+        with self.assertRaises(BtgApiContentSafetyException):
+            await self.client.generate_text_async("Sensitive input")
 
     @patch("asyncio.create_subprocess_exec")
     async def test_generate_text_async_timeout(self, mock_subprocess):

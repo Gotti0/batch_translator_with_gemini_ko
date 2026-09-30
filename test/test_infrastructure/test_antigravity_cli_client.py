@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from core.exceptions import (
     BtgApiClientException,
     BtgApiRateLimitException,
+    BtgApiContentSafetyException,
 )
 from infrastructure.antigravity_cli_client import AntigravityCliClient
 
@@ -66,6 +67,38 @@ class TestAntigravityCliClient(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(BtgApiRateLimitException):
             await self.client.generate_text_async("번역 요청")
+
+    @patch("asyncio.create_subprocess_exec")
+    async def test_generate_text_async_content_safety_status_error(self, mock_exec):
+        """Google 안전 필터 거부(status: ERROR) 시 BtgApiContentSafetyException 발생 검증"""
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        refusal_json = json.dumps({
+            "status": "ERROR",
+            "response": "요청하신 텍스트는 성적으로 노골적인 묘사 및 관련 콘텐츠를 포함하고 있어, Google의 [Generative AI Prohibited Use Policy](https://policies.google.com/terms/generative-ai/use-policy)에 따라 안전 필터에 의해 번역 출력을 생성할 수 없습니다."
+        })
+        mock_proc.communicate.return_value = (refusal_json.encode("utf-8"), b"")
+        mock_exec.return_value = mock_proc
+
+        with self.assertRaises(BtgApiContentSafetyException) as ctx:
+            await self.client.generate_text_async("민감한 원문")
+        self.assertIn("안전", str(ctx.exception))
+        # BtgApiContentSafetyException은 BtgApiClientException의 서브클래스여야 함
+        self.assertIsInstance(ctx.exception, BtgApiClientException)
+
+    @patch("asyncio.create_subprocess_exec")
+    async def test_generate_text_async_content_safety_returncode_error(self, mock_exec):
+        """CLI 프로세스 비정상 종료 시 안전 필터 오류인 경우 BtgApiContentSafetyException 발생 검증"""
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = (
+            b"",
+            b"Blocked by safety policy: sensitive content detected",
+        )
+        mock_exec.return_value = mock_proc
+
+        with self.assertRaises(BtgApiContentSafetyException):
+            await self.client.generate_text_async("민감한 원문")
 
     @patch("asyncio.create_subprocess_exec")
     async def test_generate_text_async_auth_error(self, mock_exec):

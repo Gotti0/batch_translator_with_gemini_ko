@@ -49,7 +49,8 @@ class OpenAICompatibleServerException(OpenAICompatibleApiException):
     pass
 
 import asyncio
-from infrastructure.base_client import BaseLLMClient
+from core.exceptions import BtgApiContentSafetyException
+from infrastructure.base_client import BaseLLMClient, is_content_safety_error
 from infrastructure.reasoning_options import OPENAI_COMPATIBLE as OPENAI_COMPATIBLE_REASONING
 
 
@@ -341,6 +342,9 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         logger.error(f"API Error: Status {status_code}, Message: {message}, Info: {error_info}")
 
+        if is_content_safety_error(message):
+            raise BtgApiContentSafetyException(f"OpenAI 호환 API 콘텐츠 안전 차단: {message}")
+
         if status_code == 401:
             raise OpenAICompatibleAuthException(f"Authentication failed (401): {message}", status_code, error_info)
         if status_code == 403:
@@ -457,7 +461,10 @@ class OpenAICompatibleClient(BaseLLMClient):
                     
                     # Standard OpenAI format
                     if response_data.get("choices") and isinstance(response_data["choices"], list) and len(response_data["choices"]) > 0:
-                        message_content = response_data["choices"][0].get("message", {}).get("content")
+                        choice = response_data["choices"][0]
+                        if choice.get("finish_reason") == "content_filter":
+                            raise BtgApiContentSafetyException("OpenAI 호환 API 콘텐츠 안전 차단: finish_reason='content_filter'")
+                        message_content = choice.get("message", {}).get("content")
                         if message_content is not None:
                             return message_content
                         # Handle function/tool calls if necessary in the future

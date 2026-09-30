@@ -22,7 +22,7 @@ try:
     )
     from infrastructure.file_handler import read_json_file
     from infrastructure.logger_config import setup_logger
-    from core.exceptions import BtgTranslationException, BtgApiClientException
+    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException
     from utils.chunk_service import ChunkService
     from utils.lang_utils import normalize_language_code # Added
     from google.genai import types as genai_types
@@ -53,7 +53,7 @@ except ImportError:
     )
     from infrastructure.file_handler import read_json_file  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
-    from core.exceptions import BtgTranslationException, BtgApiClientException  # type: ignore
+    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException  # type: ignore
     from utils.chunk_service import ChunkService  # type: ignore
     from utils.lang_utils import normalize_language_code # type: ignore
     from core.dtos import GlossaryEntryDTO # type: ignore
@@ -765,7 +765,7 @@ class TranslationService:
         except asyncio.CancelledError:
             logger.info("비동기 번역이 취소되었습니다")
             raise
-        except GeminiContentSafetyException as e_safety:
+        except (GeminiContentSafetyException, BtgApiContentSafetyException) as e_safety:
             raise BtgTranslationException(f"콘텐츠 안전 문제로 번역할 수 없습니다. ({e_safety})", original_exception=e_safety) from e_safety
         except GeminiAllApiKeysExhaustedException as e_keys:
             raise BtgApiClientException(f"모든 API 키를 사용했으나 요청에 실패했습니다. ({e_keys})", original_exception=e_keys) from e_keys
@@ -1457,7 +1457,7 @@ class TranslationService:
             # 503 과부하는 청크 크기와 무관한 서버측 문제다. 나눠도 해결되지 않고 요청 수만 배로
             # 늘려 쿼터를 낭비하므로 이 청크만 실패로 끝내고 이어하기에 맡긴다.
             raise
-        except GeminiContentSafetyException as e_safety:
+        except (GeminiContentSafetyException, BtgApiContentSafetyException) as e_safety:
             # 검열만이 분할로 풀리는 오류다. 문제 구간이 분리되면 나머지는 통과할 수 있다.
             logger.warning(f"무결성 청크 검열 감지 (split_depth {split_depth}): {e_safety}")
             if not self.config.get("use_content_safety_retry", True):

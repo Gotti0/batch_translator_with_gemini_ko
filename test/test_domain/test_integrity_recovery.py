@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from core.dtos import TranslationUnit
+from core.exceptions import BtgApiContentSafetyException
 from domain.translation_service import TranslationService
 
 
@@ -110,4 +111,44 @@ async def test_translate_integrity_chunk_passes_response_schema_and_accepts_tran
     call_config = client.generate_text_async.call_args.kwargs["generation_config_dict"]
     assert call_config["response_schema"] == list[TranslatedUnit]
     assert call_config["response_mime_type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_translate_integrity_chunk_catches_btg_api_content_safety_and_splits():
+    """CLI/호환 클라이언트가 던진 BtgApiContentSafetyException을 감지하여 Binary Split으로 정상 복구한다."""
+    from core.dtos import TranslatedUnit
+
+    client = MagicMock()
+    call_count = 0
+
+    async def mock_generate(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        prompt = kwargs.get("prompt")
+        # 최초 전체 청크 호출 시 검열 예외 발생
+        if call_count == 1:
+            raise BtgApiContentSafetyException("Antigravity CLI 콘텐츠 안전 차단: 안전 필터에 의해 번역 출력을 생성할 수 없습니다.")
+        # 분할된 개별 청크는 정상 번역 반환
+        return [
+            TranslatedUnit(id="0", translated_text="번역 0"),
+            TranslatedUnit(id="1", translated_text="번역 1"),
+        ]
+
+    client.generate_text_async = AsyncMock(side_effect=mock_generate)
+
+    service = TranslationService(
+        gemini_client=client,
+        config={"model_name": "test-model", "use_content_safety_retry": True, "min_content_safety_chunk_size": 0}
+    )
+
+    chunk = [
+        TranslationUnit(id="0", text="Sentence 0"),
+        TranslationUnit(id="1", text="Sentence 1"),
+    ]
+
+    result = await service._translate_integrity_chunk_with_retry(chunk)
+
+    assert result["0"] == "번역 0"
+    assert result["1"] == "번역 1"
+    assert call_count >= 2  # 최초 실패 1회 + 분할 호출 최소 1회 이상
 
