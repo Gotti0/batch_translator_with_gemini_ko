@@ -53,6 +53,13 @@ class BtgTranslationException(BtgBusinessLogicException):
     """번역 로직 수행 중 발생하는 특정 오류에 대한 예외입니다."""
     pass
 
+class BtgPromptTemplateException(BtgTranslationException):
+    """프롬프트 템플릿 설정 오류(필수 플레이스홀더 누락 등)입니다.
+
+    청크와 무관하게 모든 청크가 같은 이유로 실패하므로, 청크 실패가 아니라 작업을 멈추라는 신호로 다룹니다.
+    """
+    pass
+
 class BtgChunkingException(BtgBusinessLogicException):
     """텍스트 청킹(분할) 로직 중 발생하는 오류에 대한 예외입니다."""
     pass
