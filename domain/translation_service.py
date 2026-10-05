@@ -898,6 +898,13 @@ class TranslationService:
                 else:
                     logger.error(f"   ❌ 서브 청크 {idx+1} 번역 실패: {str(e_sub)[:100]}")
                     translated_parts.append(f"[서브 청크 {idx+1} 번역 실패: {str(e_sub)[:50]}]")
+            except BtgApiClientException as e_api:
+                # 키·재시도 소진은 작업을 멈추라는 신호다. 자리표시 문구로 삼키면 이 청크가 완료로
+                # 기록돼 이어하기도 다시 집지 않는 구멍이 남는다.
+                if isinstance(e_api.original_exception, GeminiAllApiKeysExhaustedException):
+                    raise
+                logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_api}")
+                translated_parts.append(f"[서브 청크 {idx+1} 번역 오류]")
             except Exception as e_general:
                 logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_general}")
                 translated_parts.append(f"[서브 청크 {idx+1} 번역 오류]")

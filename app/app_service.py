@@ -661,6 +661,17 @@ class AppService:
             error = getattr(error, "original_exception", None) or error.__cause__
         return False
 
+    @staticmethod
+    def _is_keys_exhausted_failure(error: BaseException) -> bool:
+        """예외 사슬에 키·재시도 소진이 있는지. 이것은 청크 실패가 아니라 작업을 멈추라는 신호다."""
+        seen = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, GeminiAllApiKeysExhaustedException):
+                return True
+            error = getattr(error, "original_exception", None) or error.__cause__
+        return False
+
     async def cancel_glossary_async(self) -> None:
         """용어집 추출 즉시 취소 요청"""
         if self.current_glossary_task and not self.current_glossary_task.done():
@@ -1628,6 +1639,7 @@ class AppService:
         # 세마포어: 동시에 떠 있는 작업 수만 제한한다. API 요청 간격과 동시 진행 1개는
         # GeminiClient의 스케줄러가 보장하므로 여기서 RPM을 계산하지 않는다.
         semaphore = asyncio.Semaphore(max_workers)
+        keys_exhausted = asyncio.Event()
         
         # tqdm 진행률 표시 (비동기 환경에서도 사용 가능)
         pbar = None
@@ -1662,16 +1674,25 @@ class AppService:
                 if self.cancel_event.is_set():
                     logger.info(f"청크 {chunk_index + 1} 세마포어 대기 중 취소 신호 감지")
                     raise asyncio.CancelledError("취소 신호 감지")
+                # 앞선 청크가 키 소진을 만났으면 새 청크를 시작하지 않는다. 메인 루프가 남은 Task를
+                # 정리하기 전에 세마포어를 넘겨받은 청크가 요청을 보내지 않게 한다.
+                if keys_exhausted.is_set():
+                    return False
                 
-                return await self._translate_and_save_chunk_async(
-                    chunk_index,
-                    chunk_text,
-                    output_file,
-                    total_chunks,
-                    metadata_file_path,
-                    input_file_path,
-                    progress_callback
-                )
+                try:
+                    return await self._translate_and_save_chunk_async(
+                        chunk_index,
+                        chunk_text,
+                        output_file,
+                        total_chunks,
+                        metadata_file_path,
+                        input_file_path,
+                        progress_callback
+                    )
+                except Exception as e:
+                    if self._is_keys_exhausted_failure(e):
+                        keys_exhausted.set()
+                    raise
         
         # Task 리스트 생성
         tasks = []
@@ -1693,10 +1714,23 @@ class AppService:
                     if pbar:
                         pbar.update(1)
                 except Exception as e:
+                    if self._is_keys_exhausted_failure(e):
+                        logger.critical(f"모든 API 키 소진으로 번역을 멈춥니다. 남은 청크는 이어하기에서 번역됩니다: {e}")
+                        raise
                     results.append(e)
                     if pbar:
                         pbar.update(1)
         finally:
+            # 중단·키 소진으로 루프를 빠져나와도 청크 Task를 남기지 않는다. 바깥 Task를 취소해도
+            # create_task로 띄운 Task는 따로 돌고, 사용자가 곧바로 다시 시작하면 cancel_event가
+            # 지워져 세마포어에서 기다리던 Task까지 새 실행과 같은 청크를 겹쳐 번역한다.
+            pending = [t for t in tasks if not t.done()]
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+                logger.info(f"남은 청크 Task {len(pending)}개를 취소했습니다")
+
             # tqdm 종료
             if pbar:
                 try:
@@ -1756,6 +1790,7 @@ class AppService:
         
         last_error = ""
         success = False
+        stopped = False
         translated_chunk = ""
         
         try:
@@ -1816,6 +1851,12 @@ class AppService:
                 logger.info(f"  🎯 {current_chunk_info_msg} 전체 처리 완료 (총 소요: {total_processing_time:.2f}초, 길이비율: {ratio:.2f})")
             
         except BtgTranslationException as e_trans:
+            # 키·재시도 소진은 남은 청크도 모두 같은 이유로 실패한다는 뜻이다. 실패로 적으면 남은 청크가
+            # 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝나므로, 작업을 멈추고 이어하기에 맡긴다.
+            # 무결성 모드와 같은 방침이다.
+            if self._is_keys_exhausted_failure(e_trans):
+                stopped = True
+                raise
             processing_time = time.time() - start_time
             error_type = "콘텐츠 검열" if "콘텐츠 안전 문제" in str(e_trans) else "번역 서비스"
             logger.error(f"  ❌ {current_chunk_info_msg} 실패: {error_type} - {e_trans} ({processing_time:.2f}초)")
@@ -1825,6 +1866,9 @@ class AppService:
             success = False
             
         except BtgApiClientException as e_api:
+            if self._is_keys_exhausted_failure(e_api):
+                stopped = True
+                raise
             processing_time = time.time() - start_time
             # API 오류 유형 판별
             error_detail = ""
@@ -1840,6 +1884,7 @@ class AppService:
             
         except asyncio.CancelledError:
             logger.info(f"  ⚠️ {current_chunk_info_msg} 취소됨 (CancelledError)")
+            stopped = True
             raise
             
         except Exception as e_gen:
@@ -1859,67 +1904,71 @@ class AppService:
             success = False
         
         finally:
-            total_time = time.time() - start_time
-            # 상태 업데이트 (Lock 불필요, asyncio 단일 스레드)
-            self.processed_chunks_count += 1
-            if success:
-                self.successful_chunks_count += 1
-                self._record_translation_memory(chunk_index, chunk_text, translated_chunk)
-                # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
-                try:
-                    metadata_updated = update_metadata_for_chunk_completion(
-                        input_file_path,
-                        chunk_index,
-                        source_length=len(chunk_text),
-                        translated_length=len(translated_chunk)
-                    )
-                    if metadata_updated:
-                        logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
-                    else:
-                        logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
-                except Exception as meta_e:
-                    logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
-            else:
-                self.failed_chunks_count += 1
-                # ❌ 실패한 청크 정보 기록
-                if last_error:
-                    try:
-                        update_metadata_for_chunk_failure(input_file_path, chunk_index, last_error)
-                        logger.debug(f"  💾 {current_chunk_info_msg} 실패 정보 메타데이터에 기록 완료")
-                    except Exception as meta_fail_e:
-                        logger.error(f"  ❌ {current_chunk_info_msg} 실패 정보 메타데이터 기록 중 오류: {meta_fail_e}")
-            
-            # 진행률 계산 및 통합 로깅 (2개 로그 → 1개)
-            progress_percentage = (self.processed_chunks_count / total_chunks) * 100
-            success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100 if self.processed_chunks_count > 0 else 0
-            
-            # 매 10% 또는 마지막 청크에서만 상세 로그 출력 (로그 빈도 최적화)
-            should_log_progress = (self.processed_chunks_count % max(1, total_chunks // 10) == 0) or (self.processed_chunks_count == total_chunks)
-            if should_log_progress:
-                logger.info(f"  📈 진행률: {progress_percentage:.0f}% ({self.processed_chunks_count}/{total_chunks}) | 성공률: {success_rate:.0f}% (✅{self.successful_chunks_count} ❌{self.failed_chunks_count})")
-            
-            # 진행률 콜백
-            if progress_callback:
+            # 중단·키 소진은 이 청크의 결과가 아니다. 완료·실패로 세지 않고 메타데이터에도 남기지 않아
+            # 이어하기가 다시 번역하게 한다. 예전에는 여기서 return해 CancelledError까지 삼켰다.
+            if not stopped:
+                total_time = time.time() - start_time
+                # 상태 업데이트 (Lock 불필요, asyncio 단일 스레드)
+                self.processed_chunks_count += 1
                 if success:
-                    status_msg_for_dto = f"✅ 청크 {chunk_index + 1}/{total_chunks} 완료 ({total_time:.1f}초)"
+                    self.successful_chunks_count += 1
+                    self._record_translation_memory(chunk_index, chunk_text, translated_chunk)
+                    # ✅ 메타데이터 업데이트: translated_chunks에 완료된 청크 기록
+                    try:
+                        metadata_updated = update_metadata_for_chunk_completion(
+                            input_file_path,
+                            chunk_index,
+                            source_length=len(chunk_text),
+                            translated_length=len(translated_chunk)
+                        )
+                        if metadata_updated:
+                            logger.debug(f"  💾 {current_chunk_info_msg} 메타데이터 업데이트 완료")
+                        else:
+                            logger.warning(f"  ⚠️ {current_chunk_info_msg} 메타데이터 업데이트 실패")
+                    except Exception as meta_e:
+                        logger.error(f"  ❌ {current_chunk_info_msg} 메타데이터 업데이트 중 오류: {meta_e}")
                 else:
-                    status_msg_for_dto = f"❌ 청크 {chunk_index + 1}/{total_chunks} 실패 ({total_time:.1f}초)"
+                    self.failed_chunks_count += 1
+                    # ❌ 실패한 청크 정보 기록
                     if last_error:
-                        status_msg_for_dto += f" - {last_error[:50]}..."
-                
-                progress_dto = TranslationJobProgressDTO(
-                    total_chunks=total_chunks,
-                    processed_chunks=self.processed_chunks_count,
-                    successful_chunks=self.successful_chunks_count,
-                    failed_chunks=self.failed_chunks_count,
-                    current_status_message=status_msg_for_dto,
-                    current_chunk_processing=chunk_index + 1,
-                    last_error_message=last_error
-                )
-                progress_callback(progress_dto)
+                        try:
+                            update_metadata_for_chunk_failure(input_file_path, chunk_index, last_error)
+                            logger.debug(f"  💾 {current_chunk_info_msg} 실패 정보 메타데이터에 기록 완료")
+                        except Exception as meta_fail_e:
+                            logger.error(f"  ❌ {current_chunk_info_msg} 실패 정보 메타데이터 기록 중 오류: {meta_fail_e}")
             
-            logger.debug(f"  {current_chunk_info_msg} 처리 완료 반환: {success}")
-            return success
+                # 진행률 계산 및 통합 로깅 (2개 로그 → 1개)
+                progress_percentage = (self.processed_chunks_count / total_chunks) * 100
+                success_rate = (self.successful_chunks_count / self.processed_chunks_count) * 100 if self.processed_chunks_count > 0 else 0
+            
+                # 매 10% 또는 마지막 청크에서만 상세 로그 출력 (로그 빈도 최적화)
+                should_log_progress = (self.processed_chunks_count % max(1, total_chunks // 10) == 0) or (self.processed_chunks_count == total_chunks)
+                if should_log_progress:
+                    logger.info(f"  📈 진행률: {progress_percentage:.0f}% ({self.processed_chunks_count}/{total_chunks}) | 성공률: {success_rate:.0f}% (✅{self.successful_chunks_count} ❌{self.failed_chunks_count})")
+            
+                # 진행률 콜백
+                if progress_callback:
+                    if success:
+                        status_msg_for_dto = f"✅ 청크 {chunk_index + 1}/{total_chunks} 완료 ({total_time:.1f}초)"
+                    else:
+                        status_msg_for_dto = f"❌ 청크 {chunk_index + 1}/{total_chunks} 실패 ({total_time:.1f}초)"
+                        if last_error:
+                            status_msg_for_dto += f" - {last_error[:50]}..."
+                
+                    progress_dto = TranslationJobProgressDTO(
+                        total_chunks=total_chunks,
+                        processed_chunks=self.processed_chunks_count,
+                        successful_chunks=self.successful_chunks_count,
+                        failed_chunks=self.failed_chunks_count,
+                        current_status_message=status_msg_for_dto,
+                        current_chunk_processing=chunk_index + 1,
+                        last_error_message=last_error
+                    )
+                    progress_callback(progress_dto)
+            
+                logger.debug(f"  {current_chunk_info_msg} 처리 완료 반환: {success}")
+
+        return success
 
     # ===== 끝: 비동기 메서드 =====
 

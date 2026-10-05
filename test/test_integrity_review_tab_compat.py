@@ -120,3 +120,58 @@ def test_integrity_review_provider_internal_newlines(tmp_path):
     assert trans_chunks[0] == "1줄 번역\n\n두번째 단락\n2줄 번역"
 
 
+
+
+def _interrupted_integrity_job(tmp_path, done_chunks):
+    """10줄 원문을 2줄씩 5개 청크로 나누고, done_chunks만 임시 폴더에 결과가 있는 상태 (중단된 작업)."""
+    import json
+    source_file = tmp_path / "novel4.txt"
+    source_file.write_text("\n".join(f"src{i}" for i in range(10)), encoding="utf-8")
+    temp_dir = tmp_path / "novel4_translated_integrity_temp"
+    temp_dir.mkdir()
+    for c in done_chunks:
+        data = {str(2 * c): f"T{2 * c}", str(2 * c + 1): f"T{2 * c + 1}"}
+        (temp_dir / f"chunk_{c}.json").write_text(json.dumps(data), encoding="utf-8")
+
+    mock_app_service = MagicMock()
+    mock_app_service.config = {"chunk_size": 6000, "integrity_max_items": 2}
+    return source_file, tmp_path / "novel4_translated.txt", IntegrityReviewProvider(mock_app_service)
+
+
+def test_save_after_interruption_keeps_lines_aligned_with_source(tmp_path):
+    """중간 청크가 빠진 상태에서 저장해도 뒤쪽 줄이 당겨지거나 잘리지 않는다. 빈 자리는 원문이다."""
+    source_file, translated_file, provider = _interrupted_integrity_job(tmp_path, done_chunks=(0, 1, 3, 4))
+    trans_chunks = provider.load_translated_chunks(str(source_file))
+    assert sorted(trans_chunks) == [0, 1, 3, 4]
+
+    trans_chunks[0] = "T0 수정\nT1"
+    provider.save_translated_chunk(str(source_file), 0, trans_chunks[0], trans_chunks)
+
+    assert translated_file.read_text(encoding="utf-8").splitlines() == [
+        "T0 수정", "T1", "T2", "T3", "src4", "src5", "T6", "T7", "T8", "T9",
+    ]
+
+
+def test_save_after_interruption_keeps_untranslated_tail(tmp_path):
+    """중단 지점까지만 번역된 상태에서 저장해도 그 뒤 원문이 사라지지 않는다."""
+    source_file, translated_file, provider = _interrupted_integrity_job(tmp_path, done_chunks=(0, 1))
+    trans_chunks = provider.load_translated_chunks(str(source_file))
+
+    provider.save_translated_chunk(str(source_file), 1, trans_chunks[1], trans_chunks)
+
+    assert translated_file.read_text(encoding="utf-8").splitlines() == (
+        ["T0", "T1", "T2", "T3"] + [f"src{i}" for i in range(4, 10)]
+    )
+
+
+def test_generate_final_file_writes_current_chunks_after_interruption(tmp_path):
+    """중단된 작업은 결과 파일이 없다. 최종 파일 생성이 경로만 돌려주지 않고 현재 청크로 파일을 쓴다."""
+    source_file, translated_file, provider = _interrupted_integrity_job(tmp_path, done_chunks=(0, 2))
+    assert not translated_file.exists()
+
+    path = provider.generate_final_file(str(source_file), provider.load_translated_chunks(str(source_file)))
+
+    assert path == str(translated_file)
+    assert translated_file.read_text(encoding="utf-8").splitlines() == [
+        "T0", "T1", "src2", "src3", "T4", "T5", "src6", "src7", "src8", "src9",
+    ]
