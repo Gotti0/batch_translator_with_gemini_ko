@@ -126,3 +126,31 @@ def test_epub_subchunks_run_sequentially_and_keep_source_on_failure():
     assert len(probe.calls) == 4
     assert result[5] == "줄5" and result[4] == "줄4"  # 실패한 서브 청크(4~5번 줄)는 원문 유지
     assert result[0] == "번역:줄0" and result[7] == "번역:줄7"
+
+
+def test_keys_exhausted_during_safety_split_stops_the_chunk():
+    """검열 분할 도중 키가 모두 소진되면 자리표시 문구로 삼키지 않고 작업을 멈추는 예외를 올린다.
+
+    삼키면 그 청크가 "[서브 청크 N 번역 오류]"를 담은 채 완료로 기록돼 이어하기도 다시 집지 않는다.
+    """
+    from core.exceptions import BtgApiClientException
+    from infrastructure.gemini_client import GeminiAllApiKeysExhaustedException
+
+    service = TranslationService(MagicMock(), {"model_name": "m", "use_content_safety_retry": True})
+    calls = []
+
+    async def fake_translate(text, stream=False):
+        calls.append(text)
+        if len(calls) == 1:
+            raise BtgTranslationException("콘텐츠 안전 문제로 번역할 수 없습니다. (테스트)")
+        raise BtgApiClientException(
+            "모든 API 키를 사용했으나 요청에 실패했습니다.",
+            original_exception=GeminiAllApiKeysExhaustedException("all keys exhausted"),
+        )
+
+    service.translate_text_async = fake_translate
+
+    with pytest.raises(BtgApiClientException):
+        asyncio.run(service.translate_chunk_async(TEXT))
+
+    assert len(calls) == 2  # 소진 뒤 남은 서브 청크를 더 보내지 않는다

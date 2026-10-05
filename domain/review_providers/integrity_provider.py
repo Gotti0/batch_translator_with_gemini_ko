@@ -59,7 +59,8 @@ class IntegrityReviewProvider(BaseReviewProvider):
                         with open(chunk_file, "r", encoding="utf-8") as f:
                             chunk_data = json.load(f)
                         if isinstance(chunk_data, dict):
-                            chunk_lines = [chunk_data.get(u.id, "") for u in chunk]
+                            # 번역 파이프라인의 조립과 같이, 결과에 없는 줄은 원문으로 둔다
+                            chunk_lines = [chunk_data.get(u.id, u.text) for u in chunk]
                             translated_chunks_map[i] = "\n".join(chunk_lines)
                     except Exception:
                         pass
@@ -150,13 +151,24 @@ class IntegrityReviewProvider(BaseReviewProvider):
                 pass
 
         # 2. 전체 파일(*_translated.txt) 합쳐서 저장
-        final_lines = []
-        for i in range(len(current_all_chunks)):
-            if i in current_all_chunks:
-                final_lines.append(current_all_chunks[i])
-        
+        self._write_translated_file(translated_path, chunks, current_all_chunks)
+
+    @staticmethod
+    def _write_translated_file(
+        translated_path: Path, chunks: List[List[TranslationUnit]], current_all_chunks: Dict[int, str]
+    ) -> None:
+        """원문 청크 순서대로 결과 파일을 쓴다. 번역이 없는 청크 자리에는 원문을 둔다.
+
+        번역 파이프라인의 조립(번역이 없는 줄은 원문)과 같은 규칙이다. 예전에는 번역된 청크만
+        range(len(...))로 이어 붙여, 중단으로 빠진 청크가 있으면 그 뒤 줄이 앞으로 당겨져 원문과 줄
+        위치가 어긋났고 빠진 개수만큼 마지막 청크가 잘렸다. 중간이 비지 않아도 뒤쪽 원문이 통째로 빠졌다.
+        """
+        final_parts = [
+            current_all_chunks[i] if i in current_all_chunks else "\n".join(u.text for u in chunk)
+            for i, chunk in enumerate(chunks)
+        ]
         with open(translated_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(final_lines))
+            f.write("\n".join(final_parts))
 
     def reset_chunks(self, file_path: str, metadata: Dict[str, Any], chunk_indices: List[int]) -> None:
         """
@@ -171,7 +183,10 @@ class IntegrityReviewProvider(BaseReviewProvider):
         super().reset_chunks(file_path, metadata, chunk_indices)
 
     def generate_final_file(self, file_path: str, current_all_chunks: Dict[int, str]) -> str:
-        # 이미 save_translated_chunk에서 직접 덮어쓰므로 경로만 반환합니다.
-        p = Path(file_path)
-        return str(p.parent / f"{p.stem}_translated{p.suffix}")
+        # 결과 파일은 번역이 끝까지 돌아야 생긴다. 중단된 작업이면 파일이 없거나 이전 실행의 것이므로
+        # 검토 탭의 현재 청크로 다시 쓴다.
+        source_path, translated_path, _ = self._resolve_paths(file_path)
+        chunks = self._get_chunked_units(str(source_path))
+        self._write_translated_file(translated_path, chunks, current_all_chunks)
+        return str(translated_path)
 
