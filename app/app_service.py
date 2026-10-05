@@ -32,7 +32,7 @@ try:
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
     from ..utils.chunk_service import ChunkService
-    from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
+    from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException, BtgPromptTemplateException
     from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from ..utils.post_processing_service import PostProcessingService
     from ..utils.quality_check_service import QualityCheckService
@@ -57,7 +57,7 @@ except ImportError:
     from domain.translation_service import TranslationService
     from domain.glossary_service import SimpleGlossaryService
     from utils.chunk_service import ChunkService
-    from core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
+    from core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException, BtgPromptTemplateException
     from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from utils.post_processing_service import PostProcessingService
     from utils.quality_check_service import QualityCheckService
@@ -662,12 +662,16 @@ class AppService:
         return False
 
     @staticmethod
-    def _is_keys_exhausted_failure(error: BaseException) -> bool:
-        """예외 사슬에 키·재시도 소진이 있는지. 이것은 청크 실패가 아니라 작업을 멈추라는 신호다."""
+    def _is_job_stopping_failure(error: BaseException) -> bool:
+        """예외 사슬에 작업을 멈추라는 신호가 있는지.
+
+        키·재시도 소진과 프롬프트 템플릿 설정 오류는 남은 청크도 모두 같은 이유로 실패한다. 청크 실패로
+        적으면 남은 청크가 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝난다.
+        """
         seen = set()
         while error is not None and id(error) not in seen:
             seen.add(id(error))
-            if isinstance(error, GeminiAllApiKeysExhaustedException):
+            if isinstance(error, (GeminiAllApiKeysExhaustedException, BtgPromptTemplateException)):
                 return True
             error = getattr(error, "original_exception", None) or error.__cause__
         return False
@@ -1639,7 +1643,7 @@ class AppService:
         # 세마포어: 동시에 떠 있는 작업 수만 제한한다. API 요청 간격과 동시 진행 1개는
         # GeminiClient의 스케줄러가 보장하므로 여기서 RPM을 계산하지 않는다.
         semaphore = asyncio.Semaphore(max_workers)
-        keys_exhausted = asyncio.Event()
+        job_stopping = asyncio.Event()
         
         # tqdm 진행률 표시 (비동기 환경에서도 사용 가능)
         pbar = None
@@ -1674,9 +1678,9 @@ class AppService:
                 if self.cancel_event.is_set():
                     logger.info(f"청크 {chunk_index + 1} 세마포어 대기 중 취소 신호 감지")
                     raise asyncio.CancelledError("취소 신호 감지")
-                # 앞선 청크가 키 소진을 만났으면 새 청크를 시작하지 않는다. 메인 루프가 남은 Task를
-                # 정리하기 전에 세마포어를 넘겨받은 청크가 요청을 보내지 않게 한다.
-                if keys_exhausted.is_set():
+                # 앞선 청크가 작업 중단 신호(키 소진·설정 오류)를 만났으면 새 청크를 시작하지 않는다.
+                # 메인 루프가 남은 Task를 정리하기 전에 세마포어를 넘겨받은 청크가 요청을 보내지 않게 한다.
+                if job_stopping.is_set():
                     return False
                 
                 try:
@@ -1690,8 +1694,8 @@ class AppService:
                         progress_callback
                     )
                 except Exception as e:
-                    if self._is_keys_exhausted_failure(e):
-                        keys_exhausted.set()
+                    if self._is_job_stopping_failure(e):
+                        job_stopping.set()
                     raise
         
         # Task 리스트 생성
@@ -1714,14 +1718,14 @@ class AppService:
                     if pbar:
                         pbar.update(1)
                 except Exception as e:
-                    if self._is_keys_exhausted_failure(e):
-                        logger.critical(f"모든 API 키 소진으로 번역을 멈춥니다. 남은 청크는 이어하기에서 번역됩니다: {e}")
+                    if self._is_job_stopping_failure(e):
+                        logger.critical(f"번역을 멈춥니다. 남은 청크는 이어하기에서 번역됩니다: {e}")
                         raise
                     results.append(e)
                     if pbar:
                         pbar.update(1)
         finally:
-            # 중단·키 소진으로 루프를 빠져나와도 청크 Task를 남기지 않는다. 바깥 Task를 취소해도
+            # 중단·작업 중단 신호로 루프를 빠져나와도 청크 Task를 남기지 않는다. 바깥 Task를 취소해도
             # create_task로 띄운 Task는 따로 돌고, 사용자가 곧바로 다시 시작하면 cancel_event가
             # 지워져 세마포어에서 기다리던 Task까지 새 실행과 같은 청크를 겹쳐 번역한다.
             pending = [t for t in tasks if not t.done()]
@@ -1851,10 +1855,10 @@ class AppService:
                 logger.info(f"  🎯 {current_chunk_info_msg} 전체 처리 완료 (총 소요: {total_processing_time:.2f}초, 길이비율: {ratio:.2f})")
             
         except BtgTranslationException as e_trans:
-            # 키·재시도 소진은 남은 청크도 모두 같은 이유로 실패한다는 뜻이다. 실패로 적으면 남은 청크가
-            # 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝나므로, 작업을 멈추고 이어하기에 맡긴다.
-            # 무결성 모드와 같은 방침이다.
-            if self._is_keys_exhausted_failure(e_trans):
+            # 키·재시도 소진과 프롬프트 설정 오류는 남은 청크도 모두 같은 이유로 실패한다는 뜻이다. 실패로
+            # 적으면 남은 청크가 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝나므로, 작업을 멈추고
+            # 이어하기에 맡긴다. 무결성 모드와 같은 방침이다.
+            if self._is_job_stopping_failure(e_trans):
                 stopped = True
                 raise
             processing_time = time.time() - start_time
@@ -1866,7 +1870,7 @@ class AppService:
             success = False
             
         except BtgApiClientException as e_api:
-            if self._is_keys_exhausted_failure(e_api):
+            if self._is_job_stopping_failure(e_api):
                 stopped = True
                 raise
             processing_time = time.time() - start_time
@@ -1904,7 +1908,7 @@ class AppService:
             success = False
         
         finally:
-            # 중단·키 소진은 이 청크의 결과가 아니다. 완료·실패로 세지 않고 메타데이터에도 남기지 않아
+            # 중단·작업 중단 신호는 이 청크의 결과가 아니다. 완료·실패로 세지 않고 메타데이터에도 남기지 않아
             # 이어하기가 다시 번역하게 한다. 예전에는 여기서 return해 CancelledError까지 삼켰다.
             if not stopped:
                 total_time = time.time() - start_time

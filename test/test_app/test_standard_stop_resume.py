@@ -7,9 +7,13 @@
    잘린 원문이 되었다.
 2. 사용자가 중단해도 청크 Task가 살아남았다. 곧바로 다시 시작하면 취소 신호가 지워져, 세마포어에서
    기다리던 이전 Task가 새 실행과 같은 청크를 겹쳐 번역했다.
+
+실호출 검증에서 같은 모양으로 끝나는 경로가 둘 더 드러났다. 과부하(503) 청크를 실패로 넘기는 것과,
+프롬프트 템플릿 설정 오류로 모든 청크가 실패하는 것이다.
 """
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -155,3 +159,57 @@ def test_cancel_then_immediate_restart_does_not_translate_chunks_twice(tmp_path)
     assert [line for line in result.splitlines() if line.strip()] == [
         f"line {i:02d} TRANSLATED text." for i in range(40)
     ]
+
+
+def test_overload_in_the_middle_does_not_leave_source_in_the_output(tmp_path):
+    """과부하가 잠깐 이어져도 그 청크가 "실패 + 원문"으로 남지 않고, 풀린 뒤 번역된다."""
+    from infrastructure.gemini_client import GeminiServiceUnavailableException
+
+    source, output = _write_source(tmp_path)
+    calls = {"n": 0}
+
+    async def overloaded_on_second_and_third(self, text_chunk, stream=False):
+        calls["n"] += 1
+        if calls["n"] in (2, 3):
+            raise BtgApiClientException(
+                "API 호출 중 오류가 발생했습니다",
+                original_exception=GeminiServiceUnavailableException("모델 과부하(503)"),
+            )
+        return text_chunk.replace("source", "TRANSLATED")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(TranslationService, "translate_text_async", overloaded_on_second_and_third)
+        asyncio.run(_service(chunk_size=100, max_workers=1).start_translation_async(source, output))
+
+    metadata = json.loads(get_metadata_file_path(source).read_text(encoding="utf-8"))
+    assert metadata.get("failed_chunks", {}) == {}
+    result = output.read_text(encoding="utf-8")
+    assert "번역 실패" not in result and "source" not in result
+    assert [line for line in result.splitlines() if line.strip()] == [
+        line.replace("source", "TRANSLATED") for line in LINES
+    ]
+
+
+def test_prompt_template_error_stops_the_job(tmp_path):
+    """템플릿에 {{slot}}이 없으면 모든 청크가 같은 이유로 실패한다. 실패 + 원문으로 채워 완료하지 않고 멈춘다."""
+    from core.exceptions import BtgPromptTemplateException
+
+    source, output = _write_source(tmp_path)
+    service = _service(chunk_size=100, max_workers=2)
+    service.config.update({
+        "prompts": "번역하세요.",
+        "enable_prefill_translation": False,
+        "prefill_cached_history": [],
+        "enable_dynamic_glossary_injection": False,
+    })
+    service.translation_service.config = service.config
+    service.translation_service.gemini_client.generate_text_async = AsyncMock()
+
+    with pytest.raises(BtgPromptTemplateException):
+        asyncio.run(service.start_translation_async(source, output))
+
+    service.translation_service.gemini_client.generate_text_async.assert_not_called()
+    metadata = json.loads(get_metadata_file_path(source).read_text(encoding="utf-8"))
+    assert metadata.get("failed_chunks", {}) == {}
+    assert metadata.get("translated_chunks", {}) == {}
+    assert not output.exists() or "번역 실패" not in output.read_text(encoding="utf-8")

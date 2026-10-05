@@ -5,7 +5,7 @@ import re
 import csv
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union, Callable
+from typing import Dict, Any, Optional, List, Union, Callable, Awaitable, TypeVar
 import os
 import copy # Moved here
 from dataclasses import dataclass
@@ -22,7 +22,7 @@ try:
     )
     from infrastructure.file_handler import read_json_file
     from infrastructure.logger_config import setup_logger
-    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException
+    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException, BtgPromptTemplateException
     from utils.chunk_service import ChunkService
     from utils.lang_utils import normalize_language_code # Added
     from google.genai import types as genai_types
@@ -53,7 +53,7 @@ except ImportError:
     )
     from infrastructure.file_handler import read_json_file  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
-    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException  # type: ignore
+    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException, BtgPromptTemplateException  # type: ignore
     from utils.chunk_service import ChunkService  # type: ignore
     from utils.lang_utils import normalize_language_code # type: ignore
     from core.dtos import GlossaryEntryDTO # type: ignore
@@ -65,6 +65,20 @@ except ImportError:
     )
 
 logger = setup_logger(__name__)
+
+T = TypeVar("T")
+
+
+def _is_overload_failure(error: Optional[BaseException]) -> bool:
+    """예외 사슬(original_exception, __cause__)에 503 과부하 실패가 있는지."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, GeminiServiceUnavailableException):
+            return True
+        error = getattr(error, "original_exception", None) or error.__cause__
+    return False
+
 
 def _format_glossary_for_prompt( # 함수명 변경
     glossary_entries: List[GlossaryEntryDTO], # DTO는 GlossaryEntryDTO (경량화된 버전)
@@ -293,11 +307,11 @@ class TranslationService:
             hint = ""
             if not self.config.get("enable_prefill_translation", False) and                     _history_has_placeholder(self.config.get("prefill_cached_history", []), "{{slot}}"):
                 hint = " 프리필 히스토리에 '{{slot}}'이 있지만 프리필 번역이 꺼져 있어 사용되지 않았습니다. 프리필 번역을 켜세요."
-            raise BtgTranslationException(f"번역 프롬프트 템플릿에 필수 플레이스홀더 '{{{{slot}}}}'이 누락되었습니다.{hint} 작업을 중단합니다.")
+            raise BtgPromptTemplateException(f"번역 프롬프트 템플릿에 필수 플레이스홀더 '{{{{slot}}}}'이 누락되었습니다.{hint} 작업을 중단합니다.")
 
         # [Strict Mode] 용어집 주입 활성화 시 플레이스홀더 검증
         if self.config.get("enable_dynamic_glossary_injection", False) and not glossary_in_history                 and "{{glossary_context}}" not in prompt_template:
-            raise BtgTranslationException("동적 용어집 주입이 활성화되었으나, 프롬프트 템플릿에 '{{glossary_context}}' 플레이스홀더가 없습니다. 작업을 중단합니다.")
+            raise BtgPromptTemplateException("동적 용어집 주입이 활성화되었으나, 프롬프트 템플릿에 '{{glossary_context}}' 플레이스홀더가 없습니다. 작업을 중단합니다.")
 
         final_prompt = prompt_template
 
@@ -444,14 +458,18 @@ class TranslationService:
             min_chunk_size = self.config.get("min_content_safety_chunk_size", 100)
             
             # 설정에 따라 재시도 로직 분기
-            if use_content_safety_retry:
-                result = await self.translate_text_with_content_safety_retry_async(
-                    chunk_text, max_split_attempts, min_chunk_size
-                )
-            else:
+            async def attempt() -> str:
+                if use_content_safety_retry:
+                    return await self.translate_text_with_content_safety_retry_async(
+                        chunk_text, max_split_attempts, min_chunk_size
+                    )
                 # 재시도 없이 직접 번역 (OFF 설정 시)
-                result = await self.translate_text_async(chunk_text)
-            
+                return await self.translate_text_async(chunk_text)
+
+            # 과부하는 무결성·EPUB과 같이 풀릴 때까지 기다린다. 예전에는 이 청크만 실패로 남겨,
+            # 과부하가 길면 남은 청크가 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝났다.
+            result = await self._wait_out_overload(attempt, label=f"청크 \"{text_preview[:20]}\"")
+
             # 📍 중단 체크: API 응답 후
             if self.stop_check_callback and self.stop_check_callback():
                 logger.info("translate_chunk_async: 중단 요청 감지됨 (응답 후)")
@@ -899,9 +917,10 @@ class TranslationService:
                     logger.error(f"   ❌ 서브 청크 {idx+1} 번역 실패: {str(e_sub)[:100]}")
                     translated_parts.append(f"[서브 청크 {idx+1} 번역 실패: {str(e_sub)[:50]}]")
             except BtgApiClientException as e_api:
-                # 키·재시도 소진은 작업을 멈추라는 신호다. 자리표시 문구로 삼키면 이 청크가 완료로
-                # 기록돼 이어하기도 다시 집지 않는 구멍이 남는다.
-                if isinstance(e_api.original_exception, GeminiAllApiKeysExhaustedException):
+                # 키·재시도 소진은 작업을 멈추라는 신호이고, 과부하는 청크 단위로 기다렸다 다시 하는
+                # 대상이다. 자리표시 문구로 삼키면 이 청크가 완료로 기록돼 이어하기도 다시 집지 않는
+                # 구멍이 남는다.
+                if isinstance(e_api.original_exception, GeminiAllApiKeysExhaustedException) or _is_overload_failure(e_api):
                     raise
                 logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_api}")
                 translated_parts.append(f"[서브 청크 {idx+1} 번역 오류]")
@@ -1135,9 +1154,25 @@ class TranslationService:
         시도 간격은 서킷브레이커의 정지(5→10→20분)와 스케줄러의 RPM 간격이 잡으므로 여기서 따로
         기다리지 않는다. 지연 정책을 한곳에 남기기 위해서다.
 
-        무결성 번역과 EPUB 번역이 이 방침을 공유한다. 과부하로 청크를 버리면 그 자리가 원문으로
+        무결성·EPUB·표준 번역이 이 방침을 공유한다. 과부하로 청크를 버리면 그 자리가 원문으로
         남는데(EPUB은 챕터 전체가 원본으로 되돌아간다), 과부하는 대개 일시적이라 기다리는 편이
         결과물이 온전하다.
+        """
+        return await self._wait_out_overload(
+            lambda: self._translate_integrity_chunk_with_retry(chunk), label=label, on_retry=on_retry
+        )
+
+    async def _wait_out_overload(
+        self,
+        attempt: Callable[[], Awaitable[T]],
+        *,
+        label: str,
+        on_retry: Optional[Callable[[int], None]] = None,
+    ) -> T:
+        """attempt를 과부하(503)가 아닌 결과가 나올 때까지 다시 부른다. 방침은 위 메서드 설명과 같다.
+
+        무결성 경로는 과부하 예외를 그대로, 표준 경로는 BtgApiClientException에 감싸서 올리므로
+        예외 사슬을 따라 판단한다.
         """
         attempts = 0
         while True:
@@ -1145,8 +1180,10 @@ class TranslationService:
             if self.stop_check_callback and self.stop_check_callback():
                 raise asyncio.CancelledError(f"{label} 중단 요청됨")
             try:
-                return await self._translate_integrity_chunk_with_retry(chunk)
-            except GeminiServiceUnavailableException as e_overload:
+                return await attempt()
+            except Exception as e_overload:
+                if not _is_overload_failure(e_overload):
+                    raise
                 attempts += 1
                 logger.warning(
                     f"  ⏳ {label} 과부하로 실패해 다시 시도합니다 "
