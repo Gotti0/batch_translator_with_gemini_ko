@@ -205,6 +205,22 @@ async def test_extraction_failure_does_not_block(workspace):
     assert (workspace / "out.txt").exists()
 
 
+def test_extractor_follows_translation_thinking_settings(workspace):
+    cfg = json.loads((workspace / "config.json").read_text(encoding="utf-8"))
+    cfg.update({"enable_memory_extraction": True, "thinking_level": "low", "thinking_budget": 512})
+    (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    app = AppService(workspace / "config.json")
+    with patch("app.app_service.LLMClientFactory.create_client", return_value=object()):
+        extractor = app._create_memory_extractor()
+        assert (extractor.model_name, extractor.thinking_level, extractor.thinking_budget) == ("gemini-3.8-flash", "low", 512)
+
+        # 추출 모델이 번역 설정의 단계를 지원하지 않으면 그 모델의 기본값 (Pro는 low/high만)
+        app.config.update({"thinking_level": "minimal", "memory_extraction_model": "gemini-3.1-pro-preview"})
+        assert app._create_memory_extractor().thinking_level == "high"
+        app.config["memory_extraction_model"] = ""
+        assert app._create_memory_extractor().thinking_level == "minimal"
+
+
 @pytest.mark.asyncio
 async def test_memory_overview(workspace):
     from domain.memory_extractor import ExtractedEntity
