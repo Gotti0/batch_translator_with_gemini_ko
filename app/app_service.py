@@ -1209,12 +1209,14 @@ class AppService:
         chunks: List[str],
         status_callback: Optional[Callable[[str], None]] = None,
         restore: Optional[Callable[[TranslationMemoryStore], None]] = None,
+        extract: bool = True,
     ) -> None:
         """
         번역 기억을 준비해 TranslationService에 연결한다.
 
         원문 문단과 용어집을 임베딩하고(내용이 같으면 캐시 재사용), 이미 끝난 번역을 기억에 반영한다.
         `restore`가 없으면 청크 백업 파일에서, 있으면 그 함수로 반영한다 (무결성 모드는 임시 폴더).
+        `extract`가 False면 인물 메모 추출기를 만들지 않는다 (배치).
         실패해도 번역은 기억 없이 계속한다.
         """
         ts = self.translation_service
@@ -1244,18 +1246,22 @@ class AppService:
                             store.record_translation(idx, chunks[idx], text, save=False)
                     store.save(vectors_changed=False)
             ts.translation_memory = store
-            self._memory_extractor = self._create_memory_extractor()
+            self._memory_extractor = self._create_memory_extractor() if extract else None
             info = store.summary()
+            extraction = "켬" if self._memory_extractor else "끔"
+            if not extract and self.config.get("enable_memory_extraction", False):
+                extraction += " (배치 결과는 추출하지 않음)"
             logger.info(
                 f"번역 기억 준비 완료: 문단 {info['paragraphs']}개 (번역됨 {info['translated']}), 용어 {info['glossary']}개, "
-                f"인물 {info['entities']}개, 연결 {info['edges']}개, 인물 메모 추출 {'켬' if self._memory_extractor else '끔'}"
+                f"인물 {info['entities']}개, 연결 {info['edges']}개, 인물 메모 추출 {extraction}"
             )
         except Exception as e:
             logger.warning(f"번역 기억을 준비하지 못해 기억 없이 번역합니다: {e}", exc_info=True)
             if status_callback:
                 status_callback(f"번역 기억 준비 실패 (기억 없이 번역): {e}")
 
-    def _record_translation_memory(self, chunk_index: int, source_text: str, translated_text: str) -> None:
+    def _record_translation_memory(self, chunk_index: int, source_text: str, translated_text: str,
+                                   extract: bool = True) -> None:
         memory = getattr(self.translation_service, "translation_memory", None)
         if memory is None or not translated_text:
             return
@@ -1263,14 +1269,16 @@ class AppService:
             memory.record_translation(chunk_index, source_text, translated_text)
         except Exception as e:
             logger.warning(f"번역 기억 기록 실패 (청크 {chunk_index}): {e}")
-        self._schedule_memory_extraction(chunk_index, source_text, translated_text)
+        if extract:
+            self._schedule_memory_extraction(chunk_index, source_text, translated_text)
 
     @staticmethod
     def _integrity_lines(chunk: List[Any], results: Dict[str, str]) -> Tuple[List[str], List[str]]:
         """무결성 청크를 (원문 줄, 번역 줄)로 편다. 번역이 없는 줄은 빈 문자열이다."""
         return [u.text for u in chunk], [str(results.get(u.id) or "") for u in chunk]
 
-    def _record_integrity_memory(self, chunk_index: int, chunk: List[Any], results: Dict[str, str]) -> None:
+    def _record_integrity_memory(self, chunk_index: int, chunk: List[Any], results: Dict[str, str],
+                                 extract: bool = True) -> None:
         """무결성 청크 결과를 줄 ID로 정확히 짝지어 기억에 기록한다."""
         memory = getattr(self.translation_service, "translation_memory", None)
         if memory is None or not results:
@@ -1280,7 +1288,8 @@ class AppService:
             memory.record_aligned_translation(chunk_index, source_lines, translated_lines)
         except Exception as e:
             logger.warning(f"번역 기억 기록 실패 (무결성 청크 {chunk_index}): {e}")
-        self._schedule_memory_extraction(chunk_index, "\n".join(source_lines), "\n".join(translated_lines))
+        if extract:
+            self._schedule_memory_extraction(chunk_index, "\n".join(source_lines), "\n".join(translated_lines))
 
     def _restore_integrity_memory(self, store: TranslationMemoryStore, chunks: List[List[Any]], temp_dir: Path) -> None:
         """무결성 임시 폴더(chunk_<i>.json)에 남은 결과를 기억에 반영한다 (이어하기).
@@ -1326,7 +1335,7 @@ class AppService:
         if memory is None or extractor is None:
             return
         if self._memory_extract_semaphore is None:
-            # 배치 수거처럼 많은 청크가 한꺼번에 끝나도 추출 호출은 2개씩만
+            # 병렬 번역으로 여러 청크가 한꺼번에 끝나도 추출 호출은 2개씩만
             self._memory_extract_semaphore = asyncio.Semaphore(2)
         try:
             async with self._memory_extract_semaphore:
@@ -1349,7 +1358,7 @@ class AppService:
             logger.warning(f"인물 메모 추출 실패 (청크 {chunk_index + 1}, 번역에는 영향 없음): {e}")
 
     async def _drain_memory_tasks(self) -> None:
-        """남은 인물 메모 추출이 끝날 때까지 기다린다 (최종 병합·배치 수거 전에)."""
+        """남은 인물 메모 추출이 끝날 때까지 기다린다 (최종 병합 전에)."""
         pending = [t for t in list(self._memory_tasks) if not t.done()]
         if pending:
             logger.info(f"인물 메모 추출 {len(pending)}건 마무리 대기...")
@@ -1406,8 +1415,13 @@ class AppService:
             self.config, self.translation_service, self.gemini_client, self.chunk_service,
             batch_client_factory=getattr(self, "batch_client_factory", None),
         )
-        service.on_chunk_translated = self._record_translation_memory
-        service.on_integrity_chunk_translated = self._record_integrity_memory
+        # 배치 결과는 번역 예시로만 기록하고 인물 메모는 추출하지 않는다. 배치 요청은 제출 때 한꺼번에
+        # 만들어져 이번 결과의 메모가 같은 배치에 들어갈 수 없고, 수거 때 수십 건이 몰려 실시간 API로
+        # 하나씩 추출하는 동안 수거가 끝나지 않는다. 남은 청크는 실시간 마무리가 번역하며 추출한다.
+        service.on_chunk_translated = lambda idx, source, text: self._record_translation_memory(
+            idx, source, text, extract=False)
+        service.on_integrity_chunk_translated = lambda idx, chunk, results: self._record_integrity_memory(
+            idx, chunk, results, extract=False)
         reason = service.check_available()
         if reason:
             raise BtgServiceException(reason)
@@ -1458,9 +1472,11 @@ class AppService:
                 [self.translation_service.integrity_chunk_text(c) for c in units],
                 status_callback,
                 restore=lambda store: self._restore_integrity_memory(store, units, temp_dir),
+                extract=False,
             )
         else:
-            await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
+            await self._prepare_translation_memory_async(
+                input_path, service._load_chunks(input_path), status_callback, extract=False)
 
     def _emit_batch_progress(self, summary: BatchSummary, progress_callback, status_callback) -> None:
         if status_callback:
@@ -1525,7 +1541,6 @@ class AppService:
                     getattr(self.translation_service, "translation_memory", None) is None:
                 await self._prepare_batch_memory_async(service, input_path, summary.pipeline, status_callback)
             summary = await service.refresh_async(input_path, status_callback)
-            await self._drain_memory_tasks()
         elif summary.pipeline != configured:
             # 기록된 배치와 방식이 다르면 그 방식으로 새로 시작한다. 이전 작업 목록은 다른 청크 경계를 가리킨다.
             await self._prepare_batch_memory_async(service, input_path, configured, status_callback, output_path)
@@ -1555,7 +1570,6 @@ class AppService:
             # 앱을 다시 켠 뒤 수거할 때도 결과가 기억에 기록되도록 (임베딩은 캐시되어 재호출 없음)
             await self._prepare_batch_memory_async(service, input_path, service.session_pipeline(input_path), status_callback)
         summary = await service.refresh_async(input_path, status_callback)
-        await self._drain_memory_tasks()
         await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
         return summary
 
