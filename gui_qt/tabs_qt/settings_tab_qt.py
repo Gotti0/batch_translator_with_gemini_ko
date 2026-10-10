@@ -645,7 +645,19 @@ class SettingsTabQt(QtWidgets.QWidget):
             "배치 제출에 쓸 API 키입니다. 무료 티어 키는 Batch API를 사용할 수 없으므로 결제가 설정된 유료 키를 입력하세요.\n"
             "작업은 제출한 키로만 조회되므로, 진행 중에는 이 키를 바꾸거나 지우지 마세요.",
         )
+        self.batch_pipeline_combo = QtWidgets.QComboBox()
+        self.batch_pipeline_combo.addItem("일반", "standard")
+        self.batch_pipeline_combo.addItem("무결성 (줄 단위)", "integrity")
+        TooltipQt(
+            self.batch_pipeline_combo,
+            "배치로 보낼 번역 방식입니다.\n"
+            "일반: 표준 번역과 같은 요청을 보냅니다.\n"
+            "무결성: 줄마다 ID를 붙인 JSON으로 보내고 응답 형식을 강제합니다. 빠진 줄과 검열된 청크는\n"
+            "'실시간으로 마무리'가 무결성 모드로 다시 묻습니다. 결과는 출력 파일 옆 임시 폴더에 모입니다.\n"
+            "진행 중인 배치는 제출 당시 방식을 따르며, 방식을 바꿔 제출하면 새 배치로 시작합니다.",
+        )
         batch_key_row = QtWidgets.QFormLayout()
+        batch_key_row.addRow("번역 방식", self.batch_pipeline_combo)
         batch_key_row.addRow("배치용 API 키 (유료)", self.batch_key_edit)
         self.batch_status_label = QtWidgets.QLabel("제출한 배치 작업이 없습니다.")
         self.batch_status_label.setWordWrap(True)
@@ -660,11 +672,18 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.batch_cancel_btn = QtWidgets.QPushButton("작업 취소")
         TooltipQt(self.batch_cancel_btn, "진행 중인 배치 작업을 취소합니다. 이미 끝난 결과는 가져옵니다.")
         self.batch_realtime_btn = QtWidgets.QPushButton("실시간으로 마무리")
-        TooltipQt(self.batch_realtime_btn, "미완료 청크를 표준 모드로 바로 번역합니다.\n검열로 빠진 청크는 분할 재시도가 있는 이 방법을 권장합니다.")
+        TooltipQt(
+            self.batch_realtime_btn,
+            "미완료 청크를 제출 때와 같은 방식(일반은 표준 모드, 무결성은 무결성 모드)으로 바로 번역합니다.\n"
+            "검열로 빠진 청크는 분할 재시도가 있는 이 방법을 권장합니다.",
+        )
         self.batch_resubmit_btn = QtWidgets.QPushButton("다시 배치 제출")
         TooltipQt(self.batch_resubmit_btn, "미완료 청크만 모아 배치로 다시 제출합니다 (비용 50%, 최대 24시간).")
         self.batch_keep_btn = QtWidgets.QPushButton("그대로 저장")
-        TooltipQt(self.batch_keep_btn, "미완료 청크는 실패 표시와 원문으로 채워 최종 파일을 저장합니다.")
+        TooltipQt(
+            self.batch_keep_btn,
+            "미완료 청크를 채워 최종 파일을 저장합니다.\n일반 방식은 실패 표시와 원문을, 무결성 방식은 줄 위치를 지키도록 원문 줄을 둡니다.",
+        )
         batch_btn_row = QtWidgets.QHBoxLayout()
         for btn in (self.batch_refresh_btn, self.batch_cancel_btn, self.batch_realtime_btn,
                     self.batch_resubmit_btn, self.batch_keep_btn):
@@ -742,6 +761,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.batch_realtime_btn.clicked.connect(self._on_batch_realtime_clicked)
         self.batch_resubmit_btn.clicked.connect(self._on_batch_resubmit_clicked)
         self.batch_keep_btn.clicked.connect(self._on_batch_keep_clicked)
+        self.batch_pipeline_combo.currentIndexChanged.connect(lambda _i: self._update_batch_panel())
         self._batch_timer.timeout.connect(self._on_batch_timer)
         self.input_edit.editingFinished.connect(self._update_batch_panel)
 
@@ -1185,6 +1205,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         self._on_memory_toggled(self.enable_memory_check.isChecked())
         
         self.batch_key_edit.setText(str(cfg.get("batch_api_key") or ""))
+        pipeline_idx = self.batch_pipeline_combo.findData(str(cfg.get("batch_pipeline") or "standard"))
+        self.batch_pipeline_combo.setCurrentIndex(pipeline_idx if pipeline_idx != -1 else 0)
 
         # 번역 모드 선택 동기화 (신규)
         mode_val = str(cfg.get("translation_mode", "standard"))
@@ -1268,6 +1290,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         cfg["min_content_safety_chunk_size"] = int(self.min_chunk_spin.value())
         cfg["translation_mode"] = self.mode_selector.get_current_mode()
         cfg["batch_api_key"] = self.batch_key_edit.text().strip()
+        cfg["batch_pipeline"] = self.batch_pipeline_combo.currentData() or "standard"
         cfg["enable_pagefold"] = self.enable_pagefold_check.isChecked()
         cfg["pagefold_mode"] = self.pagefold_mode_combo.currentData() or "reference"
         cfg["pagefold_font_size"] = float(self.pagefold_font_size_spin.value())
@@ -1377,13 +1400,17 @@ class SettingsTabQt(QtWidgets.QWidget):
 
         summary = summary if summary is not None else self._current_batch_summary()
         self.batch_jobs_table.setRowCount(0)
+        selected_pipeline = self.batch_pipeline_combo.currentData() or "standard"
         if summary is None or not summary.jobs:
             self.batch_status_label.setText("제출한 배치 작업이 없습니다. '배치 제출 / 상태 확인'을 누르면 미번역 청크를 제출합니다.")
             active = remaining = False
         else:
-            text = summary.describe()
+            text = f"번역 방식: {summary.pipeline_label}\n{summary.describe()}"
             if summary.config_changed:
                 text += "\n제출 후 번역 설정이 바뀌었습니다. 진행 중인 작업은 제출 당시 설정으로 번역됩니다."
+            if not summary.active and summary.pipeline != selected_pipeline:
+                text += (f"\n'배치 제출 / 상태 확인'을 누르면 {self.batch_pipeline_combo.currentText()} 방식으로 새 배치를 시작합니다. "
+                         "아래 마무리 버튼은 지난 배치 방식으로 동작합니다.")
             self.batch_status_label.setText(text)
             now = time.time()
             for job in summary.jobs:
@@ -1397,6 +1424,8 @@ class SettingsTabQt(QtWidgets.QWidget):
                     f"성공 {job.get('succeeded', 0)} · 검열 {job.get('blocked', 0)} · 오류 {job.get('errored', 0)}"
                     if job.get("collected") and "succeeded" in job else ""
                 )
+                if result and job.get("partial"):
+                    result += f" · 누락 {job['partial']}"
                 values = [job.get("name") or job.get("display_name", ""), chunk_range,
                           str(job.get("state", "")), elapsed, result]
                 for col, value in enumerate(values):
@@ -1410,6 +1439,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         )
         self.batch_refresh_btn.setEnabled(active and not busy)
         self.batch_cancel_btn.setEnabled(active and not busy)
+        # 진행 중인 배치는 제출 당시 방식으로 수거되므로, 그동안은 방식을 바꿀 수 없게 한다
+        self.batch_pipeline_combo.setEnabled(not active and not busy)
         for btn in (self.batch_realtime_btn, self.batch_resubmit_btn, self.batch_keep_btn):
             btn.setEnabled(remaining and not active and not busy)
 
@@ -1479,8 +1510,14 @@ class SettingsTabQt(QtWidgets.QWidget):
 
     @asyncSlot()
     async def _on_batch_realtime_clicked(self) -> None:
-        # 표준 모드 이어하기가 metadata의 translated_chunks에 없는 청크만 번역한다
-        await self._start_translation_flow(translation_mode_override="standard")
+        # 지난 배치와 같은 방식의 실시간 이어하기가 미완료 청크만 번역한다 (일반: 표준 모드, 무결성: 무결성 모드)
+        input_path, output_path = self._batch_paths()
+        try:
+            mode = self.app_service.batch_finish_mode(input_path, output_path)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "배치 작업", f"실시간으로 마무리할 수 없습니다.\n{e}")
+            return
+        await self._start_translation_flow(translation_mode_override=mode)
 
     @asyncSlot()
     async def _on_batch_resubmit_clicked(self) -> None:

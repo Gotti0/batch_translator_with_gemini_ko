@@ -3,12 +3,13 @@ import time
 import random
 import re
 import csv
+import json
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union, Callable, Awaitable, TypeVar
+from typing import Dict, Any, Optional, List, Set, Union, Callable, Awaitable, TypeVar
 import os
 import copy # Moved here
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 try:
     from infrastructure.gemini_client import (
@@ -170,6 +171,14 @@ class TranslationRequest:
     contents: List[genai_types.Content]
     system_instruction: Optional[str] = None
     multimodal_parts: Optional[List[genai_types.Part]] = None
+
+
+@dataclass
+class IntegrityParseResult:
+    """무결성 응답 하나를 해석한 결과."""
+    translated: Dict[str, str] = field(default_factory=dict)  # 줄 ID → 번역문
+    missing_ids: Set[str] = field(default_factory=set)  # 원문이 비어 있지 않은데 번역이 없거나 빈 줄
+    usable: bool = False  # JSON 배열을 얻었는지. False면 파싱 실패나 빈 응답이다
 
 
 class TranslationService:
@@ -950,6 +959,61 @@ class TranslationService:
         """무결성 청크의 원문 (번역 기억 검색·기록용)."""
         return "\n".join(unit.text for unit in chunk)
 
+    @staticmethod
+    def integrity_chunk_file(temp_dir: Union[str, Path], index: int) -> Path:
+        """완료된 청크의 결과 파일 (줄 ID → 번역문)."""
+        return Path(temp_dir) / f"chunk_{index}.json"
+
+    @staticmethod
+    def integrity_partial_file(temp_dir: Union[str, Path], index: int) -> Path:
+        """배치가 일부 줄만 돌려준 청크의 결과. chunk_*.json 패턴에 걸리면 완료로 오인되므로 이름을 달리한다."""
+        return Path(temp_dir) / f"partial_{index}.json"
+
+    @staticmethod
+    def _read_integrity_result_file(path: Path) -> Optional[Dict[str, str]]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning(f"무결성 결과 파일을 읽지 못했습니다 ({path.name}): {e}")
+            return None
+        return data if isinstance(data, dict) else None
+
+    @classmethod
+    def load_integrity_chunk_result(
+        cls, temp_dir: Union[str, Path], index: int, chunk: List[TranslationUnit]
+    ) -> Optional[Dict[str, str]]:
+        """청크가 완료됐으면 결과를, 아니면 None을 돌려준다.
+
+        파일이 이 청크의 비공백 줄 ID를 모두 담을 때만 완료로 본다. 청크 크기나 최대 항목 수가 바뀌면
+        같은 번호의 옛 파일이 다른 줄 범위를 담는데, 번호만 보면 그 청크를 건너뛰어 해당 줄이 원문으로
+        남는다. ID는 파일 전체의 줄 번호라 포함 여부로 가릴 수 있다. 배치는 제출과 수거 사이가 길어
+        그사이 설정이 바뀔 여지가 크다.
+        """
+        path = cls.integrity_chunk_file(temp_dir, index)
+        if not path.exists():
+            return None
+        data = cls._read_integrity_result_file(path)
+        if data is None or any(u.text.strip() and u.id not in data for u in chunk):
+            return None
+        return data
+
+    @classmethod
+    def load_integrity_partial_result(
+        cls, temp_dir: Union[str, Path], index: int, chunk: List[TranslationUnit]
+    ) -> Dict[str, str]:
+        """배치가 남긴 부분 결과 중 이 청크에 속한 줄만 돌려준다. 없으면 빈 dict."""
+        path = cls.integrity_partial_file(temp_dir, index)
+        if not path.exists():
+            return {}
+        data = cls._read_integrity_result_file(path) or {}
+        ids = {u.id for u in chunk}
+        return {k: v for k, v in data.items() if k in ids}
+
+    @staticmethod
+    def assemble_integrity_text(lines: List[str], translated_map: Dict[str, str]) -> str:
+        """줄 ID 순서로 번역을 잇는다. 번역이 없는 줄은 원문을 둔다."""
+        return "\n".join(translated_map.get(str(i), line) for i, line in enumerate(lines))
+
     async def translate_text_integrity(
         self, 
         text: str, 
@@ -989,25 +1053,23 @@ class TranslationService:
         
         temp_dir = None
         translated_chunk_indices = set()
-        
+        saved_results: Dict[int, Dict[str, str]] = {}
+
         if output_path_for_progress:
             temp_dir = self.integrity_temp_dir_for(output_path_for_progress)
             temp_dir.mkdir(parents=True, exist_ok=True)
-            
-            # 기존 저장된 임시 청크 파일들로부터 진행 상태 복원
-            if temp_dir.exists():
-                for f in temp_dir.glob("chunk_*.json"):
-                    try:
-                        chunk_idx = int(f.stem.split("_")[1])
-                        translated_chunk_indices.add(chunk_idx)
-                    except (IndexError, ValueError):
-                        pass
-                if translated_chunk_indices:
-                    logger.info(f"기존 무결성 번역 진행 상태 로드됨: {len(translated_chunk_indices)}개 청크 완료")
+
+            # 기존 저장된 임시 청크 파일들로부터 진행 상태 복원 (이 청크의 줄을 모두 담은 파일만)
+            for idx, chunk in enumerate(chunks):
+                result = self.load_integrity_chunk_result(temp_dir, idx, chunk)
+                if result is not None:
+                    saved_results[idx] = result
+            translated_chunk_indices.update(saved_results)
+            if translated_chunk_indices:
+                logger.info(f"기존 무결성 번역 진행 상태 로드됨: {len(translated_chunk_indices)}개 청크 완료")
 
         def _completed() -> List[int]:
-            # 청크 설정이 바뀌어 범위를 벗어난 옛 결과 파일은 완료로 치지 않는다
-            return sorted(i for i in translated_chunk_indices if i < total_chunks)
+            return sorted(translated_chunk_indices)
 
         if progress_callback:
             progress_callback(TranslationJobProgressDTO(
@@ -1047,26 +1109,20 @@ class TranslationService:
 
                 logger.info(f"📦 무결성 번역 청크 {i+1}/{total_chunks} 처리 중 (항목: {len(chunk)}개)")
                 
-                if i in translated_chunk_indices and temp_dir:
-                    try:
-                        chunk_file = temp_dir / f"chunk_{i}.json"
-                        with open(chunk_file, 'r', encoding='utf-8') as f:
-                            chunk_results = json.load(f)
-                        translated_map.update(chunk_results)
-                        logger.info(f"  ⏭️ 이미 번역된 청크 건너뜀")
-                        if progress_callback:
-                            progress_callback(TranslationJobProgressDTO(
-                                total_chunks=total_chunks,
-                                processed_chunks=i + 1,
-                                successful_chunks=len(translated_chunk_indices),
-                                failed_chunks=0,
-                                current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 건너뜀",
-                                current_chunk_processing=i + 1,
-                                completed_chunk_indices=_completed(),
-                            ))
-                        continue
-                    except Exception as e:
-                        logger.warning(f"  ⚠️ 저장된 청크 읽기 실패, 재번역 시도: {e}")
+                if i in saved_results:
+                    translated_map.update(saved_results[i])
+                    logger.info(f"  ⏭️ 이미 번역된 청크 건너뜀")
+                    if progress_callback:
+                        progress_callback(TranslationJobProgressDTO(
+                            total_chunks=total_chunks,
+                            processed_chunks=i + 1,
+                            successful_chunks=len(translated_chunk_indices),
+                            failed_chunks=0,
+                            current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 건너뜀",
+                            current_chunk_processing=i + 1,
+                            completed_chunk_indices=_completed(),
+                        ))
+                    continue
 
                 # 3. API 요청 및 검증 (재시도 포함). 과부하는 이 청크가 성공할 때까지 기다린다.
                 def _notify_overload_retry(attempt: int, _i: int = i) -> None:
@@ -1084,19 +1140,35 @@ class TranslationService:
                             completed_chunk_indices=_completed(),
                         ))
 
-                chunk_results = await self._translate_chunk_waiting_out_overload(
-                    chunk,
-                    label=f"무결성 번역 청크 {i+1}/{total_chunks}",
-                    on_retry=_notify_overload_retry,
-                )
+                partial = self.load_integrity_partial_result(temp_dir, i, chunk) if temp_dir else {}
+                if partial:
+                    # 배치가 일부 줄만 돌려준 청크다. 배치 응답을 첫 시도로 보고, 빠진 줄만 누락 재요청
+                    # 단계(retry_depth 1)부터 묻는다. 실시간 첫 요청 뒤의 누락 재요청과 같은 예산이다.
+                    chunk_results = dict(partial)
+                    missing_units = [u for u in chunk if u.text.strip() and not str(partial.get(u.id) or "").strip()]
+                    logger.info(f"  ↪️ 배치 부분 결과 이어받음: 누락 {len(missing_units)}줄만 요청")
+                    if missing_units:
+                        chunk_results.update(await self._translate_chunk_waiting_out_overload(
+                            missing_units,
+                            label=f"무결성 번역 청크 {i+1}/{total_chunks}",
+                            on_retry=_notify_overload_retry,
+                            retry_depth=1,
+                        ))
+                else:
+                    chunk_results = await self._translate_chunk_waiting_out_overload(
+                        chunk,
+                        label=f"무결성 번역 청크 {i+1}/{total_chunks}",
+                        on_retry=_notify_overload_retry,
+                    )
                 translated_map.update(chunk_results)
-                
+
                 if temp_dir:
                     try:
-                        chunk_file = temp_dir / f"chunk_{i}.json"
+                        chunk_file = self.integrity_chunk_file(temp_dir, i)
                         with open(chunk_file, 'w', encoding='utf-8') as f:
                             json.dump(chunk_results, f, ensure_ascii=False)
                         translated_chunk_indices.add(i)
+                        self.integrity_partial_file(temp_dir, i).unlink(missing_ok=True)
                     except Exception as e:
                         logger.error(f"  ❌ 무결성 임시 청크 저장 실패: {e}")
 
@@ -1123,20 +1195,17 @@ class TranslationService:
             if pbar:
                 pbar.close()
 
-        # 4. 조립
-        result_lines = []
-        for i in range(len(lines)):
-            # 번역이 없으면 원문 사용
-            result_lines.append(translated_map.get(str(i), lines[i]))
-            
+        # 4. 조립 (번역이 없으면 원문 사용)
+        result_text = self.assemble_integrity_text(lines, translated_map)
+
         if output_path_for_progress:
             with open(output_path_for_progress, "w", encoding="utf-8") as f:
-                f.write("\n".join(result_lines))
+                f.write(result_text)
 
         if temp_dir and temp_dir.exists():
             logger.info(f"무결성 검수 캐시 및 진행 상태 파일 보존: {temp_dir}")
 
-        return "\n".join(result_lines)
+        return result_text
 
     async def _translate_chunk_waiting_out_overload(
         self,
@@ -1144,6 +1213,7 @@ class TranslationService:
         *,
         label: str,
         on_retry: Optional[Callable[[int], None]] = None,
+        retry_depth: int = 0,
     ) -> Dict[str, str]:
         """과부하(503)가 풀릴 때까지 청크 번역을 다시 시도한다.
 
@@ -1157,9 +1227,12 @@ class TranslationService:
         무결성·EPUB·표준 번역이 이 방침을 공유한다. 과부하로 청크를 버리면 그 자리가 원문으로
         남는데(EPUB은 챕터 전체가 원본으로 되돌아간다), 과부하는 대개 일시적이라 기다리는 편이
         결과물이 온전하다.
+
+        retry_depth는 이미 한 번 물어본 줄을 다시 물을 때(배치 부분 결과의 누락분) 1로 넘긴다.
         """
         return await self._wait_out_overload(
-            lambda: self._translate_integrity_chunk_with_retry(chunk), label=label, on_retry=on_retry
+            lambda: self._translate_integrity_chunk_with_retry(chunk, retry_depth=retry_depth),
+            label=label, on_retry=on_retry,
         )
 
     async def _wait_out_overload(
@@ -1250,9 +1323,213 @@ class TranslationService:
 
         return results if results else None
 
+    def build_integrity_generation_config_dict(self) -> Dict[str, Any]:
+        """무결성 번역 요청의 생성 파라미터 (실시간·배치 공용). 응답을 줄 ID 배열 스키마로 강제한다."""
+        return {
+            "temperature": self.config.get("temperature", 0.3), # 유저 설정값 우선, 없으면 0.3
+            "top_p": self.config.get("top_p", 0.9),
+            "response_mime_type": "application/json",
+            "response_schema": list[TranslatedUnit],
+            "thinking_level": self.config.get("thinking_level", "high")
+        }
+
+    def build_integrity_request(self, chunk: List[TranslationUnit]) -> TranslationRequest:
+        """
+        무결성 청크 하나의 번역 요청(줄 ID가 붙은 JSON 슬롯, JSON 강제 지시문, PageFold PDF 파트)을 조립한다.
+
+        실시간 무결성 번역과 배치 번역이 같은 프롬프트를 쓰도록 요청 조립을 호출과 분리했다.
+        """
+        chunk_json_str = json.dumps([unit.model_dump() for unit in chunk], ensure_ascii=False)
+
+        # 1. 시스템 지침 준비 (사용자 시스템 지침 + JSON 강제 지침)
+        sys_instr_base = self.config.get("prefill_system_instruction", "") if self.config.get("enable_prefill_translation", False) else ""
+        json_instruction = "You are a professional translator. Respond ONLY with a valid JSON array of objects, each containing 'id' and 'translated_text' keys. Do NOT wrap in markdown code blocks."
+        sys_instr = f"{sys_instr_base}\n\n{json_instruction}".strip()
+
+        # 2. 용어집 및 프롬프트 준비
+        glossary_context_str = "용어집 컨텍스트 없음"
+        integrity_multimodal_parts: Optional[List[genai_types.Part]] = None
+
+        if self.config.get("enable_pagefold", True):
+            glossary_pdf = self._get_pagefold_glossary_pdf_part()
+            if glossary_pdf is not None:
+                integrity_multimodal_parts = [glossary_pdf]
+                glossary_context_str = PAGEFOLD_GLOSSARY_NOTICE
+                sys_instr = f"{sys_instr}\n\n{PDF_NEWLINE_MARKER_DIRECTIVE}".strip()
+
+        # 번역 기억은 JSON이 아닌 원문 줄로 찾는다 (인덱싱된 문단과 해시가 맞아야 한다)
+        plain_text = self.integrity_chunk_text(chunk)
+        glossary_override: Optional[str] = glossary_context_str if integrity_multimodal_parts else None
+
+        dynamic_context = self._dynamic_glossary_context(chunk_json_str, plain_text, bool(integrity_multimodal_parts))
+        if dynamic_context is not None:
+            glossary_context_str = dynamic_context
+            glossary_override = glossary_context_str
+
+        memory_block = self._translation_memory_block(plain_text)
+        replacements = {
+            "{{slot}}": chunk_json_str,
+            "{{glossary_context}}": glossary_context_str,
+            "{{translation_memory}}": memory_block,
+        }
+
+        api_prompt_for_gemini_client: List[genai_types.Content] = []
+
+        integrity_prompt_suffix = "\n\nTranslate each item in the following JSON array. Keep the 'id' exactly as given. Ensure any double quotes inside translated_text are properly escaped (\\\") or use Korean quotation marks (「...」, '...'). Return ONLY a valid JSON array."
+
+        if self.config.get("enable_prefill_translation", False):
+            prefill_cached_history_raw = self.config.get("prefill_cached_history", [])
+            base_history: List[genai_types.Content] = []
+
+            if isinstance(prefill_cached_history_raw, list):
+                for item in prefill_cached_history_raw:
+                    if isinstance(item, dict) and "role" in item and "parts" in item:
+                        sdk_parts = [genai_types.Part.from_text(text=p) for p in item.get("parts", []) if isinstance(p, str)]
+                        if sdk_parts:
+                            base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
+
+            injected_history, replaced_keys = _inject_slots_into_history(base_history, replacements)
+
+            if "{{slot}}" in replaced_keys:
+                api_prompt_for_gemini_client = injected_history
+                # Jailbreak 주입 모드일 경우 마지막에 무결성 지침만 덧붙임
+                if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "model":
+                    api_prompt_for_gemini_client.append(
+                        genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=integrity_prompt_suffix)])
+                    )
+                else:
+                    # 히스토리의 마지막이 user일 경우 (또는 비어있을 경우)
+                    api_prompt_for_gemini_client.append(
+                        genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=integrity_prompt_suffix)])
+                    )
+            else:
+                api_prompt_for_gemini_client = injected_history
+                user_prompt_str = self._construct_prompt(
+                    chunk_json_str,
+                    glossary_context_override=glossary_override,
+                    translation_memory_block=memory_block,
+                    glossary_in_history="{{glossary_context}}" in replaced_keys,
+                )
+                if integrity_prompt_suffix not in user_prompt_str:
+                    user_prompt_str += integrity_prompt_suffix
+                api_prompt_for_gemini_client.append(
+                    genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+                )
+        else:
+            user_prompt_str = self._construct_prompt(
+                chunk_json_str,
+                glossary_context_override=glossary_override,
+                translation_memory_block=memory_block,
+            )
+            if integrity_prompt_suffix not in user_prompt_str:
+                user_prompt_str += integrity_prompt_suffix
+            api_prompt_for_gemini_client = [
+                genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
+            ]
+
+        # 템플릿·프리필 어디에도 {{translation_memory}} 자리가 없으면 시스템 지시문 끝에 붙인다
+        if memory_block and not any(
+            memory_block in (getattr(part, "text", None) or "")
+            for content in api_prompt_for_gemini_client for part in (content.parts or [])
+        ):
+            sys_instr = f"{sys_instr}\n\n{memory_block}"
+
+        return TranslationRequest(
+            contents=api_prompt_for_gemini_client,
+            system_instruction=sys_instr,
+            multimodal_parts=integrity_multimodal_parts,
+        )
+
+    @classmethod
+    def parse_integrity_response(cls, chunk: List[TranslationUnit], raw_response: Any) -> IntegrityParseResult:
+        """
+        무결성 응답을 줄 ID → 번역문으로 해석하고 누락된 줄을 가린다 (실시간·배치 공용).
+
+        실시간 호출은 SDK가 파싱한 객체나 JSON 텍스트를, 배치는 응답 텍스트를 넘긴다.
+        배열을 얻지 못하면 usable=False다. 호출부가 분할 재시도나 실시간 마무리로 넘긴다.
+        """
+        if isinstance(raw_response, str):
+            try:
+                text = raw_response.strip()
+                fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+                if fence_match:
+                    text = fence_match.group(1).strip()
+                elif text.startswith("```"):
+                    text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                    if text.rstrip().endswith("```"):
+                        text = text.rstrip()[:-3]
+
+                parsed = None
+                try:
+                    parsed = json.loads(text.strip(), strict=False)
+                except (json.JSONDecodeError, ValueError):
+                    first_bracket = min((pos for pos in (text.find('['), text.find('{')) if pos != -1), default=-1)
+                    if first_bracket != -1:
+                        last_bracket = max(text.rfind(']'), text.rfind('}'))
+                        if last_bracket > first_bracket:
+                            try:
+                                parsed = json.loads(text[first_bracket:last_bracket+1], strict=False)
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+
+                if isinstance(parsed, (list, dict)):
+                    raw_response = parsed
+                else:
+                    # 3차 시도: LLM의 문법 결함(따옴표 이스케이프 누락, 쉼표 누락 등) 복구
+                    recovered = cls._recover_integrity_units_from_raw_text(text)
+                    if recovered:
+                        logger.info(f"무결성 번역 JSON 파싱 실패 후 정규식 Fallback으로 {len(recovered)}개 단위 복구 성공")
+                        raw_response = recovered
+            except Exception as e:
+                logger.warning(f"무결성 응답 파싱 중 오류: {e}")
+
+        if isinstance(raw_response, dict):
+            for k in ("units", "translations", "items", "data", "result", "translation"):
+                if k in raw_response and isinstance(raw_response[k], list):
+                    raw_response = raw_response[k]
+                    break
+
+        if not raw_response or not isinstance(raw_response, list):
+            return IntegrityParseResult()
+
+        translated_units = []
+        for item in raw_response:
+            try:
+                if isinstance(item, TranslatedUnit):
+                    translated_units.append(item)
+                    continue
+                if isinstance(item, dict):
+                    item = dict(item)
+                    if "id" in item:
+                        item["id"] = str(item["id"])
+                    # 일부 모델이 translated_text 대신 text 또는 translation 키로 번역문을 반환하는 경우 호환성 보장
+                    if "translated_text" not in item:
+                        if "text" in item:
+                            item["translated_text"] = item["text"]
+                        elif "translation" in item:
+                            item["translated_text"] = item["translation"]
+                translated_units.append(TranslatedUnit(**item))
+            except Exception as e:
+                logger.warning(f"무결성 단위 변환 실패 (건너뜀): {item} - {e}")
+                continue
+
+        translated_map = {
+            str(u.id): (restore_response_newlines(u.translated_text) if u.translated_text else "")
+            for u in translated_units
+        }
+        # 빈 번역문은 '받은 것'이 아니라 누락으로 센다. 키 존재만 보면 모델이
+        # {"id": "42", "translated_text": ""}를 돌려줬을 때 재시도가 걸리지 않고, 조립 단계의
+        # translated_map.get(id, 원문)도 키가 있으므로 빈 문자열을 그대로 넣는다. 무결성
+        # 모드에서는 그 줄이 빈 줄이 되고 EPUB에서는 <p></p>만 남는다. 줄 수와 구조는
+        # 그대로라 눈에 띄지 않는다.
+        # 원문이 공백뿐인 항목은 빈 번역문이 정상이므로 검사 대상에서 뺀다.
+        requested_ids = {u.id for u in chunk if u.text.strip()}
+        received_ids = {uid for uid, text in translated_map.items() if text.strip()}
+        return IntegrityParseResult(translated=translated_map, missing_ids=requested_ids - received_ids, usable=True)
+
     async def _translate_integrity_chunk_with_retry(
-        self, 
-        chunk: List[TranslationUnit], 
+        self,
+        chunk: List[TranslationUnit],
         split_depth: int = 0,
         retry_depth: int = 0
     ) -> Dict[str, str]:
@@ -1271,163 +1548,21 @@ class TranslationService:
             raise asyncio.CancelledError("무결성 청크 번역 중단 요청됨")
 
         try:
-            import json
-            chunk_json_str = json.dumps([unit.model_dump() for unit in chunk], ensure_ascii=False)
-
-            # 1. 시스템 지침 준비 (사용자 시스템 지침 + JSON 강제 지침)
-            sys_instr_base = self.config.get("prefill_system_instruction", "") if self.config.get("enable_prefill_translation", False) else ""
-            json_instruction = "You are a professional translator. Respond ONLY with a valid JSON array of objects, each containing 'id' and 'translated_text' keys. Do NOT wrap in markdown code blocks."
-            sys_instr = f"{sys_instr_base}\n\n{json_instruction}".strip()
-
-            # 2. 용어집 및 프롬프트 준비
-            glossary_context_str = "용어집 컨텍스트 없음"
-            integrity_multimodal_parts: Optional[List[genai_types.Part]] = None
-
-            if self.config.get("enable_pagefold", True):
-                glossary_pdf = self._get_pagefold_glossary_pdf_part()
-                if glossary_pdf is not None:
-                    integrity_multimodal_parts = [glossary_pdf]
-                    glossary_context_str = PAGEFOLD_GLOSSARY_NOTICE
-                    sys_instr = f"{sys_instr}\n\n{PDF_NEWLINE_MARKER_DIRECTIVE}".strip()
-
-            # 번역 기억은 JSON이 아닌 원문 줄로 찾는다 (인덱싱된 문단과 해시가 맞아야 한다)
-            plain_text = self.integrity_chunk_text(chunk)
-            glossary_override: Optional[str] = glossary_context_str if integrity_multimodal_parts else None
-
-            dynamic_context = self._dynamic_glossary_context(chunk_json_str, plain_text, bool(integrity_multimodal_parts))
-            if dynamic_context is not None:
-                glossary_context_str = dynamic_context
-                glossary_override = glossary_context_str
-
-            memory_block = self._translation_memory_block(plain_text)
-            replacements = {
-                "{{slot}}": chunk_json_str,
-                "{{glossary_context}}": glossary_context_str,
-                "{{translation_memory}}": memory_block,
-            }
-
-            api_prompt_for_gemini_client: List[genai_types.Content] = []
-            
-            integrity_prompt_suffix = "\n\nTranslate each item in the following JSON array. Keep the 'id' exactly as given. Ensure any double quotes inside translated_text are properly escaped (\\\") or use Korean quotation marks (「...」, '...'). Return ONLY a valid JSON array."
-
-            if self.config.get("enable_prefill_translation", False):
-                prefill_cached_history_raw = self.config.get("prefill_cached_history", [])
-                base_history: List[genai_types.Content] = []
-                
-                if isinstance(prefill_cached_history_raw, list):
-                    for item in prefill_cached_history_raw:
-                        if isinstance(item, dict) and "role" in item and "parts" in item:
-                            sdk_parts = [genai_types.Part.from_text(text=p) for p in item.get("parts", []) if isinstance(p, str)]
-                            if sdk_parts:
-                                base_history.append(genai_types.Content(role=item["role"], parts=sdk_parts))
-
-                injected_history, replaced_keys = _inject_slots_into_history(base_history, replacements)
-
-                if "{{slot}}" in replaced_keys:
-                    api_prompt_for_gemini_client = injected_history
-                    # Jailbreak 주입 모드일 경우 마지막에 무결성 지침만 덧붙임
-                    if api_prompt_for_gemini_client and api_prompt_for_gemini_client[-1].role == "model":
-                        api_prompt_for_gemini_client.append(
-                            genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=integrity_prompt_suffix)])
-                        )
-                    else:
-                        # 히스토리의 마지막이 user일 경우 (또는 비어있을 경우)
-                        api_prompt_for_gemini_client.append(
-                            genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=integrity_prompt_suffix)])
-                        )
-                else:
-                    api_prompt_for_gemini_client = injected_history
-                    user_prompt_str = self._construct_prompt(
-                        chunk_json_str,
-                        glossary_context_override=glossary_override,
-                        translation_memory_block=memory_block,
-                        glossary_in_history="{{glossary_context}}" in replaced_keys,
-                    )
-                    if integrity_prompt_suffix not in user_prompt_str:
-                        user_prompt_str += integrity_prompt_suffix
-                    api_prompt_for_gemini_client.append(
-                        genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
-                    )
-            else:
-                user_prompt_str = self._construct_prompt(
-                    chunk_json_str,
-                    glossary_context_override=glossary_override,
-                    translation_memory_block=memory_block,
-                )
-                if integrity_prompt_suffix not in user_prompt_str:
-                    user_prompt_str += integrity_prompt_suffix
-                api_prompt_for_gemini_client = [
-                    genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_prompt_str)])
-                ]
-
-            # 템플릿·프리필 어디에도 {{translation_memory}} 자리가 없으면 시스템 지시문 끝에 붙인다
-            if memory_block and not any(
-                memory_block in (getattr(part, "text", None) or "")
-                for content in api_prompt_for_gemini_client for part in (content.parts or [])
-            ):
-                sys_instr = f"{sys_instr}\n\n{memory_block}"
+            request = self.build_integrity_request(chunk)
 
             # 3. API 호출 (Structured Output 모드)
-            gen_config = {
-                "temperature": self.config.get("temperature", 0.3), # 유저 설정값 우선, 없으면 0.3
-                "top_p": self.config.get("top_p", 0.9),
-                "response_mime_type": "application/json",
-                "response_schema": list[TranslatedUnit],
-                "thinking_level": self.config.get("thinking_level", "high")
-            }
-
             raw_response = await self.gemini_client.generate_text_async(
-                prompt=api_prompt_for_gemini_client,
+                prompt=request.contents,
                 model_name=self.config.get("model_name", "gemini-2.0-flash"),
-                generation_config_dict=gen_config,
+                generation_config_dict=self.build_integrity_generation_config_dict(),
                 thinking_budget=self.config.get("thinking_budget", None),
-                system_instruction_text=sys_instr,
-                multimodal_parts=integrity_multimodal_parts
+                system_instruction_text=request.system_instruction,
+                multimodal_parts=request.multimodal_parts
             )
 
             # 3. 응답 파싱 및 검증
-            if isinstance(raw_response, str):
-                try:
-                    text = raw_response.strip()
-                    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-                    if fence_match:
-                        text = fence_match.group(1).strip()
-                    elif text.startswith("```"):
-                        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-                        if text.rstrip().endswith("```"):
-                            text = text.rstrip()[:-3]
-                    
-                    parsed = None
-                    try:
-                        parsed = json.loads(text.strip(), strict=False)
-                    except (json.JSONDecodeError, ValueError):
-                        first_bracket = min((pos for pos in (text.find('['), text.find('{')) if pos != -1), default=-1)
-                        if first_bracket != -1:
-                            last_bracket = max(text.rfind(']'), text.rfind('}'))
-                            if last_bracket > first_bracket:
-                                try:
-                                    parsed = json.loads(text[first_bracket:last_bracket+1], strict=False)
-                                except (json.JSONDecodeError, ValueError):
-                                    pass
-
-                    if isinstance(parsed, (list, dict)):
-                        raw_response = parsed
-                    else:
-                        # 3차 시도: LLM의 문법 결함(따옴표 이스케이프 누락, 쉼표 누락 등) 복구
-                        recovered = self._recover_integrity_units_from_raw_text(text)
-                        if recovered:
-                            logger.info(f"무결성 번역 JSON 파싱 실패 후 정규식 Fallback으로 {len(recovered)}개 단위 복구 성공")
-                            raw_response = recovered
-                except Exception as e:
-                    logger.warning(f"무결성 응답 파싱 중 오류: {e}")
-
-            if isinstance(raw_response, dict):
-                for k in ("units", "translations", "items", "data", "result", "translation"):
-                    if k in raw_response and isinstance(raw_response[k], list):
-                        raw_response = raw_response[k]
-                        break
-
-            if not raw_response or not isinstance(raw_response, list):
+            parsed = self.parse_integrity_response(chunk, raw_response)
+            if not parsed.usable:
                 # JSON 파싱 실패 또는 빈 응답 -> Binary Split.
                 # 검열 시 Gemini가 빈 응답이나 깨진 응답을 돌려주기도 하므로 분할로 푼다.
                 # 검열의 다른 표현으로 보고 검열 분할과 같은 스위치에 묶는다.
@@ -1441,40 +1576,8 @@ class TranslationService:
                 return await self._binary_split_integrity_retry(chunk, split_depth, retry_depth)
 
             # 4. 누락 검사 및 Targeted Retry
-            translated_units = []
-            for item in raw_response:
-                try:
-                    if isinstance(item, TranslatedUnit):
-                        translated_units.append(item)
-                        continue
-                    if isinstance(item, dict):
-                        item = dict(item)
-                        if "id" in item:
-                            item["id"] = str(item["id"])
-                        # 일부 모델이 translated_text 대신 text 또는 translation 키로 번역문을 반환하는 경우 호환성 보장
-                        if "translated_text" not in item:
-                            if "text" in item:
-                                item["translated_text"] = item["text"]
-                            elif "translation" in item:
-                                item["translated_text"] = item["translation"]
-                    translated_units.append(TranslatedUnit(**item))
-                except Exception as e:
-                    logger.warning(f"무결성 단위 변환 실패 (건너뜀): {item} - {e}")
-                    continue
-            
-            translated_map = {
-                str(u.id): (restore_response_newlines(u.translated_text) if u.translated_text else "")
-                for u in translated_units
-            }
-            # 빈 번역문은 '받은 것'이 아니라 누락으로 센다. 키 존재만 보면 모델이
-            # {"id": "42", "translated_text": ""}를 돌려줬을 때 재시도가 걸리지 않고, 조립 단계의
-            # translated_map.get(id, 원문)도 키가 있으므로 빈 문자열을 그대로 넣는다. 무결성
-            # 모드에서는 그 줄이 빈 줄이 되고 EPUB에서는 <p></p>만 남는다. 줄 수와 구조는
-            # 그대로라 눈에 띄지 않는다.
-            # 원문이 공백뿐인 항목은 빈 번역문이 정상이므로 검사 대상에서 뺀다.
-            requested_ids = {u.id for u in chunk if u.text.strip()}
-            received_ids = {uid for uid, text in translated_map.items() if text.strip()}
-            missing_ids = requested_ids - received_ids
+            translated_map = parsed.translated
+            missing_ids = parsed.missing_ids
 
             max_targeted = self.config.get("max_integrity_targeted_retry_depth", 1)
             if missing_ids and retry_depth < max_targeted:

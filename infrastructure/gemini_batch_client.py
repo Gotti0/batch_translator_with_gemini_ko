@@ -109,6 +109,19 @@ def key_fingerprint(api_key: str) -> str:
     return "sha256:" + hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
 
 
+def to_serializable_response_schema(schema: Any) -> Any:
+    """응답 스키마를 요청에 담을 수 있는 `Schema` 객체로 바꾼다.
+
+    실시간 호출은 SDK가 보내는 순간 파이썬 타입(`list[TranslatedUnit]`)을 `Schema`로 바꾸지만, 배치는
+    요청을 먼저 만들어 크기를 재고 묶는다. 파이썬 타입은 그 직렬화에서 실패하므로 미리 바꿔 둔다.
+    변환은 SDK가 쓰는 함수 그대로다. 클라이언트 인자는 개발자 API에서 쓸 수 없는 속성 검사에만 쓰인다.
+    """
+    if schema is None or isinstance(schema, genai_types.Schema):
+        return schema
+    from google.genai import _transformers
+    return _transformers.t_schema(None, schema)
+
+
 def _parse_response(key: Optional[str], response: Any) -> BatchItemResult:
     """GenerateContentResponse에서 번역 텍스트를 꺼낸다. 사고(thought) 파트는 제외한다."""
     finish_reason = None

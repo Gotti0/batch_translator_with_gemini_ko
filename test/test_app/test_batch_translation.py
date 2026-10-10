@@ -402,3 +402,236 @@ async def test_batch_api_key_is_used_for_submit_and_lookup(workspace):
     server.complete(server.only_job(), _translate_all)
     summary = await app.refresh_batch_async(workspace["input"], workspace["output"])
     assert summary.complete
+# ---------------------------------------------------------------------------
+# 무결성 방식 배치 (batch_pipeline = "integrity")
+# ---------------------------------------------------------------------------
+
+from app.batch_translation_service import PARTIAL_PREFIX  # noqa: E402
+
+LINES = ["一行目", "二行目", "", "四行目", "五行目", "六行目", "七行目"]
+
+
+@pytest.fixture
+def integrity_workspace(workspace):
+    workspace["input"].write_text("\n".join(LINES), encoding="utf-8")
+    cfg = json.loads(workspace["config"].read_text(encoding="utf-8"))
+    cfg.update({"batch_pipeline": "integrity", "chunk_size": 6000, "integrity_max_items": 3})
+    workspace["config"].write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    return workspace
+
+
+def _units(app, workspace):
+    return app.translation_service.split_integrity_chunks(workspace["input"].read_text(encoding="utf-8"))
+
+
+def _json_reply(idx, units, skip=(), prefix="T"):
+    """무결성 청크 응답 텍스트. skip에 든 줄 ID는 빼서 누락을 흉내 낸다."""
+    items = [{"id": u.id, "translated_text": f"{prefix}{u.id}"} for u in units[idx] if u.text.strip() and u.id not in skip]
+    return BatchItemResult(key=chunk_key(idx), text=json.dumps(items, ensure_ascii=False))
+
+
+def _requested_ids(prompt_contents):
+    text = prompt_contents[-1].parts[0].text
+    return [str(item["id"]) for item in json.loads(text[text.index("["): text.rindex("]") + 1])]
+
+
+@pytest.mark.asyncio
+async def test_integrity_batch_partial_and_blocked_finish_realtime(integrity_workspace):
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app = _make_app(ws, server)
+    units = _units(app, ws)
+    assert [[u.id for u in c] for c in units] == [["0", "1", "2"], ["3", "4", "5"], ["6"]]
+
+    # 1. 제출: 줄 ID JSON 요청과 응답 스키마가 실린다
+    await app.start_translation_async(ws["input"], ws["output"])
+    name = server.only_job()
+    requests = server.jobs[name]["requests"]
+    assert len(requests) == 3
+    assert _requested_ids(requests[0].contents) == ["0", "1", "2"]
+    assert requests[0].config.response_mime_type == "application/json"
+    assert isinstance(requests[0].config.response_schema, t.Schema)
+    assert requests[0].config.response_schema.type == t.Type.ARRAY
+    md = load_metadata(ws["input"])
+    assert md["batch"]["pipeline"] == "integrity" and md["pipeline_type"] == "integrity"
+    assert Path(md["batch"]["output_path"]) == ws["output"]
+
+    # 2. 수거: 청크 0 성공, 청크 1은 줄 4 누락, 청크 2는 검열
+    def responder(idx, req):
+        if idx == 1:
+            return _json_reply(idx, units, skip={"4"})
+        if idx == 2:
+            return BatchItemResult(key=chunk_key(idx), blocked=True, finish_reason="PROHIBITED_CONTENT", error="응답 차단")
+        return _json_reply(idx, units)
+
+    server.complete(name, responder)
+    summary = await app.refresh_batch_async(ws["input"], ws["output"])
+    assert summary.pipeline == "integrity"
+    assert summary.remaining == [1, 2] and summary.partial == 1 and summary.blocked == 1
+    temp_dir = app.translation_service.integrity_temp_dir_for(ws["output"])
+    assert json.loads((temp_dir / "chunk_0.json").read_text(encoding="utf-8")) == {"0": "T0", "1": "T1"}
+    assert json.loads((temp_dir / "partial_1.json").read_text(encoding="utf-8")) == {"3": "T3", "5": "T5"}
+    assert load_metadata(ws["input"])["failed_chunks"]["1"]["error"].startswith(PARTIAL_PREFIX)
+    assert not ws["output"].exists()
+
+    # 3. 실시간으로 마무리: 무결성 모드가 누락 줄 4와 검열 청크 2만 묻는다
+    assert app.batch_finish_mode(ws["input"], ws["output"]) == "integrity"
+    asked = []
+
+    async def fake_generate(**kwargs):
+        ids = _requested_ids(kwargs["prompt"])
+        asked.append(ids)
+        return [{"id": i, "translated_text": f"R{i}"} for i in ids]
+
+    app.gemini_client.generate_text_async = AsyncMock(side_effect=fake_generate)
+    await app.start_translation_async(ws["input"], ws["output"], translation_mode_override="integrity")
+    assert asked == [["4"], ["6"]]
+    assert ws["output"].read_text(encoding="utf-8").split("\n") == ["T0", "T1", "", "T3", "R4", "T5", "R6"]
+    assert not (temp_dir / "partial_1.json").exists()
+    assert app.get_batch_summary(ws["input"]).complete
+
+
+@pytest.mark.asyncio
+async def test_integrity_batch_all_success_writes_output_and_uses_integrity_review(integrity_workspace):
+    from domain.review_providers.factory import get_review_provider
+    from domain.review_providers.integrity_provider import IntegrityReviewProvider
+
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app = _make_app(ws, server)
+    units = _units(app, ws)
+    await app.start_translation_async(ws["input"], ws["output"])
+    server.complete(server.only_job(), lambda idx, req: _json_reply(idx, units))
+
+    summary = await app.refresh_batch_async(ws["input"], ws["output"])
+    assert summary.complete
+    assert ws["output"].read_text(encoding="utf-8").split("\n") == ["T0", "T1", "", "T3", "T4", "T5", "T6"]
+    assert load_metadata(ws["input"])["status"] == "completed"
+    assert isinstance(get_review_provider(str(ws["input"]), app), IntegrityReviewProvider)
+
+
+@pytest.mark.asyncio
+async def test_integrity_batch_keep_keeps_line_positions(integrity_workspace):
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app = _make_app(ws, server)
+    units = _units(app, ws)
+    await app.start_translation_async(ws["input"], ws["output"])
+    server.complete(server.only_job(), lambda idx, req: (
+        _json_reply(idx, units, skip={"4"}) if idx == 1
+        else BatchItemResult(key=chunk_key(idx), text="not json at all") if idx == 2
+        else _json_reply(idx, units)
+    ))
+    summary = await app.refresh_batch_async(ws["input"], ws["output"])
+    assert summary.remaining == [1, 2] and summary.errored == 1
+
+    filled = await app.save_batch_with_failures_async(ws["input"], ws["output"])
+    assert filled == 2
+    # 받은 줄은 쓰고, 빠진 줄과 실패 청크는 원문 줄로 둔다. 실패 표시를 끼워 줄 위치를 바꾸지 않는다.
+    assert ws["output"].read_text(encoding="utf-8").split("\n") == ["T0", "T1", "", "T3", "五行目", "T5", "七行目"]
+
+
+@pytest.mark.asyncio
+async def test_integrity_missing_lines_complete_with_source_when_targeted_retry_off(integrity_workspace):
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app = _make_app(ws, server)
+    app.config["max_integrity_targeted_retry_depth"] = 0
+    units = _units(app, ws)
+    await app.start_translation_async(ws["input"], ws["output"])
+    server.complete(server.only_job(), lambda idx, req: _json_reply(idx, units, skip={"4"}))
+
+    summary = await app.refresh_batch_async(ws["input"], ws["output"])
+    assert summary.complete
+    assert ws["output"].read_text(encoding="utf-8").split("\n") == ["T0", "T1", "", "T3", "五行目", "T5", "T6"]
+
+
+@pytest.mark.asyncio
+async def test_switching_pipeline_starts_new_batch_and_resubmit_keeps_session_pipeline(integrity_workspace):
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app = _make_app(ws, server)
+    units = _units(app, ws)
+
+    # 일반 방식으로 제출·수거 (청크 하나 실패)
+    app.config["batch_pipeline"] = "standard"
+    await app.start_translation_async(ws["input"], ws["output"])
+    first = server.only_job()
+    server.complete(first, lambda idx, req: _translate_all(idx, req) if idx else BatchItemResult(key=chunk_key(idx), error="x"))
+    summary = await app.refresh_batch_async(ws["input"], ws["output"])
+    assert summary.pipeline == "standard" and summary.remaining
+
+    # 방식을 무결성으로 바꿔 시작 → 이전 작업 목록을 버리고 새 배치(1라운드)
+    app.config["batch_pipeline"] = "integrity"
+    await app.start_translation_async(ws["input"], ws["output"])
+    second = [n for n in server.jobs if n != first][0]
+    batch = load_metadata(ws["input"])["batch"]
+    assert batch["pipeline"] == "integrity" and batch["round"] == 1
+    assert [j["name"] for j in batch["jobs"]] == [second]
+    assert _requested_ids(server.jobs[second]["requests"][0].contents) == ["0", "1", "2"]
+
+    # 재제출은 설정이 아니라 지난 배치의 방식을 잇는다
+    server.complete(second, lambda idx, req: _json_reply(idx, units) if idx else BatchItemResult(key=chunk_key(idx), error="x"))
+    await app.refresh_batch_async(ws["input"], ws["output"])
+    app.config["batch_pipeline"] = "standard"
+    summary = await app.resubmit_batch_async(ws["input"])
+    assert summary.pipeline == "integrity" and summary.round == 2
+    third = [n for n in server.jobs if n not in (first, second)][0]
+    assert _requested_ids(server.jobs[third]["requests"][0].contents) == ["0", "1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_integrity_batch_requires_submitted_output_path(integrity_workspace, tmp_path):
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app = _make_app(ws, server)
+    await app.start_translation_async(ws["input"], ws["output"])
+    other = tmp_path / "elsewhere.txt"
+
+    with pytest.raises(BtgServiceException) as ctx:
+        await app.refresh_batch_async(ws["input"], other)
+    assert "출력 경로" in str(ctx.value)
+
+    # 진행 중에는 실시간 마무리도 막는다 (같은 청크를 두 번 과금)
+    with pytest.raises(BtgServiceException) as ctx:
+        app.batch_finish_mode(ws["input"], ws["output"])
+    assert "진행 중" in str(ctx.value)
+
+    await app.cancel_batch_async(ws["input"])
+    with pytest.raises(BtgServiceException):
+        app.batch_finish_mode(ws["input"], other)
+    assert app.batch_finish_mode(ws["input"], ws["output"]) == "integrity"
+
+
+@pytest.mark.asyncio
+async def test_layout_change_after_submit_blocks_collection(integrity_workspace):
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app = _make_app(ws, server)
+    units = _units(app, ws)
+    await app.start_translation_async(ws["input"], ws["output"])
+    server.complete(server.only_job(), lambda idx, req: _json_reply(idx, units))
+
+    app.config["integrity_max_items"] = 2
+    with pytest.raises(BtgServiceException) as ctx:
+        await app.refresh_batch_async(ws["input"], ws["output"])
+    assert "되돌린" in str(ctx.value)
+
+    app.config["integrity_max_items"] = 3
+    assert (await app.refresh_batch_async(ws["input"], ws["output"])).complete
+
+
+def test_integrity_request_converts_with_sdk(integrity_workspace):
+    """배치 요청이 SDK 변환을 거쳐 responseSchema(ARRAY)로 나가는지 (실제 전송 직전 단계)"""
+    from google.genai import _api_client, batches
+
+    ws = integrity_workspace
+    app = _make_app(ws, FakeBatchServer())
+    units = _units(app, ws)
+    req = app._get_batch_service()._build_inlined_request(0, units[0], {}, "integrity")
+    body = batches._InlinedRequest_to_mldev(_api_client.BaseApiClient(api_key="dummy"), req)
+    config = body["request"]["generationConfig"]
+    assert config["responseMimeType"] == "application/json"
+    schema = config["responseSchema"]
+    assert schema.type == t.Type.ARRAY and set(schema.items.properties) == {"id", "translated_text"}
+    assert body["metadata"] == {"key": "chunk-00000"}

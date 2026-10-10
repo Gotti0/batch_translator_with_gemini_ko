@@ -190,3 +190,35 @@ class TestMemoryGardenUI(TestSettingsTabBatch):
         self.assertEqual(dlg.table.item(0, 0).text(), "リリア (リリちゃん)")
         self.assertEqual(dlg.table.item(0, 3).text(), "청크 5")
         dlg.deleteLater()
+
+
+class TestBatchPipelineSelector(TestSettingsTabBatch):
+    def test_pipeline_saved_and_loaded(self):
+        self.assertEqual(self.tab.batch_pipeline_combo.currentData(), "standard")
+        self.tab.batch_pipeline_combo.setCurrentIndex(self.tab.batch_pipeline_combo.findData("integrity"))
+        self.tab._save_config_to_service()
+        self.assertEqual(self.svc.save_app_config.call_args[0][0]["batch_pipeline"], "integrity")
+
+        self.svc.config = {"llm_provider": "gemini", "batch_pipeline": "standard"}
+        self.tab._load_config()
+        self.assertEqual(self.tab.batch_pipeline_combo.currentData(), "standard")
+
+    def test_selector_locked_while_batch_active_and_label_shows_session_pipeline(self):
+        summary = _summary(active=True, remaining=[0, 1, 2])
+        summary.pipeline = "integrity"
+        self.svc.get_batch_summary.return_value = summary
+        self._select_batch()
+        self.assertFalse(self.tab.batch_pipeline_combo.isEnabled())
+        self.assertIn("번역 방식: 무결성", self.tab.batch_status_label.text())
+
+    def test_switch_hint_when_selected_pipeline_differs_from_last_batch(self):
+        summary = _summary(active=False, remaining=[1], collected_result=True)
+        summary.jobs[0]["partial"] = 1
+        self.svc.get_batch_summary.return_value = summary
+        self._select_batch()
+        self.assertTrue(self.tab.batch_pipeline_combo.isEnabled())
+        self.assertNotIn("새 배치", self.tab.batch_status_label.text())
+        self.assertEqual(self.tab.batch_jobs_table.item(0, 4).text(), "성공 2 · 검열 1 · 오류 0 · 누락 1")
+
+        self.tab.batch_pipeline_combo.setCurrentIndex(self.tab.batch_pipeline_combo.findData("integrity"))
+        self.assertIn("무결성 (줄 단위) 방식으로 새 배치", self.tab.batch_status_label.text())

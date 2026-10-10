@@ -32,7 +32,8 @@ Google Gemini API를 비롯해 로컬 CLI 구독 세션(Claude Code, OpenAI Code
   - PageFold 용어집 PDF를 1회 업로드 후 재참조하여 전송 용량 및 토큰 최적화
   - 메타데이터 기반 상태 추적 및 60초 주기 자동 폴링, 안전한 이어하기
   - **배치 전용 유료 API 키 (`batch_api_key`) 지원**: 무료 티어 키 사용 불가 제약에 대응하여 로테이션용 무료 키와 분리 지정 가능
-  - 미완료/실패/검열 청크는 **"실시간으로 마무리"**를 통해 표준 모드 이어하기 및 검열 자동 분할 재시도로 즉시 전환
+  - **번역 방식 선택 (`batch_pipeline`)**: 일반(표준 모드와 같은 요청) 또는 무결성(줄 ID JSON + 응답 스키마 강제)
+  - 미완료/실패/검열 청크는 **"실시간으로 마무리"**를 통해 제출 때와 같은 방식의 실시간 이어하기(표준/무결성) 및 검열 자동 분할 재시도로 즉시 전환
 - **무결성 번역 모드 (Integrity Mode)**:
   - JSON 구조화 출력을 통해 문단/줄 단위 번역 무결성을 100% 보장 (누락 및 환각 원천 차단)
   - 번역 장기기억과 완벽 결합되어 줄 번호 기반의 정밀한 문단 짝짓기 및 임시 결과 복구 지원
@@ -331,6 +332,9 @@ python main_cli.py input.txt --batch-status
 
 # 3. 미완료 청크 실시간 마무리
 python main_cli.py input.txt --batch-finish realtime
+
+# 무결성(줄 단위) 방식으로 제출
+python main_cli.py input.txt --batch-submit --batch-pipeline integrity
 ```
 
 번역 장기기억 (Voyage 임베딩) 활성화:
@@ -347,8 +351,13 @@ python main_cli.py input.txt -o output.txt --translation-memory --voyage-api-key
 - **배치 전용 유료 키 (`batch_api_key`)**:
   - Gemini Batch API는 무료 티어 API 키로는 사용할 수 없습니다.
   - 설정 탭의 배치 작업 패널에서 **"배치용 API 키 (유료)"**를 입력해 두면, 일반 번역에 무료 키 풀을 순환 사용하더라도 배치 제출 및 조회는 지정된 유료 키로 안전하게 수행됩니다.
+- **번역 방식 (`batch_pipeline`)**: 배치 작업 패널의 **"번역 방식"**에서 고릅니다.
+  - **일반**: 표준 모드와 같은 요청을 보내고, 결과는 표준 모드의 청크 백업 파일에 모입니다.
+  - **무결성 (줄 단위)**: 무결성 모드와 같은 줄 ID JSON 요청을 응답 스키마를 강제해 보냅니다. 결과는 출력 파일 옆 `*_integrity_temp` 폴더에 모이며, 검토 탭도 무결성 화면으로 열립니다. 일부 줄만 돌아온 청크는 받은 줄을 보관하고, 마무리할 때 빠진 줄만 다시 묻습니다.
+  - 진행 중인 배치는 제출 당시 방식으로 수거·마무리됩니다. 다른 방식을 골라 제출하면 새 배치로 시작합니다. 무결성 배치는 제출 때의 출력 경로를 기준으로 결과를 모으므로, 수거·마무리 때 출력 경로를 바꾸면 거부합니다.
 - **실시간으로 마무리**:
-  - 검열이나 일시적 오류로 배치에서 완료되지 못한 청크가 있다면, [실시간으로 마무리] 버튼을 눌러 표준 모드 이어하기와 검열 자동 분할 재시도로 즉시 번역을 완성할 수 있습니다.
+  - 검열이나 일시적 오류로 배치에서 완료되지 못한 청크가 있다면, [실시간으로 마무리] 버튼을 눌러 제출 때와 같은 방식(표준/무결성)의 이어하기와 검열 자동 분할 재시도로 즉시 번역을 완성할 수 있습니다.
+- **그대로 저장**: 일반 방식은 미완료 청크를 실패 표시와 원문으로, 무결성 방식은 줄 위치를 지키도록 원문 줄로 채웁니다.
 
 ### 2. 로컬 CLI 무과금 런타임 (Claude, Codex, Antigravity)
 - **비용 $0 번역**: 종량제 API 키를 발급받지 않고도 로컬 PC에 로그인된 세션을 그대로 활용합니다.
@@ -387,6 +396,7 @@ usage: main_cli.py [-h] [-o OUTPUT_FILE] [-c CONFIG]
                    [--novel-language NOVEL_LANGUAGE]
                    [--enable-dynamic-glossary-injection]
                    [--batch-submit | --batch-status | --batch-finish {realtime,resubmit,keep}]
+                   [--batch-pipeline {standard,integrity}]
                    [--translation-memory] [--voyage-api-key VOYAGE_API_KEY]
                    [--rpm RPM]
                    input_files [input_files ...]
@@ -402,6 +412,7 @@ usage: main_cli.py [-h] [-o OUTPUT_FILE] [-c CONFIG]
 | `--batch-submit` | 미번역 청크를 Gemini Batch API로 제출 (50% 할인) |
 | `--batch-status` | 배치 작업 상태를 조회하고 완료된 결과 수거 |
 | `--batch-finish` | 배치 수거 후 미완료 청크 처리 (`realtime`: 실시간 마무리, `resubmit`: 재제출, `keep`: 실패 표시 저장) |
+| `--batch-pipeline` | 배치로 보낼 번역 방식 (`standard`: 일반, `integrity`: 무결성). 진행 중인 배치는 제출 당시 방식을 따름 |
 | `--translation-memory` | Voyage 임베딩 기반 번역 장기기억 및 연상 그래프 활성화 |
 | `--voyage-api-key` | Voyage AI API 키 오버라이드 |
 | `--rpm` | 분당 API 요청 수 제한 설정 (0은 제한 없음) |

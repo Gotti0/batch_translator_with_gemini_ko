@@ -171,12 +171,16 @@ def run_batch_cli_action(app_service: AppService, args: argparse.Namespace, inpu
         elif not summary.active and summary.remaining:
             Tqdm.write("남은 청크는 --batch-finish realtime|resubmit|keep 으로 처리하세요.", file=sys.stdout)
     elif args.batch_finish == "realtime":
-        asyncio.run(app_service.start_translation_async(input_file, output_file, translation_mode_override="standard", **common))
+        # 마지막 배치와 같은 방식(일반/무결성)의 실시간 이어하기가 미완료 청크만 번역한다
+        mode = app_service.batch_finish_mode(input_file, output_file)
+        asyncio.run(app_service.start_translation_async(input_file, output_file, translation_mode_override=mode, **common))
     elif args.batch_finish == "resubmit":
         asyncio.run(app_service.resubmit_batch_async(input_file, cli_translation_status_callback))
     elif args.batch_finish == "keep":
+        summary = app_service.get_batch_summary(input_file)
+        filler = "원문 줄" if summary is not None and summary.pipeline == "integrity" else "실패 표시와 원문"
         count = asyncio.run(app_service.save_batch_with_failures_async(input_file, output_file, cli_translation_status_callback))
-        Tqdm.write(f"최종 파일: {output_file} (미완료 청크 {count}개는 실패 표시와 원문)", file=sys.stdout)
+        Tqdm.write(f"최종 파일: {output_file} (미완료 청크 {count}개는 {filler})", file=sys.stdout)
 
 
 def parse_arguments():
@@ -225,6 +229,9 @@ def parse_arguments():
                               help="배치 작업 상태를 조회하고 끝난 결과를 수거합니다. 모두 끝났으면 최종 파일을 씁니다 (예약 작업용).")
     batch_action.add_argument("--batch-finish", choices=["realtime", "resubmit", "keep"],
                               help="수거 후 남은 청크 처리: realtime=실시간 번역, resubmit=배치 재제출, keep=실패 표시로 저장")
+    batch_group.add_argument("--batch-pipeline", choices=["standard", "integrity"], default=None,
+                             help="배치로 보낼 번역 방식: standard=일반, integrity=무결성(줄 단위). "
+                                  "config의 batch_pipeline을 덮어씁니다. 진행 중인 배치는 제출 당시 방식을 따릅니다.")
 
     memory_group = parser.add_argument_group('번역 장기기억 (Voyage 임베딩)')
     memory_group.add_argument("--translation-memory", action="store_true",
@@ -315,6 +322,10 @@ def main():
             config_changed_by_cli = True
         if args.max_glossary_chars_injection is not None: # Arg name changed
             cli_overrides["max_glossary_chars_per_chunk_injection"] = args.max_glossary_chars_injection # Key changed
+            config_changed_by_cli = True
+
+        if args.batch_pipeline:
+            cli_overrides["batch_pipeline"] = args.batch_pipeline
             config_changed_by_cli = True
 
         # 번역 장기기억

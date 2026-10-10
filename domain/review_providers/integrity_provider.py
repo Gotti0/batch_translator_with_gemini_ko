@@ -180,6 +180,8 @@ class IntegrityReviewProvider(BaseReviewProvider):
         _, _, temp_dir = self._resolve_paths(file_path)
         for idx in chunk_indices:
             (temp_dir / f"chunk_{idx}.json").unlink(missing_ok=True)
+            # 배치가 남긴 부분 결과도 지운다. 남기면 재번역이 그 줄들을 번역된 것으로 이어받는다.
+            (temp_dir / f"partial_{idx}.json").unlink(missing_ok=True)
         super().reset_chunks(file_path, metadata, chunk_indices)
 
     def generate_final_file(self, file_path: str, current_all_chunks: Dict[int, str]) -> str:
