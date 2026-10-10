@@ -36,7 +36,7 @@ try:
     from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from ..utils.post_processing_service import PostProcessingService
     from ..utils.quality_check_service import QualityCheckService
-    from app.batch_translation_service import BatchTranslationService, BatchSummary
+    from app.batch_translation_service import BatchTranslationService, BatchSummary, PIPELINE_INTEGRITY
     from infrastructure.embedding_client import create_embedding_client
     from domain.translation_memory import TranslationMemoryStore
     from domain.memory_extractor import MemoryExtractor, find_excerpt
@@ -63,7 +63,7 @@ except ImportError:
     from utils.quality_check_service import QualityCheckService
     from infrastructure.llm_client_factory import LLMClientFactory
     from infrastructure.base_client import BaseLLMClient
-    from app.batch_translation_service import BatchTranslationService, BatchSummary
+    from app.batch_translation_service import BatchTranslationService, BatchSummary, PIPELINE_INTEGRITY
     from infrastructure.embedding_client import create_embedding_client
     from domain.translation_memory import TranslationMemoryStore
     from domain.memory_extractor import MemoryExtractor, find_excerpt
@@ -1283,21 +1283,21 @@ class AppService:
         self._schedule_memory_extraction(chunk_index, "\n".join(source_lines), "\n".join(translated_lines))
 
     def _restore_integrity_memory(self, store: TranslationMemoryStore, chunks: List[List[Any]], temp_dir: Path) -> None:
-        """무결성 임시 폴더(chunk_<i>.json)에 남은 결과를 기억에 반영한다 (이어하기)."""
+        """무결성 임시 폴더(chunk_<i>.json)에 남은 결과를 기억에 반영한다 (이어하기).
+
+        이어하기와 같은 판정(이 청크의 줄을 모두 담은 파일만 완료)을 쓴다. 청크 경계가 바뀐 옛 파일을
+        같은 번호로 읽으면 다른 줄의 번역을 엉뚱한 원문과 짝짓게 된다.
+        """
         if not temp_dir.exists():
             return
-        for f in sorted(temp_dir.glob("chunk_*.json")):
-            try:
-                idx = int(f.stem.split("_")[1])
-                results = json.loads(f.read_text(encoding="utf-8"))
-            except (IndexError, ValueError, OSError) as e:
-                logger.debug(f"무결성 임시 결과를 건너뜁니다 ({f.name}): {e}")
+        for idx, chunk in enumerate(chunks):
+            results = TranslationService.load_integrity_chunk_result(temp_dir, idx, chunk)
+            if results is None:
                 continue
-            if 0 <= idx < len(chunks) and isinstance(results, dict):
-                try:
-                    store.record_aligned_translation(idx, *self._integrity_lines(chunks[idx], results), save=False)
-                except Exception as e:
-                    logger.warning(f"무결성 청크 {idx} 결과를 기억에 반영하지 못했습니다: {e}")
+            try:
+                store.record_aligned_translation(idx, *self._integrity_lines(chunk, results), save=False)
+            except Exception as e:
+                logger.warning(f"무결성 청크 {idx} 결과를 기억에 반영하지 못했습니다: {e}")
 
     def _schedule_memory_extraction(self, chunk_index: int, source_text: str, translated_text: str) -> None:
         if self._memory_extractor is not None:
@@ -1407,6 +1407,7 @@ class AppService:
             batch_client_factory=getattr(self, "batch_client_factory", None),
         )
         service.on_chunk_translated = self._record_translation_memory
+        service.on_integrity_chunk_translated = self._record_integrity_memory
         reason = service.check_available()
         if reason:
             raise BtgServiceException(reason)
@@ -1430,6 +1431,37 @@ class AppService:
         except BtgServiceException:
             return None
 
+    @staticmethod
+    def _check_batch_output_path(service: BatchTranslationService, input_path: Path, output_path: Path) -> None:
+        """무결성 배치는 제출 때의 출력 경로 옆 임시 폴더에 결과를 모은다. 다른 경로로 수거·마무리하면
+        실시간 이어하기가 빈 폴더를 보고 전부 다시 번역하므로 막는다."""
+        stored = service.stored_output_path(input_path)
+        if stored is not None and stored.resolve() != Path(output_path).resolve():
+            raise BtgServiceException(
+                f"이 무결성 배치는 출력 파일 '{stored}' 기준으로 결과를 모으고 있습니다. 출력 경로를 이 파일로 맞추세요."
+            )
+
+    async def _prepare_batch_memory_async(
+        self,
+        service: BatchTranslationService,
+        input_path: Path,
+        pipeline: str,
+        status_callback: Optional[Callable[[str], None]] = None,
+        output_path: Optional[Path] = None,
+    ) -> None:
+        """배치 방식의 청크 경계로 번역 기억을 준비한다 (실시간 같은 방식과 같은 경계·복원 규칙)."""
+        if pipeline == PIPELINE_INTEGRITY:
+            units = service.load_units(input_path)
+            temp_dir = service.integrity_temp_dir(input_path, output_path)
+            await self._prepare_translation_memory_async(
+                input_path,
+                [self.translation_service.integrity_chunk_text(c) for c in units],
+                status_callback,
+                restore=lambda store: self._restore_integrity_memory(store, units, temp_dir),
+            )
+        else:
+            await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
+
     def _emit_batch_progress(self, summary: BatchSummary, progress_callback, status_callback) -> None:
         if status_callback:
             status_callback(summary.describe())
@@ -1442,13 +1474,31 @@ class AppService:
                 current_status_message=summary.describe(),
             ))
 
+    async def _write_integrity_batch_output(self, service: BatchTranslationService, input_path: Path,
+                                            output_path: Path, status_callback, include_partial: bool = False) -> None:
+        """무결성 배치의 결과를 줄 순서로 이어 최종 파일을 쓰고 메타데이터를 완료로 표시한다."""
+        await self._drain_memory_tasks()
+        text = service.assemble_integrity_output(input_path, include_partial=include_partial)
+        await asyncio.to_thread(write_text_file, output_path, text)
+        metadata = load_metadata(input_path) or {}
+        metadata["status"] = "completed"
+        metadata["last_updated"] = time.time()
+        save_metadata(input_path, metadata)
+        logger.info(f"✅ 무결성 배치 결과 저장: {output_path}")
+        if status_callback:
+            status_callback("완료!")
+
     async def _finalize_batch_if_complete(self, service: BatchTranslationService, summary: BatchSummary,
                                           input_path: Path, output_path: Path, status_callback) -> None:
-        if summary.complete and summary.total_chunks > 0:
-            await self._merge_and_finalize_async(
-                service.chunked_output_path(input_path), output_path,
-                get_metadata_file_path(input_path), status_callback,
-            )
+        if not (summary.complete and summary.total_chunks > 0):
+            return
+        if summary.pipeline == PIPELINE_INTEGRITY:
+            await self._write_integrity_batch_output(service, input_path, output_path, status_callback)
+            return
+        await self._merge_and_finalize_async(
+            service.chunked_output_path(input_path), output_path,
+            get_metadata_file_path(input_path), status_callback,
+        )
 
     async def _do_batch_translation_async(
         self,
@@ -1461,24 +1511,32 @@ class AppService:
         시작 버튼의 배치 동작.
 
         - 진행 중인 작업이 있으면 상태를 조회하고 끝난 결과를 수거한다.
-        - 아직 한 번도 제출하지 않은 청크가 있으면 제출한다.
-        - 모든 청크가 채워지면 표준 모드와 같은 병합·후처리로 최종 파일을 쓴다.
-        미완료(검열·오류) 청크의 재처리는 사용자가 고른다 (실시간 마무리 / 재제출 / 그대로 저장).
+        - 설정한 번역 방식(일반/무결성)이 마지막 배치와 다르면 그 방식으로 새 배치를 제출한다.
+        - 같은 방식이면 아직 한 번도 제출하지 않은 청크만 제출한다.
+        - 모든 청크가 채워지면 그 방식의 실시간 모드와 같은 규칙으로 최종 파일을 쓴다.
+        미완료(검열·오류·누락) 청크의 재처리는 사용자가 고른다 (실시간 마무리 / 재제출 / 그대로 저장).
         """
         service = self._get_batch_service()
         summary = service.summarize(input_path)
+        configured = service.configured_pipeline()
         if summary.active:
+            self._check_batch_output_path(service, input_path, output_path)
             if self.config.get("enable_translation_memory", False) and \
                     getattr(self.translation_service, "translation_memory", None) is None:
-                await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
+                await self._prepare_batch_memory_async(service, input_path, summary.pipeline, status_callback)
             summary = await service.refresh_async(input_path, status_callback)
             await self._drain_memory_tasks()
+        elif summary.pipeline != configured:
+            # 기록된 배치와 방식이 다르면 그 방식으로 새로 시작한다. 이전 작업 목록은 다른 청크 경계를 가리킨다.
+            await self._prepare_batch_memory_async(service, input_path, configured, status_callback, output_path)
+            summary = await service.submit_async(input_path, status_callback, output_path=output_path, pipeline=configured)
         else:
+            self._check_batch_output_path(service, input_path, output_path)
             failed = (load_metadata(input_path) or {}).get("failed_chunks") or {}
             never_tried = [i for i in summary.remaining if str(i) not in failed] if summary.jobs else summary.remaining
             if never_tried:
-                await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
-                summary = await service.submit_async(input_path, status_callback)
+                await self._prepare_batch_memory_async(service, input_path, configured, status_callback, output_path)
+                summary = await service.submit_async(input_path, status_callback, output_path=output_path, pipeline=configured)
         await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
         self._emit_batch_progress(summary, progress_callback, status_callback)
 
@@ -1491,10 +1549,11 @@ class AppService:
         """배치 작업 상태를 조회·수거하고, 모두 끝났으면 최종 파일을 쓴다 (폴링용)."""
         service = self._get_batch_service()
         input_path, output_path = Path(input_file_path), Path(output_file_path)
+        self._check_batch_output_path(service, input_path, output_path)
         if self.config.get("enable_translation_memory", False) and \
                 getattr(self.translation_service, "translation_memory", None) is None:
             # 앱을 다시 켠 뒤 수거할 때도 결과가 기억에 기록되도록 (임베딩은 캐시되어 재호출 없음)
-            await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
+            await self._prepare_batch_memory_async(service, input_path, service.session_pipeline(input_path), status_callback)
         summary = await service.refresh_async(input_path, status_callback)
         await self._drain_memory_tasks()
         await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
@@ -1505,12 +1564,13 @@ class AppService:
         input_file_path: Union[str, Path],
         status_callback: Optional[Callable[[str], None]] = None,
     ) -> BatchSummary:
-        """미완료 청크만 모아 다음 라운드 배치로 다시 제출한다."""
+        """미완료 청크만 모아 다음 라운드 배치로 다시 제출한다 (마지막 배치와 같은 방식)."""
         service = self._get_batch_service()
         input_path = Path(input_file_path)
+        pipeline = service.session_pipeline(input_path)
         # 이전 라운드에서 번역된 청크가 번역 기억의 예시가 된다
-        await self._prepare_translation_memory_async(input_path, service._load_chunks(input_path), status_callback)
-        return await service.submit_async(input_path, status_callback)
+        await self._prepare_batch_memory_async(service, input_path, pipeline, status_callback)
+        return await service.submit_async(input_path, status_callback, pipeline=pipeline)
 
     async def cancel_batch_async(
         self,
@@ -1519,18 +1579,41 @@ class AppService:
     ) -> BatchSummary:
         return await self._get_batch_service().cancel_async(Path(input_file_path), status_callback)
 
+    def batch_finish_mode(self, input_file_path: Union[str, Path], output_file_path: Union[str, Path]) -> str:
+        """'실시간으로 마무리'에 쓸 번역 모드. 마지막 배치와 같은 방식("standard"/"integrity")이다.
+
+        진행 중인 작업이 있으면 같은 청크를 실시간으로도 번역해 두 번 과금되므로 막는다.
+        """
+        service = self._get_batch_service()
+        input_path = Path(input_file_path)
+        summary = service.summarize(input_path)
+        if summary.active:
+            raise BtgServiceException("진행 중인 배치 작업이 있습니다. 결과를 수거하거나 작업을 취소한 뒤 마무리하세요.")
+        self._check_batch_output_path(service, input_path, Path(output_file_path))
+        return summary.pipeline
+
     async def save_batch_with_failures_async(
         self,
         input_file_path: Union[str, Path],
         output_file_path: Union[str, Path],
         status_callback: Optional[Callable[[str], None]] = None,
     ) -> int:
-        """미완료 청크는 실패 표시와 원문으로 채워 최종 파일을 쓴다. 채운 청크 수를 돌려준다."""
+        """미완료 청크를 채워 최종 파일을 쓴다. 채운 청크 수를 돌려준다.
+
+        일반 방식은 실패 표시와 원문을, 무결성 방식은 원문 줄을 둔다(받은 일부 줄의 번역은 쓴다).
+        """
         service = self._get_batch_service()
-        input_path = Path(input_file_path)
+        input_path, output_path = Path(input_file_path), Path(output_file_path)
+        if service.session_pipeline(input_path) == PIPELINE_INTEGRITY:
+            self._check_batch_output_path(service, input_path, output_path)
+            summary = service.summarize(input_path)
+            if summary.active:
+                raise BtgServiceException("진행 중인 배치 작업이 있어 아직 저장할 수 없습니다.")
+            await self._write_integrity_batch_output(service, input_path, output_path, status_callback, include_partial=True)
+            return len(summary.remaining)
         count = service.write_failure_placeholders(input_path)
         await self._merge_and_finalize_async(
-            service.chunked_output_path(input_path), Path(output_file_path),
+            service.chunked_output_path(input_path), output_path,
             get_metadata_file_path(input_path), status_callback,
         )
         return count
