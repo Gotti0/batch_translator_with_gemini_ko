@@ -1322,8 +1322,15 @@ class AppService:
             if self.memory_extractor_factory is not None:
                 return self.memory_extractor_factory(self.config)
             model = str(self.config.get("memory_extraction_model") or "").strip() or self.config.get("model_name")
-            # 추출 전용 클라이언트: 번역 요청과 스케줄러를 나눠 쓰지 않는다
-            client = LLMClientFactory.create_client(config={**self.config, "model_name": model})
+            if isinstance(self.gemini_client, GeminiClient):
+                # 번역 클라이언트를 같이 쓴다. 따로 만들면 스케줄러가 둘이 되어 추출과 번역이 다른 키로
+                # 동시에 나가고(무료 키 여러 개를 병렬로 부르면 남용으로 판정될 위험), 합친 RPM이 설정을 넘는다.
+                # 같이 쓰면 요청이 전역에서 하나씩 RPM 간격으로 나가고, 키 쿨다운·과부하 정지도 공유한다.
+                # 모델은 요청마다 넘기므로 추출 모델을 따로 지정해도 된다.
+                client = self.gemini_client
+            else:
+                # 다른 프로바이더는 전역 스케줄러가 없고, 모델을 클라이언트를 만들 때 정하므로 추출용을 따로 만든다
+                client = LLMClientFactory.create_client(config={**self.config, "model_name": model})
             # 추론 강도는 번역 설정을 따른다 (용어집 추출과 같다). 추출 모델이 그 단계를 지원하지 않으면
             # 설정 탭이 모델을 바꿀 때처럼 그 모델의 기본값을 쓴다 (예: Flash의 minimal → Pro는 high).
             from infrastructure.reasoning_options import reasoning_spec_for
