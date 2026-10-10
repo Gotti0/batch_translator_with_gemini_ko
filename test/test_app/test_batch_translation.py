@@ -635,3 +635,69 @@ def test_integrity_request_converts_with_sdk(integrity_workspace):
     schema = config["responseSchema"]
     assert schema.type == t.Type.ARRAY and set(schema.items.properties) == {"id", "translated_text"}
     assert body["metadata"] == {"key": "chunk-00000"}
+
+
+# ---------------------------------------------------------------------------
+# 번역 기억: 배치 결과는 예시로 기록만 하고 인물 메모는 추출하지 않는다
+# ---------------------------------------------------------------------------
+
+class RecordingExtractor:
+    def __init__(self):
+        self.calls: List[str] = []
+
+    async def extract(self, source, translation, known):
+        self.calls.append(source)
+        return []
+
+
+def _make_memory_app(workspace, server):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "test_domain"))
+    from test_translation_memory import FakeEmbedder
+
+    cfg = json.loads(workspace["config"].read_text(encoding="utf-8"))
+    cfg.update({"enable_translation_memory": True, "voyage_api_key": "vk", "enable_memory_extraction": True})
+    workspace["config"].write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    app = _make_app(workspace, server)
+    app.embedding_client_factory = lambda cfg: FakeEmbedder()
+    extractor = RecordingExtractor()
+    app.memory_extractor_factory = lambda cfg: extractor
+    return app, extractor
+
+
+@pytest.mark.asyncio
+async def test_batch_collection_records_memory_without_extraction(workspace):
+    server = FakeBatchServer()
+    app, extractor = _make_memory_app(workspace, server)
+    await app.start_translation_async(workspace["input"], workspace["output"])
+    name = server.only_job()
+    total = len(server.jobs[name]["requests"])
+
+    def responder(idx, req):
+        if idx == 1:
+            return BatchItemResult(key=chunk_key(idx), blocked=True, finish_reason="PROHIBITED_CONTENT", error="응답 차단")
+        return _translate_all(idx, req)
+
+    server.complete(name, responder)
+    await app.refresh_batch_async(workspace["input"], workspace["output"])
+    assert app.translation_service.translation_memory.summary()["translated"] == total - 1
+    assert extractor.calls == [] and not app._memory_tasks
+
+    # 남은 청크는 실시간 마무리가 번역하면서 추출한다
+    app.gemini_client.generate_text_async = AsyncMock(return_value="실시간 번역1")
+    await app.start_translation_async(workspace["input"], workspace["output"], translation_mode_override="standard")
+    assert len(extractor.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_integrity_batch_collection_records_memory_without_extraction(integrity_workspace):
+    ws = integrity_workspace
+    server = FakeBatchServer()
+    app, extractor = _make_memory_app(ws, server)
+    units = _units(app, ws)
+    await app.start_translation_async(ws["input"], ws["output"])
+    server.complete(server.only_job(), lambda idx, req: _json_reply(idx, units))
+
+    assert (await app.refresh_batch_async(ws["input"], ws["output"])).complete
+    assert app.translation_service.translation_memory.summary()["translated"] > 0
+    assert extractor.calls == [] and not app._memory_tasks
