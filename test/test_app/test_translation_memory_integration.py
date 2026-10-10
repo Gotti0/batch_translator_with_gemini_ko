@@ -210,15 +210,73 @@ def test_extractor_follows_translation_thinking_settings(workspace):
     cfg.update({"enable_memory_extraction": True, "thinking_level": "low", "thinking_budget": 512})
     (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
     app = AppService(workspace / "config.json")
-    with patch("app.app_service.LLMClientFactory.create_client", return_value=object()):
-        extractor = app._create_memory_extractor()
-        assert (extractor.model_name, extractor.thinking_level, extractor.thinking_budget) == ("gemini-3.8-flash", "low", 512)
+    extractor = app._create_memory_extractor()
+    assert (extractor.model_name, extractor.thinking_level, extractor.thinking_budget) == ("gemini-3.8-flash", "low", 512)
 
-        # 추출 모델이 번역 설정의 단계를 지원하지 않으면 그 모델의 기본값 (Pro는 low/high만)
-        app.config.update({"thinking_level": "minimal", "memory_extraction_model": "gemini-3.1-pro-preview"})
-        assert app._create_memory_extractor().thinking_level == "high"
-        app.config["memory_extraction_model"] = ""
-        assert app._create_memory_extractor().thinking_level == "minimal"
+    # 추출 모델이 번역 설정의 단계를 지원하지 않으면 그 모델의 기본값 (Pro는 low/high만)
+    app.config.update({"thinking_level": "minimal", "memory_extraction_model": "gemini-3.1-pro-preview"})
+    assert app._create_memory_extractor().thinking_level == "high"
+    app.config["memory_extraction_model"] = ""
+    assert app._create_memory_extractor().thinking_level == "minimal"
+
+
+def test_extractor_uses_translation_client_only_for_gemini(workspace):
+    cfg = json.loads((workspace / "config.json").read_text(encoding="utf-8"))
+    cfg["enable_memory_extraction"] = True
+    (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    app = AppService(workspace / "config.json")
+    assert isinstance(app.gemini_client, GeminiClient)
+    assert app._create_memory_extractor().llm_client is app.gemini_client
+
+    # 전역 스케줄러가 없는 다른 프로바이더는 추출 모델로 클라이언트를 따로 만든다
+    from unittest.mock import MagicMock
+    app.gemini_client = MagicMock()
+    separate = object()
+    with patch("app.app_service.LLMClientFactory.create_client", return_value=separate) as create:
+        assert app._create_memory_extractor().llm_client is separate
+    assert create.call_args.kwargs["config"]["model_name"] == "gemini-3.8-flash"
+
+
+@pytest.mark.asyncio
+async def test_extraction_shares_translation_request_schedule(workspace):
+    """추출 요청은 번역 요청과 같은 스케줄러로 나간다: 진행 중인 요청이 한 번에 하나를 넘지 않는다"""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    import infrastructure.gemini_client as gc_module
+
+    cfg = json.loads((workspace / "config.json").read_text(encoding="utf-8"))
+    cfg.update({"enable_memory_extraction": True, "requests_per_minute": 6000})
+    (workspace / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    state = {"in_flight": 0, "max": 0, "kinds": []}
+
+    def make_sdk(*args, **kwargs):
+        sdk = MagicMock()
+
+        async def generate_content(model, contents, config):
+            state["in_flight"] += 1
+            state["max"] = max(state["max"], state["in_flight"])
+            try:
+                await asyncio.sleep(0.02)
+            finally:
+                state["in_flight"] -= 1
+            if config.response_mime_type == "application/json":
+                state["kinds"].append("extract")
+                return SimpleNamespace(text="[]", prompt_feedback=None, candidates=None)
+            state["kinds"].append("translate")
+            src = contents[-1].parts[-1].text.split("Translate: ", 1)[-1]
+            return SimpleNamespace(text="[KO]" + src, prompt_feedback=None, candidates=None)
+
+        sdk.aio.models.generate_content = AsyncMock(side_effect=generate_content)
+        return sdk
+
+    with patch.object(gc_module.genai, "Client", side_effect=make_sdk):
+        app = AppService(workspace / "config.json")
+        app.embedding_client_factory = lambda cfg: FakeEmbedder()
+        with patch.object(app.chunk_service, "create_chunks_from_file_content", return_value=list(LINES)):
+            await app.start_translation_async(workspace / "novel.txt", workspace / "out.txt")
+
+    assert state["kinds"].count("translate") == 4 and state["kinds"].count("extract") == 4
+    assert state["max"] == 1
 
 
 @pytest.mark.asyncio
