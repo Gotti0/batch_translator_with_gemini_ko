@@ -163,3 +163,16 @@ async def test_extractor_calls_llm_with_schema():
     assert kwargs["model_name"] == "gemini-lite"
     assert kwargs["generation_config_dict"]["response_mime_type"] == "application/json"
     assert "ガルド" in kwargs["prompt"]
+    # 추론 설정을 받지 않았으면 클라이언트 기본값에 맡긴다
+    assert "thinking_level" not in kwargs["generation_config_dict"] and kwargs["thinking_budget"] is None
+
+
+@pytest.mark.asyncio
+async def test_extractor_passes_thinking_settings():
+    from unittest.mock import AsyncMock, MagicMock
+    client = MagicMock()
+    client.generate_text_async = AsyncMock(return_value=[])
+    await MemoryExtractor(client, "gemini-3.8-flash", thinking_level="low", thinking_budget=512).extract("原文", "번역")
+    kwargs = client.generate_text_async.call_args.kwargs
+    assert kwargs["generation_config_dict"]["thinking_level"] == "low"
+    assert kwargs["thinking_budget"] == 512

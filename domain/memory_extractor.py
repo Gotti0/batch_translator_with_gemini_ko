@@ -138,23 +138,31 @@ def find_excerpt(source: str, names: Iterable[str], limit: int = 120) -> str:
 class MemoryExtractor:
     """저렴한 LLM으로 인물 메모를 추출한다."""
 
-    def __init__(self, llm_client: Any, model_name: str) -> None:
+    def __init__(self, llm_client: Any, model_name: str,
+                 thinking_level: Optional[str] = None, thinking_budget: Optional[int] = None) -> None:
         self.llm_client = llm_client
         self.model_name = model_name
+        # Gemini 추론 강도 (3: thinking_level, 2.5: thinking_budget). None이면 클라이언트 기본값.
+        self.thinking_level = thinking_level
+        self.thinking_budget = thinking_budget
 
     async def extract(self, source: str, translation: str, known_names: Iterable[str] = ()) -> List[ExtractedEntity]:
         known = ", ".join(sorted(set(known_names))[:50]) or "없음"
         prompt = EXTRACTION_PROMPT.format(
             known=known, source=source[:MAX_SOURCE_CHARS], translation=translation[:MAX_SOURCE_CHARS]
         )
+        generation_config: Dict[str, Any] = {
+            "temperature": 0.2,
+            "response_mime_type": "application/json",
+            "response_schema": list[ExtractedEntity],
+        }
+        if self.thinking_level:
+            generation_config["thinking_level"] = self.thinking_level
         response = await self.llm_client.generate_text_async(
             prompt=prompt,
             model_name=self.model_name,
-            generation_config_dict={
-                "temperature": 0.2,
-                "response_mime_type": "application/json",
-                "response_schema": list[ExtractedEntity],
-            },
+            generation_config_dict=generation_config,
+            thinking_budget=self.thinking_budget,
         )
         entities = []
         for row in _to_dicts(response):

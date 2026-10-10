@@ -1324,7 +1324,14 @@ class AppService:
             model = str(self.config.get("memory_extraction_model") or "").strip() or self.config.get("model_name")
             # 추출 전용 클라이언트: 번역 요청과 스케줄러를 나눠 쓰지 않는다
             client = LLMClientFactory.create_client(config={**self.config, "model_name": model})
-            return MemoryExtractor(client, model)
+            # 추론 강도는 번역 설정을 따른다 (용어집 추출과 같다). 추출 모델이 그 단계를 지원하지 않으면
+            # 설정 탭이 모델을 바꿀 때처럼 그 모델의 기본값을 쓴다 (예: Flash의 minimal → Pro는 high).
+            from infrastructure.reasoning_options import reasoning_spec_for
+            level = self.config.get("thinking_level", "high")
+            spec = reasoning_spec_for(self.config.get("llm_provider"), model)
+            if spec.config_key == "thinking_level":
+                level = spec.normalize(level)
+            return MemoryExtractor(client, model, thinking_level=level, thinking_budget=self.config.get("thinking_budget"))
         except Exception as e:
             logger.warning(f"인물 메모 추출기를 만들지 못했습니다 (추출 없이 진행): {e}")
             return None

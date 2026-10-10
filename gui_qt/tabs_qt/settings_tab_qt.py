@@ -578,7 +578,8 @@ class SettingsTabQt(QtWidgets.QWidget):
         TooltipQt(
             self.memory_extract_check,
             "번역이 끝난 청크에서 인물의 말투·호칭·1인칭·관계를 뽑아 기억에 넣습니다.\n"
-            "번역과 별도로 뒤에서 실행되어 번역 속도를 늦추지 않습니다. 저렴한 모델을 지정하는 것을 권장합니다.",
+            "번역과 별도로 뒤에서 실행되어 번역 속도를 늦추지 않습니다. 저렴한 모델을 지정하는 것을 권장합니다.\n"
+            "추론 강도(Thinking Level/Budget)는 번역 설정을 따릅니다. 배치로 수거한 청크는 추출하지 않습니다.",
         )
         self.memory_extract_model_edit = QtWidgets.QLineEdit()
         self.memory_extract_model_edit.setPlaceholderText("추출 모델 (비우면 번역 모델 사용)")
