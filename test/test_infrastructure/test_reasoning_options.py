@@ -40,8 +40,23 @@ def test_spec_lookup():
     assert reasoning_spec_for("gemini", "gemini-3-flash-preview") is GEMINI_3_FLASH
     assert reasoning_spec_for("gemini", "gemini-3-pro-preview") is GEMINI_3_PRO
     assert reasoning_spec_for("gemini", "gemini-2.5-pro") is GEMINI_BUDGET
-    assert reasoning_spec_for("gemini", "gemini-2.0-flash") is GEMINI_BUDGET  # 기존 UI와 같은 기준
     assert reasoning_spec_for("unknown") is NO_REASONING
+
+
+@pytest.mark.parametrize("model, expected", [
+    # 예전에는 "gemini-3"이 이름에 없으면 모두 예산 방식으로 보아 4세대가 2.5 슬라이더를 받았다
+    ("gemini-4-argon", GEMINI_3_PRO),
+    ("gemini-4-flash", GEMINI_3_FLASH),
+    ("models/gemini-3.1-pro-preview", GEMINI_3_PRO),
+    ("gemini-flash-latest", GEMINI_3_FLASH),
+    ("gemini-2.5-flash-lite", GEMINI_BUDGET),
+    # 2.0 이전은 사고 설정이 없다 (GeminiClient도 보내지 않았다)
+    ("gemini-2.0-flash", NO_REASONING),
+    ("gemini-1.5-pro", NO_REASONING),
+    ("gemma-3-27b-it", NO_REASONING),
+])
+def test_gemini_generation_detection(model, expected):
+    assert reasoning_spec_for("gemini", model) is expected
 
 
 def test_normalize_rejects_unknown_values():
