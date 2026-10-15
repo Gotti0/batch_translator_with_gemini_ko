@@ -31,12 +31,14 @@ try:
     from .error_classifier import classify, ErrorKind
     from .retry_policy import Action, RetryPolicy
     from .circuit_breaker import CircuitBreaker
+    from .reasoning_options import reasoning_spec_for
 except ImportError:
     from infrastructure.request_scheduler import RequestScheduler
     from infrastructure.key_pool import KeyPool
     from infrastructure.error_classifier import classify, ErrorKind
     from infrastructure.retry_policy import Action, RetryPolicy
     from infrastructure.circuit_breaker import CircuitBreaker
+    from infrastructure.reasoning_options import reasoning_spec_for
 from core.exceptions import BtgApiContentSafetyException
 
 logger = setup_logger(__name__)
@@ -651,26 +653,25 @@ class GeminiClient(BaseLLMClient):
         thinking_level_from_dict = final_generation_config_params.pop("thinking_level", None)
         thinking_budget_from_dict = final_generation_config_params.pop("thinking_budget", None)
     
-        # Thinking config - 모델 타입에 따라 적절한 파라미터만 사용
-        check_name = effective_model_name.lower()
+        # Thinking config - 설정 탭과 같은 판정(reasoning_spec_for)으로 모델에 맞는 파라미터만 사용
+        thinking_kind = reasoning_spec_for("gemini", effective_model_name).kind
         thinking_config = None
-    
-        if "gemini-3" in check_name:
-            # Gemini 3.0: thinking_level만 사용
-            # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만, 
+
+        if thinking_kind == "level":
+            # ThinkingLevel은 CaseInSensitiveEnum이므로 소문자도 작동하지만,
             # 명시적으로 enum 값 또는 대문자 문자열 사용 권장
             level = thinking_level_from_dict or genai_types.ThinkingLevel.HIGH
             thinking_config = genai_types.ThinkingConfig(thinking_level=level)
-            logger.info(f"Gemini 3 감지: Thinking Level='{level}' 적용.")
-        
-        elif "gemini-2.5" in check_name:
-            # Gemini 2.5: thinking_budget만 사용 (우선순위: 인자 > dict > 기본값)
+            logger.info(f"Thinking Level='{level}' 적용 ({effective_model_name}).")
+
+        elif thinking_kind == "budget":
+            # 우선순위: 인자 > dict > 기본값
             if thinking_budget is not None:
                 budget = thinking_budget
             else:
                 budget = thinking_budget_from_dict if thinking_budget_from_dict is not None else -1
             thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
-            logger.info(f"Gemini 2.5 감지: Thinking Budget={budget} 적용.")
+            logger.info(f"Thinking Budget={budget} 적용 ({effective_model_name}).")
         
         if thinking_config:
             final_generation_config_params['thinking_config'] = thinking_config

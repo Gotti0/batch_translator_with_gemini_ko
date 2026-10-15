@@ -143,3 +143,18 @@ class TestThinkingConfigBranching:
         
         config = mock_genai_client.aio.models.generate_content.call_args.kwargs['config']
         assert not hasattr(config, 'thinking_config') or config.thinking_config is None
+
+    @pytest.mark.asyncio
+    async def test_new_generation_model_uses_thinking_level(self, mock_genai_client):
+        """이름에 "gemini-3"이 없는 새 세대 모델도 thinking_level을 받아야 함 (예전에는 사고 설정이 빠졌다)"""
+        client = GeminiClient(auth_credentials="test_api_key")
+
+        await client.generate_text_async(
+            prompt="테스트",
+            model_name="gemini-4-argon",
+            generation_config_dict={"temperature": 0.7, "thinking_level": "low", "thinking_budget": 200}
+        )
+
+        config = mock_genai_client.aio.models.generate_content.call_args.kwargs['config']
+        assert config.thinking_config.thinking_level.value == "LOW"
+        assert config.thinking_config.thinking_budget is None

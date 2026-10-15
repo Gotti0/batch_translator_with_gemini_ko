@@ -14,6 +14,7 @@ UI(설정 탭)와 실제 호출(클라이언트)이 같은 표를 보도록 한 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -98,6 +99,8 @@ GEMINI_3_PRO = ReasoningSpec(
 )
 GEMINI_BUDGET = ReasoningSpec(kind="budget", config_key="thinking_budget")
 
+_GEMINI_VERSION = re.compile(r"gemini-(\d+)(?:\.(\d+))?")
+
 
 def reasoning_spec_for(provider: Optional[str], model_name: Optional[str] = None) -> ReasoningSpec:
     """프로바이더(와 Gemini는 모델)에 맞는 추론 옵션 명세."""
@@ -114,10 +117,16 @@ def reasoning_spec_for(provider: Optional[str], model_name: Optional[str] = None
         return OPENAI_COMPATIBLE
     if provider == "gemini":
         name = (model_name or "").lower()
-        if "gemini-3" in name:
-            return GEMINI_3_FLASH if "flash" in name else GEMINI_3_PRO
-        # Gemini 3 외에는 기존대로 예산(thinking_budget)을 쓴다 (GeminiClient도 같은 기준)
-        return GEMINI_BUDGET
+        if "gemini-" not in name:
+            # Gemma 등 Gemini가 아닌 모델에는 사고 설정을 보내지 않는다
+            return NO_REASONING
+        version = _GEMINI_VERSION.search(name)
+        if version and int(version.group(1)) < 3:
+            # 사고 예산은 2.5만 받고, 그 이전 세대는 사고 설정 자체가 없다
+            return GEMINI_BUDGET if version.groups() == ("2", "5") else NO_REASONING
+        # 옛 세대만 명시하고 나머지는 단계 방식으로 본다. 새 세대(4 이후, 코드명 모델)가
+        # 나올 때마다 판정을 고치지 않도록 기본값을 최신 방식에 둔다.
+        return GEMINI_3_FLASH if "flash" in name else GEMINI_3_PRO
     return NO_REASONING
 
 
