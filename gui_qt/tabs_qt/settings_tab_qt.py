@@ -1416,6 +1416,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.batch_status_label.setText(text)
             now = time.time()
             for job in summary.jobs:
+                if job.get("state") == "SUBMIT_FAILED":
+                    continue
                 row = self.batch_jobs_table.rowCount()
                 self.batch_jobs_table.insertRow(row)
                 chunks = job.get("chunks") or []

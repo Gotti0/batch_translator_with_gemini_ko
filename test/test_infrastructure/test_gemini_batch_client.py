@@ -2,9 +2,13 @@
 Unit tests for GeminiBatchClient (SDK의 client.aio.batches / files를 모의 객체로 대체).
 """
 
+import asyncio
+import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 from google.genai import errors as genai_errors
 from google.genai import types as t
 
@@ -99,6 +103,7 @@ class TestGeminiBatchClient(unittest.IsolatedAsyncioTestCase):
         self.sdk.aio.batches.cancel = AsyncMock()
         self.sdk.aio.batches.list = AsyncMock()
         self.sdk.aio.files.upload = AsyncMock()
+        self.sdk.aio.models.count_tokens = AsyncMock(return_value=t.CountTokensResponse(total_tokens=123))
         self.client = GeminiBatchClient("key", sdk_client=self.sdk)
 
     def test_requires_key(self):
@@ -119,6 +124,35 @@ class TestGeminiBatchClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["model"], "gemini-3.8-flash")
         self.assertIs(kwargs["src"], reqs)
         self.assertEqual(kwargs["config"].display_name, "btg-x-r1-1")
+        self.assertEqual(info.estimated_input_tokens, 123)
+
+    async def test_token_estimate_includes_system_and_multimodal_content(self):
+        part = t.Part.from_uri(file_uri="https://example.invalid/file.pdf", mime_type="application/pdf")
+        req = t.InlinedRequest(contents=[t.Content(parts=[part, t.Part(text="source")])],
+                               config=t.GenerateContentConfig(system_instruction="translate faithfully"))
+        self.sdk.aio.models.count_tokens.side_effect = [t.CountTokensResponse(total_tokens=100), t.CountTokensResponse(total_tokens=200)]
+        self.assertEqual(await self.client.estimate_input_tokens("model", [req, req]), 300)
+        args = self.sdk.aio.models.count_tokens.call_args.kwargs
+        self.assertEqual(args["contents"][0], "translate faithfully")
+        self.assertEqual(args["contents"][1].parts[0], part)
+        self.assertEqual(args["config"].http_options.retry_options.attempts, 1)
+
+    async def test_failed_count_does_not_prevent_submit_or_claim_zero(self):
+        self.sdk.aio.models.count_tokens.side_effect = _api_error(429, "quota")
+        self.sdk.aio.batches.create.return_value = t.BatchJob(name="batches/1", state=t.JobState.JOB_STATE_PENDING)
+        req = t.InlinedRequest(contents=[t.Content(parts=[t.Part(text="source")])])
+        with self.assertLogs("infrastructure.gemini_batch_client", level="WARNING") as logs:
+            info = await self.client.submit("model", [req], "x")
+        self.assertIsNone(info.estimated_input_tokens)
+        self.sdk.aio.batches.create.assert_awaited_once()
+        self.assertIn("UNKNOWN", " ".join(logs.output))
+
+    async def test_cancel_during_count_prevents_submission(self):
+        self.sdk.aio.models.count_tokens.side_effect = asyncio.CancelledError()
+        req = t.InlinedRequest(contents=[t.Content(parts=[t.Part(text="source")])])
+        with self.assertRaises(asyncio.CancelledError):
+            await self.client.submit("model", [req], "x")
+        self.sdk.aio.batches.create.assert_not_awaited()
 
     async def test_get_terminal_job_parses_results(self):
         self.sdk.aio.batches.get.return_value = t.BatchJob(
@@ -149,7 +183,8 @@ class TestGeminiBatchClient(unittest.IsolatedAsyncioTestCase):
         self.sdk.aio.batches.create.side_effect = _api_error(403, "billing required")
         with self.assertRaises(BtgApiClientException) as ctx:
             await self.client.submit("m", [], "x")
-        self.assertIn("유료 키", str(ctx.exception))
+        self.assertIn("billing required", str(ctx.exception))
+        self.assertNotIn("무료 티어 키", str(ctx.exception))
 
     async def test_find_by_display_name(self):
         self.sdk.aio.batches.list.return_value = _AsyncIter([
@@ -193,3 +228,112 @@ class TestFreeTierHint(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BtgApiClientException) as ctx:
             await client.get("batches/1")
         self.assertNotIn(FREE_TIER_HINT, str(ctx.exception))
+
+
+class TestQuotaDiagnostics(unittest.IsolatedAsyncioTestCase):
+    async def test_submit_records_all_quota_limits_and_context_without_request_content(self):
+        # 서버 형식을 따르는 합성 응답이며 실제 프로젝트의 한도나 측정값이 아니다.
+        cases = [
+            ("GenerateContentRequestsPerMinute", "requests", "RPM", "minute"),
+            ("GenerateContentRequestsPerDay", "requests", "RPD", "day"),
+            ("GenerateContentInputTokensPerMinute", "input_tokens", "TPM", "minute"),
+            ("GenerateContentInputTokensPerDay", "input_tokens", "TPD", "day"),
+            ("BatchEnqueuedTokensPerModelPerDay", "batch_enqueued_tokens", "BATCH_ENQUEUED_TOKENS", "day"),
+            ("InlineBatchRequestsPerMinute", "inline_batch_requests", "INLINE_BATCH", "minute"),
+            ("ConcurrentBatchRequests", "batch_requests", "BATCH_OTHER", "unspecified"),
+            ("NewQuotaName", "new_metric", "UNKNOWN", "unspecified"),
+        ]
+        violations = [
+            {"quotaId": quota_id, "quotaMetric": f"generativelanguage.googleapis.com/{metric}",
+             "quotaValue": "100", "quotaDimensions": {"model": "test-model", "location": "global"}}
+            for quota_id, metric, _, _ in cases
+        ]
+        error = genai_errors.ClientError(429, {"error": {
+            "status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": violations},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "12.5s"},
+            ],
+        }}, response=httpx.Response(429, headers={
+            "Retry-After": "13", "X-Request-ID": "request-123", "X-Goog-Request-ID": "google-456",
+            "Set-Cookie": "private-cookie", "x-goog-api-key": "private-response-key",
+        }))
+        sdk = MagicMock()
+        sdk.aio.batches.create = AsyncMock(side_effect=error)
+        client = GeminiBatchClient("private-api-key", sdk_client=sdk)
+        requests = [t.InlinedRequest(contents=[t.Content(parts=[t.Part(text="private-source-text")])])]
+        with self.assertLogs("infrastructure.gemini_batch_client", level="ERROR") as logs:
+            with self.assertRaises(BtgApiRateLimitException) as raised:
+                await client.submit("test-model", requests, "private-file-title")
+        diagnostic = json.loads(logs.records[0].getMessage().split("Gemini 429 진단: ", 1)[1])
+        self.assertEqual(diagnostic["model"], "test-model")
+        self.assertEqual(diagnostic["input_mode"], "inline")
+        self.assertEqual(diagnostic["request_count"], 1)
+        self.assertEqual(diagnostic["key_fingerprint"], key_fingerprint("private-api-key"))
+        self.assertEqual(diagnostic["retry_delay"], "12.5s")
+        self.assertEqual(diagnostic["response_headers"], {
+            "retry-after": "13", "x-request-id": "request-123", "x-goog-request-id": "google-456",
+        })
+        for actual, (quota_id, _, category, period) in zip(diagnostic["violations"], cases):
+            self.assertEqual(actual["type"], category)
+            self.assertEqual(actual["period"], period)
+            self.assertEqual(actual["quotaValue"], "100")
+            self.assertEqual(actual["quotaDimensions"]["model"], "test-model")
+            self.assertIn(quota_id, raised.exception.message)
+        self.assertEqual(len(diagnostic["violations"]), len(cases))
+        self.assertIs(raised.exception.original_exception, error)
+        for secret in ("private-api-key", "private-source-text", "private-file-title", "private-cookie", "private-response-key"):
+            self.assertNotIn(secret, " ".join(logs.output))
+
+    async def test_help_only_429_stays_unknown_and_does_not_claim_free_tier(self):
+        sdk = MagicMock()
+        sdk.aio.batches.create = AsyncMock(side_effect=genai_errors.ClientError(429, {"error": {
+            "status": "RESOURCE_EXHAUSTED",
+            "message": "You exceeded your current quota, please check your plan and billing details.",
+            "details": [{"@type": "type.googleapis.com/google.rpc.Help", "links": []}],
+        }}))
+        with self.assertLogs("infrastructure.gemini_batch_client", level="ERROR") as logs:
+            with self.assertRaises(BtgApiRateLimitException) as raised:
+                await GeminiBatchClient("key", sdk_client=sdk).submit("m", [], "x")
+        diagnostic = json.loads(logs.records[0].getMessage().split("Gemini 429 진단: ", 1)[1])
+        self.assertEqual(diagnostic["quota_types"], ["UNKNOWN"])
+        self.assertEqual(diagnostic["violations"], [])
+        self.assertIn("서버가 할당량 식별자를 제공하지 않음", raised.exception.message)
+        self.assertNotIn("무료 티어 키", raised.exception.message)
+
+    async def test_polling_uses_error_info_and_does_not_invent_submission_context(self):
+        sdk = MagicMock()
+        sdk.aio.batches.get = AsyncMock(side_effect=genai_errors.ClientError(429, {"error": {
+            "status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded",
+            "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                         "reason": "RATE_LIMIT_EXCEEDED", "domain": "googleapis.com",
+                         "metadata": {"quota_metric": "read_requests", "quota_limit": "ReadRequestsPerMinute",
+                                      "quota_limit_value": "60", "api_key": "private-key"}}],
+        }}))
+        with self.assertLogs("infrastructure.gemini_batch_client", level="ERROR") as logs:
+            with self.assertRaises(BtgApiRateLimitException) as raised:
+                await GeminiBatchClient("key", sdk_client=sdk).get("batches/1")
+        diagnostic = json.loads(logs.records[0].getMessage().split("Gemini 429 진단: ", 1)[1])
+        self.assertEqual(diagnostic["action"], "조회")
+        self.assertEqual(diagnostic["quota_types"], ["RPM"])
+        self.assertEqual(diagnostic["error_info"][0]["reason"], "RATE_LIMIT_EXCEEDED")
+        self.assertNotIn("input_mode", diagnostic)
+        self.assertNotIn("private-key", " ".join(logs.output))
+        self.assertIn("ReadRequestsPerMinute", raised.exception.message)
+
+    def test_malformed_details_preserve_original_429(self):
+        client = GeminiBatchClient("key", sdk_client=MagicMock())
+        for details in (None, [], {"error": None}, {"error": {"details": "invalid"}},
+                        {"error": {"details": [None,
+                         {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": 42},
+                         {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": 42}]}}):
+            with self.subTest(details=details):
+                error = Exception("429")
+                error.code = 429
+                error.details = details
+                error.response = SimpleNamespace(headers=None)
+                with self.assertLogs("infrastructure.gemini_batch_client", level="ERROR"):
+                    wrapped = client._wrap_error("제출", error)
+                self.assertIsInstance(wrapped, BtgApiRateLimitException)
+                self.assertIs(wrapped.original_exception, error)
+                self.assertIn("UNKNOWN", wrapped.message)
