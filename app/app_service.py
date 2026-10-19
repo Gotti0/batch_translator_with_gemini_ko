@@ -95,6 +95,8 @@ class AppService:
         self.chunk_service = ChunkService()
         # 배치 번역 클라이언트 생성 함수 (API 키 → GeminiBatchClient). None이면 기본 구현, 테스트에서 교체한다.
         self.batch_client_factory: Optional[Callable[[str], Any]] = None
+        # 자동 조회와 수동 조작이 같은 대기 청크를 중복 제출하지 않도록 상태 변경을 직렬화한다.
+        self._batch_operation_lock = asyncio.Lock()
         # 임베딩 클라이언트 생성 함수 (설정 → BaseEmbeddingClient). None이면 기본 구현, 테스트에서 교체한다.
         self.embedding_client_factory: Optional[Callable[[Dict[str, Any]], Any]] = None
         # 인물 메모 추출기 생성 함수 (설정 → MemoryExtractor). None이면 추출용 LLM 클라이언트를 새로 만든다.
@@ -692,6 +694,31 @@ class AppService:
 
     # ===== 비동기 메서드 (PySide6 마이그레이션) =====
     
+    def _load_translation_glossary(self, input_file_path: Union[str, Path]) -> None:
+        try:
+            input_p = Path(input_file_path)
+            glossary_suffix = self.config.get("glossary_output_json_filename_suffix", "_simple_glossary.json")
+            assumed_glossary_path = input_p.parent / f"{input_p.stem}{glossary_suffix}"
+
+            glossary_to_use = None
+            if assumed_glossary_path.exists():
+                glossary_to_use = str(assumed_glossary_path)
+                logger.info(f"용어집 '{assumed_glossary_path.name}' 자동 발견 및 사용")
+            else:
+                manual_path = self.config.get("glossary_json_path")
+                if manual_path and Path(manual_path).exists():
+                    glossary_to_use = manual_path
+                    logger.info(f"설정된 용어집 사용: '{manual_path}'")
+                else:
+                    logger.info(f"용어집을 찾을 수 없어 용어집 없이 진행")
+
+            if self.translation_service:
+                self.config['glossary_json_path'] = glossary_to_use
+                self.translation_service.config = self.config
+                self.translation_service._load_glossary_data()
+        except Exception as e:
+            logger.error(f"용어집 동적 로딩 중 오류: {e}", exc_info=True)
+
     async def start_translation_async(
         self,
         input_file_path: Union[str, Path],
@@ -722,31 +749,7 @@ class AppService:
         if status_callback:
             status_callback("번역 준비 중...")
         
-        # === 용어집 동적 로딩 로직 ===
-        try:
-            input_p = Path(input_file_path)
-            glossary_suffix = self.config.get("glossary_output_json_filename_suffix", "_simple_glossary.json")
-            assumed_glossary_path = input_p.parent / f"{input_p.stem}{glossary_suffix}"
-            
-            glossary_to_use = None
-            if assumed_glossary_path.exists():
-                glossary_to_use = str(assumed_glossary_path)
-                logger.info(f"용어집 '{assumed_glossary_path.name}' 자동 발견 및 사용")
-            else:
-                manual_path = self.config.get("glossary_json_path")
-                if manual_path and Path(manual_path).exists():
-                    glossary_to_use = manual_path
-                    logger.info(f"설정된 용어집 사용: '{manual_path}'")
-                else:
-                    logger.info(f"용어집을 찾을 수 없어 용어집 없이 진행")
-            
-            if self.translation_service:
-                self.config['glossary_json_path'] = glossary_to_use
-                self.translation_service.config = self.config
-                self.translation_service._load_glossary_data()
-        except Exception as e:
-            logger.error(f"용어집 동적 로딩 중 오류: {e}", exc_info=True)
-        # === 용어집 동적 로딩 로직 끝 ===
+        self._load_translation_glossary(input_file_path)
         
         # ✨ Promise.race 패턴 구현 ✨
         # 취소 이벤트 초기화 (새 번역 시작)
@@ -1546,28 +1549,29 @@ class AppService:
         - 모든 청크가 채워지면 그 방식의 실시간 모드와 같은 규칙으로 최종 파일을 쓴다.
         미완료(검열·오류·누락) 청크의 재처리는 사용자가 고른다 (실시간 마무리 / 재제출 / 그대로 저장).
         """
-        service = self._get_batch_service()
-        summary = service.summarize(input_path)
-        configured = service.configured_pipeline()
-        if summary.active:
-            self._check_batch_output_path(service, input_path, output_path)
-            if self.config.get("enable_translation_memory", False) and \
-                    getattr(self.translation_service, "translation_memory", None) is None:
-                await self._prepare_batch_memory_async(service, input_path, summary.pipeline, status_callback)
-            summary = await service.refresh_async(input_path, status_callback)
-        elif summary.pipeline != configured:
-            # 기록된 배치와 방식이 다르면 그 방식으로 새로 시작한다. 이전 작업 목록은 다른 청크 경계를 가리킨다.
-            await self._prepare_batch_memory_async(service, input_path, configured, status_callback, output_path)
-            summary = await service.submit_async(input_path, status_callback, output_path=output_path, pipeline=configured)
-        else:
-            self._check_batch_output_path(service, input_path, output_path)
-            failed = (load_metadata(input_path) or {}).get("failed_chunks") or {}
-            never_tried = [i for i in summary.remaining if str(i) not in failed] if summary.jobs else summary.remaining
-            if never_tried:
+        async with self._batch_operation_lock:
+            service = self._get_batch_service()
+            summary = service.summarize(input_path)
+            configured = service.configured_pipeline()
+            if summary.active:
+                self._check_batch_output_path(service, input_path, output_path)
+                if self.config.get("enable_translation_memory", False) and \
+                        getattr(self.translation_service, "translation_memory", None) is None:
+                    await self._prepare_batch_memory_async(service, input_path, summary.pipeline, status_callback)
+                summary = await service.refresh_async(input_path, status_callback)
+            elif summary.pipeline != configured:
+                # 기록된 배치와 방식이 다르면 그 방식으로 새로 시작한다. 이전 작업 목록은 다른 청크 경계를 가리킨다.
                 await self._prepare_batch_memory_async(service, input_path, configured, status_callback, output_path)
                 summary = await service.submit_async(input_path, status_callback, output_path=output_path, pipeline=configured)
-        await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
-        self._emit_batch_progress(summary, progress_callback, status_callback)
+            else:
+                self._check_batch_output_path(service, input_path, output_path)
+                failed = (load_metadata(input_path) or {}).get("failed_chunks") or {}
+                never_tried = [i for i in summary.remaining if str(i) not in failed] if summary.jobs else summary.remaining
+                if never_tried:
+                    await self._prepare_batch_memory_async(service, input_path, configured, status_callback, output_path)
+                    summary = await service.submit_async(input_path, status_callback, output_path=output_path, pipeline=configured)
+            await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
+            self._emit_batch_progress(summary, progress_callback, status_callback)
 
     async def refresh_batch_async(
         self,
@@ -1576,16 +1580,19 @@ class AppService:
         status_callback: Optional[Callable[[str], None]] = None,
     ) -> BatchSummary:
         """배치 작업 상태를 조회·수거하고, 모두 끝났으면 최종 파일을 쓴다 (폴링용)."""
-        service = self._get_batch_service()
-        input_path, output_path = Path(input_file_path), Path(output_file_path)
-        self._check_batch_output_path(service, input_path, output_path)
-        if self.config.get("enable_translation_memory", False) and \
-                getattr(self.translation_service, "translation_memory", None) is None:
-            # 앱을 다시 켠 뒤 수거할 때도 결과가 기억에 기록되도록 (임베딩은 캐시되어 재호출 없음)
-            await self._prepare_batch_memory_async(service, input_path, service.session_pipeline(input_path), status_callback)
-        summary = await service.refresh_async(input_path, status_callback)
-        await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
-        return summary
+        async with self._batch_operation_lock:
+            service = self._get_batch_service()
+            input_path, output_path = Path(input_file_path), Path(output_file_path)
+            self._check_batch_output_path(service, input_path, output_path)
+            if (load_metadata(input_path) or {}).get("batch", {}).get("pending_chunks"):
+                self._load_translation_glossary(input_path)
+            if self.config.get("enable_translation_memory", False) and \
+                    getattr(self.translation_service, "translation_memory", None) is None:
+                # 앱을 다시 켠 뒤 수거할 때도 결과가 기억에 기록되도록 (임베딩은 캐시되어 재호출 없음)
+                await self._prepare_batch_memory_async(service, input_path, service.session_pipeline(input_path), status_callback)
+            summary = await service.refresh_async(input_path, status_callback)
+            await self._finalize_batch_if_complete(service, summary, input_path, output_path, status_callback)
+            return summary
 
     async def resubmit_batch_async(
         self,
@@ -1593,19 +1600,21 @@ class AppService:
         status_callback: Optional[Callable[[str], None]] = None,
     ) -> BatchSummary:
         """미완료 청크만 모아 다음 라운드 배치로 다시 제출한다 (마지막 배치와 같은 방식)."""
-        service = self._get_batch_service()
-        input_path = Path(input_file_path)
-        pipeline = service.session_pipeline(input_path)
-        # 이전 라운드에서 번역된 청크가 번역 기억의 예시가 된다
-        await self._prepare_batch_memory_async(service, input_path, pipeline, status_callback)
-        return await service.submit_async(input_path, status_callback, pipeline=pipeline)
+        async with self._batch_operation_lock:
+            service = self._get_batch_service()
+            input_path = Path(input_file_path)
+            pipeline = service.session_pipeline(input_path)
+            # 이전 라운드에서 번역된 청크가 번역 기억의 예시가 된다
+            await self._prepare_batch_memory_async(service, input_path, pipeline, status_callback)
+            return await service.submit_async(input_path, status_callback, pipeline=pipeline)
 
     async def cancel_batch_async(
         self,
         input_file_path: Union[str, Path],
         status_callback: Optional[Callable[[str], None]] = None,
     ) -> BatchSummary:
-        return await self._get_batch_service().cancel_async(Path(input_file_path), status_callback)
+        async with self._batch_operation_lock:
+            return await self._get_batch_service().cancel_async(Path(input_file_path), status_callback)
 
     def batch_finish_mode(self, input_file_path: Union[str, Path], output_file_path: Union[str, Path]) -> str:
         """'실시간으로 마무리'에 쓸 번역 모드. 마지막 배치와 같은 방식("standard"/"integrity")이다.

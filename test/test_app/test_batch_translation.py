@@ -5,6 +5,7 @@ GeminiBatchClient를 메모리 구현(FakeBatchServer)으로 바꿔 끼워, 제�
 수거 → 미완료 청크 처리(실시간 마무리 / 실패 표시 저장 / 재제출)까지 AppService를 통해 검증한다.
 """
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -64,6 +65,7 @@ class FakeBatchClient:
         return BatchJobInfo(
             name=name, display_name=job["display_name"], state=job["state"], raw_state=job["state"].name,
             results=job.get("results") if job["state"].is_terminal else None,
+            estimated_input_tokens=len(job["requests"]) * 100,
         )
 
     async def submit(self, model, requests, display_name):
@@ -302,6 +304,13 @@ async def test_jobs_split_by_size_and_oversized_chunk_left_for_realtime(workspac
 
     app.config["batch_max_request_bytes"] = int(size * 2.5)
     await app.start_translation_async(workspace["input"], workspace["output"])
+    assert len(server.jobs) == 1
+    assert load_metadata(workspace["input"])["batch"]["pending_chunks"]
+    while app.get_batch_summary(workspace["input"]).active:
+        active = [name for name, job in server.jobs.items() if not job["state"].is_terminal]
+        assert len(active) == 1
+        server.complete(active[0], lambda idx, req: BatchItemResult(key=chunk_key(idx), error="test error"))
+        await app.refresh_batch_async(workspace["input"], workspace["output"])
     sizes = [len(j["requests"]) for j in server.jobs.values()]
     total = len(load_metadata(workspace["input"])["batch"]["jobs"][0]["chunks"]) + sum(sizes[1:])
     assert len(server.jobs) >= 2 and max(sizes) <= 2
@@ -323,6 +332,96 @@ def test_group_requests_by_size():
     groups, oversized = group_requests_by_size([(0, "a", 5), (1, "b", 5), (2, "c", 20), (3, "d", 4), (4, "e", 6)], 10)
     assert [[i for i, _ in g] for g in groups] == [[0, 1], [3, 4]]
     assert oversized == [2]
+    groups, oversized = group_requests_by_size([(i, "request", 1) for i in range(401)], 18_000_000)
+    assert [len(g) for g in groups] == [50] * 8 + [1]
+    assert [i for group in groups for i, _ in group] == list(range(401))
+    assert oversized == []
+
+
+@pytest.mark.asyncio
+async def test_serial_queue_survives_restart_and_does_not_retry_failed_chunks(workspace, monkeypatch, caplog):
+    monkeypatch.setattr("app.batch_translation_service.MAX_INLINE_REQUESTS", 2)
+    glossary = workspace["dir"] / "novel_simple_glossary.json"
+    glossary.write_text(json.dumps([{"keyword": "勇者", "translated_keyword": "용사", "target_language": "ko"}]), encoding="utf-8")
+    server = FakeBatchServer()
+    app = _make_app(workspace, server)
+    with caplog.at_level("INFO", logger="app.batch_translation_service"):
+        await app.start_translation_async(workspace["input"], workspace["output"])
+    batch = load_metadata(workspace["input"])["batch"]
+    assert len(server.jobs) == 1 and batch["pending_chunks"]
+    assert batch["jobs"][0]["estimated_input_tokens"] == 200
+    assert "알려진입력토큰합=200" in caplog.text
+    assert "서버 실측 아님" in caplog.text
+
+    total = app.get_batch_summary(workspace["input"]).total_chunks
+    while app.get_batch_summary(workspace["input"]).active:
+        app = _make_app(workspace, server)
+        before = len(server.jobs)
+        pending_before = load_metadata(workspace["input"])["batch"]["pending_chunks"]
+        await app.refresh_batch_async(workspace["input"], workspace["output"])
+        if pending_before:
+            assert app.config["glossary_json_path"] == str(glossary)
+        assert len(server.jobs) == before
+        active = [name for name, job in server.jobs.items() if not job["state"].is_terminal]
+        assert len(active) == 1
+        server.complete(active[0], lambda i, req: BatchItemResult(key=chunk_key(i), error="500") if i == 0 else _translate_all(i, req))
+        await app.refresh_batch_async(workspace["input"], workspace["output"])
+    submitted = [parse_chunk_key(req.metadata["key"]) for job in server.jobs.values() for req in job["requests"]]
+    assert submitted == list(range(total))
+    assert app.get_batch_summary(workspace["input"]).remaining == [0]
+    assert load_metadata(workspace["input"])["batch"]["pending_chunks"] == []
+
+
+@pytest.mark.asyncio
+async def test_serial_queue_cancel_and_submit_error_stop_followups(workspace, monkeypatch):
+    monkeypatch.setattr("app.batch_translation_service.MAX_INLINE_REQUESTS", 2)
+    server = FakeBatchServer()
+    app = _make_app(workspace, server)
+    await app.start_translation_async(workspace["input"], workspace["output"])
+    await app.cancel_batch_async(workspace["input"])
+    restarted = _make_app(workspace, server)
+    summary = await restarted.refresh_batch_async(workspace["input"], workspace["output"])
+    assert not summary.active and not summary.pending_chunks and len(server.jobs) == 1
+
+    server.fail_submit = True
+    with pytest.raises(RuntimeError):
+        await restarted.resubmit_batch_async(workspace["input"])
+    summary = await _make_app(workspace, server).refresh_batch_async(workspace["input"], workspace["output"])
+    assert summary.queue_paused and summary.pending_chunks and not summary.active
+    assert len(server.jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_serial_queue_settings_change_pauses_next_submission(workspace, monkeypatch):
+    monkeypatch.setattr("app.batch_translation_service.MAX_INLINE_REQUESTS", 2)
+    server = FakeBatchServer()
+    app = _make_app(workspace, server)
+    await app.start_translation_async(workspace["input"], workspace["output"])
+    server.complete(server.only_job(), _translate_all)
+    app.config["temperature"] = 0.314
+    summary = await app.refresh_batch_async(workspace["input"], workspace["output"])
+    assert summary.queue_paused and summary.pending_chunks and not summary.active
+    assert len(server.jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_submits_next_group_once(workspace, monkeypatch):
+    monkeypatch.setattr("app.batch_translation_service.MAX_INLINE_REQUESTS", 2)
+    server = FakeBatchServer()
+    app = _make_app(workspace, server)
+    await app.start_translation_async(workspace["input"], workspace["output"])
+    server.complete(server.only_job(), _translate_all)
+    original_get = FakeBatchClient.get
+
+    async def delayed_get(self, name):
+        await asyncio.sleep(0)
+        return await original_get(self, name)
+
+    monkeypatch.setattr(FakeBatchClient, "get", delayed_get)
+    await asyncio.gather(*(app.refresh_batch_async(workspace["input"], workspace["output"]) for _ in range(2)))
+    assert len(server.jobs) == 2
+    chunks = [parse_chunk_key(req.metadata["key"]) for job in server.jobs.values() for req in job["requests"]]
+    assert len(chunks) == len(set(chunks))
 
 
 @pytest.mark.asyncio

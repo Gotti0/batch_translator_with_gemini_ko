@@ -15,6 +15,7 @@ Gemini Batch API로 청크 번역을 제출하고, 나중에 결과를 수거합
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -53,6 +54,7 @@ from infrastructure.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 DEFAULT_MAX_REQUEST_BYTES = 18_000_000  # 인라인 요청 한도 20MB에 여유를 둔 값
+MAX_INLINE_REQUESTS = 50
 # 제출 응답을 받기 전에 앱이 꺼진 작업을 이름으로 찾지 못하면, 이 시간이 지난 뒤 유실로 본다
 LOST_JOB_GRACE_SECONDS = 600
 BLOCKED_PREFIX = "[배치] 검열:"
@@ -82,6 +84,8 @@ class BatchSummary:
     config_changed: bool = False
     pipeline: str = PIPELINE_STANDARD
     partial: int = 0  # 무결성: 일부 줄만 받아 실시간 마무리가 빠진 줄만 묻게 될 청크
+    pending_chunks: int = 0
+    queue_paused: bool = False
 
     @property
     def active_jobs(self) -> List[Dict[str, Any]]:
@@ -89,7 +93,7 @@ class BatchSummary:
 
     @property
     def active(self) -> bool:
-        return bool(self.active_jobs)
+        return bool(self.active_jobs) or (self.pending_chunks > 0 and not self.queue_paused)
 
     @property
     def complete(self) -> bool:
@@ -102,7 +106,8 @@ class BatchSummary:
     def describe(self) -> str:
         if self.active:
             states = ", ".join(sorted({str(j.get("state", "?")) for j in self.active_jobs}))
-            return f"배치 진행 중: 작업 {len(self.active_jobs)}개 ({states}) · 완료 {self.translated}/{self.total_chunks}"
+            return (f"배치 진행 중: 작업 {len(self.active_jobs)}개 ({states}) · "
+                    f"제출 대기 {self.pending_chunks}개 청크 · 완료 {self.translated}/{self.total_chunks}")
         if self.remaining:
             detail = []
             if self.blocked:
@@ -112,7 +117,8 @@ class BatchSummary:
             if self.partial:
                 detail.append(f"누락 {self.partial}")
             extra = f" ({', '.join(detail)})" if detail else ""
-            return f"배치 수거 완료: {self.translated}/{self.total_chunks} · 미완료 {len(self.remaining)}개{extra}"
+            prefix = "배치 자동 제출 일시정지" if self.queue_paused else "배치 수거 완료"
+            return f"{prefix}: {self.translated}/{self.total_chunks} · 미완료 {len(self.remaining)}개{extra}"
         return f"배치 번역 완료: {self.translated}/{self.total_chunks}"
 
 
@@ -135,7 +141,7 @@ def estimate_request_bytes(request: genai_types.InlinedRequest) -> int:
 def group_requests_by_size(
     sized: List[Tuple[int, genai_types.InlinedRequest, int]], max_bytes: int
 ) -> Tuple[List[List[Tuple[int, genai_types.InlinedRequest]]], List[int]]:
-    """청크 순서를 지키며 작업당 `max_bytes` 이하로 묶는다. 단독으로도 넘는 청크는 따로 돌려준다."""
+    """청크 순서를 지키며 작업당 최대 50개·`max_bytes` 이하로 묶는다. 용량 초과 청크는 따로 돌려준다."""
     groups: List[List[Tuple[int, genai_types.InlinedRequest]]] = []
     oversized: List[int] = []
     current: List[Tuple[int, genai_types.InlinedRequest]] = []
@@ -144,7 +150,7 @@ def group_requests_by_size(
         if size > max_bytes:
             oversized.append(idx)
             continue
-        if current and current_bytes + size > max_bytes:
+        if current and (len(current) >= MAX_INLINE_REQUESTS or current_bytes + size > max_bytes):
             groups.append(current)
             current, current_bytes = [], 0
         current.append((idx, req))
@@ -429,6 +435,19 @@ class BatchTranslationService:
             partial=count(PARTIAL_PREFIX),
             config_changed=bool(batch.get("request_signature")) and batch.get("request_signature") != self._request_signature(),
             pipeline=pipeline,
+            pending_chunks=len(batch.get("pending_chunks") or []),
+            queue_paused=bool(batch.get("queue_paused")),
+        )
+
+    @staticmethod
+    def _log_queue_estimate(batch: Dict[str, Any]) -> None:
+        active = [j for j in batch.get("jobs", []) if not j.get("collected")]
+        known = [j["estimated_input_tokens"] for j in active if isinstance(j.get("estimated_input_tokens"), int)]
+        logger.info(
+            "앱 추적 대기열 추정: model=%s 진행작업=%d 알려진입력토큰합=%d 토큰미상작업=%d "
+            "미제출청크=%d 자동제출정지=%s (현재 파일 기준; 다른 앱·파일 제외; 서버 실측 아님)",
+            batch.get("model"), len(active), sum(known), len(active) - len(known),
+            len(batch.get("pending_chunks") or []), bool(batch.get("queue_paused")),
         )
 
     # ------------------------------------------------------------------
@@ -490,6 +509,7 @@ class BatchTranslationService:
         status_callback: Optional[Callable[[str], None]] = None,
         output_path: Optional[Path] = None,
         pipeline: Optional[str] = None,
+        _pending_indices: Optional[List[int]] = None,
     ) -> BatchSummary:
         """미번역 청크를 제출한다.
 
@@ -524,17 +544,26 @@ class BatchTranslationService:
         metadata = load_metadata(input_file_path) or {}
         completed = self._completed_indices(input_file_path, pipeline, items, metadata, batch)
         pending = [(i, c) for i, c in enumerate(items) if self._translatable(c) and i not in completed]
+        if _pending_indices is not None:
+            allowed = set(_pending_indices)
+            pending = [(i, c) for i, c in pending if i in allowed]
 
         batch.update({
             "pipeline": pipeline,
             "layout": self._layout_signature(pipeline, items),
             "jobs": jobs,
+            "pending_chunks": [],
+            "queue_paused": False,
         })
         if not pending:
             self._save_batch_section(input_file_path, batch)
             return self.summarize(input_file_path, items)
 
-        client, fingerprint = self._client_for_submit()
+        if _pending_indices is not None:
+            fingerprint = batch.get("key_fingerprint", "")
+            client = self._client_for_fingerprint(fingerprint)
+        else:
+            client, fingerprint = self._client_for_submit()
         if batch.get("key_fingerprint") and batch["key_fingerprint"] != fingerprint and jobs:
             logger.info("배치 번역: 이전 라운드와 다른 키로 제출합니다.")
         model = self.config.get("model_name", "gemini-2.0-flash")
@@ -560,9 +589,10 @@ class BatchTranslationService:
             "round": round_no,
             "request_signature": self._request_signature(),
             "uploaded_files": list(batch.get("uploaded_files") or []) + uploaded,
+            "pending_chunks": [idx for group in groups[1:] for idx, _ in group],
         })
-
-        for n, group in enumerate(groups, start=1):
+        # 후속 청크 번호만 저장하고 다음 묶음은 수거 후 다시 만든다. 원문·프롬프트를 메타데이터에 복제하지 않는다.
+        for n, group in enumerate(groups[:1], start=1):
             entry = {
                 "display_name": f"btg-{stem}-{token}-r{round_no}-{n}",
                 "name": None,
@@ -578,13 +608,22 @@ class BatchTranslationService:
                 status_callback(f"배치 작업 제출 중 ({n}/{len(groups)}, 청크 {len(group)}개)...")
             try:
                 info = await client.submit(model, [req for _, req in group], entry["display_name"])
-            except Exception as e:
-                entry.update({"state": "SUBMIT_FAILED", "collected": True, "error": str(e)})
+            except asyncio.CancelledError:
+                batch["queue_paused"] = True
                 self._save_batch_section(input_file_path, batch)
                 raise
-            entry.update({"name": info.name, "state": info.raw_state or info.state.value})
+            except Exception as e:
+                entry.update({"state": "SUBMIT_FAILED", "collected": True, "error": str(e)})
+                batch["queue_paused"] = True
+                self._save_batch_section(input_file_path, batch)
+                self._log_queue_estimate(batch)
+                raise
+            entry.update({"name": info.name, "state": info.raw_state or info.state.value,
+                          "estimated_input_tokens": info.estimated_input_tokens})
             self._save_batch_section(input_file_path, batch, status="batch_submitted")
 
+        self._save_batch_section(input_file_path, batch)
+        self._log_queue_estimate(batch)
         summary = self.summarize(input_file_path, items)
         if status_callback:
             status_callback(summary.describe())
@@ -720,7 +759,7 @@ class BatchTranslationService:
         items = self._load_items(input_file_path, pipeline)
         jobs = list(batch.get("jobs") or [])
         active = [j for j in jobs if not j.get("collected")]
-        if not active:
+        if not active and (not batch.get("pending_chunks") or batch.get("queue_paused")):
             return self.summarize(input_file_path, items)
 
         # 결과는 청크 번호로 돌아온다. 제출 뒤 경계가 바뀌면 다른 원문 자리에 기록되므로 수거하지 않는다.
@@ -741,7 +780,9 @@ class BatchTranslationService:
                 if info is None:
                     if time.time() - float(job.get("submitted_at") or 0) > LOST_JOB_GRACE_SECONDS:
                         job.update({"state": "LOST", "collected": True})
+                        batch["queue_paused"] = True
                         logger.warning(f"제출이 확인되지 않은 배치 작업을 유실로 처리합니다: {job['display_name']}")
+                        self._save_batch_section(input_file_path, batch)
                     continue
                 job["name"] = info.name
             job["state"] = info.raw_state or info.state.value
@@ -752,6 +793,25 @@ class BatchTranslationService:
             if info.state.is_terminal:
                 self._record_results(input_file_path, pipeline, items, job, info, batch)
             self._save_batch_section(input_file_path, batch)
+
+        self._log_queue_estimate(batch)
+        if batch.get("pending_chunks") and not batch.get("queue_paused") and all(j.get("collected") for j in jobs):
+            if batch.get("request_signature") != self._request_signature():
+                batch["queue_paused"] = True
+                self._save_batch_section(input_file_path, batch)
+                logger.warning("번역 설정이 바뀌어 후속 배치 자동 제출을 중단했습니다. 설정 확인 후 다시 배치 제출하세요.")
+            else:
+                try:
+                    return await self.submit_async(
+                        input_file_path, status_callback, pipeline=pipeline,
+                        _pending_indices=batch["pending_chunks"],
+                    )
+                except Exception:
+                    # 요청 준비·파일 업로드 실패도 매 폴링마다 자동 재시도하지 않는다.
+                    latest = (load_metadata(input_file_path) or {}).get("batch") or batch
+                    latest["queue_paused"] = True
+                    self._save_batch_section(input_file_path, latest)
+                    raise
 
         summary = self.summarize(input_file_path, items)
         self._save_batch_section(
@@ -771,6 +831,10 @@ class BatchTranslationService:
         input_file_path = Path(input_file_path)
         metadata = load_metadata(input_file_path) or {}
         batch = metadata.get("batch") or {}
+        # 서버 취소가 실패해도 후속 묶음이 자동 제출되지 않도록 먼저 저장한다.
+        batch["pending_chunks"] = []
+        batch["queue_paused"] = True
+        self._save_batch_section(input_file_path, batch)
         active = [j for j in (batch.get("jobs") or []) if not j.get("collected") and j.get("name")]
         if active:
             client = self._client_for_fingerprint(batch.get("key_fingerprint", ""))
