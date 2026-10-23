@@ -1,5 +1,14 @@
 # BTG - Batch Translator for Gemini & Multi-LLM
 
+<p align="center">
+  <a href="https://github.com/Gotti0/batch_translator_with_gemini_ko/releases">
+    <img alt="총 다운로드" src="https://img.shields.io/github/downloads/Gotti0/batch_translator_with_gemini_ko/total?style=for-the-badge&label=%EC%B4%9D%20%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C&color=2ea44f">
+  </a>
+  <a href="https://github.com/Gotti0/batch_translator_with_gemini_ko/releases/latest">
+    <img alt="최신 릴리스 다운로드" src="https://img.shields.io/github/downloads/Gotti0/batch_translator_with_gemini_ko/latest/total?style=for-the-badge&label=%EC%B5%9C%EC%8B%A0%20%EB%A6%B4%EB%A6%AC%EC%8A%A4&color=0969da">
+  </a>
+</p>
+
 BTG는 대용량 텍스트 및 웹소설/문학 번역에 특화된 고성능 배치 번역 플랫폼입니다.  
 Google Gemini API를 비롯해 로컬 CLI 구독 세션(Claude Code, OpenAI Codex, Google Antigravity), 로컬 LLM(Ollama), OpenAI 호환 엔드포인트를 폭넓게 지원하며, **Gemini Batch API(비용 50% 절감)**, **PageFold PDF 토큰 압축(최대 90% 절감)**, **Voyage AI & WygLore Leaf 기반 번역 장기기억 및 연상 기억 그래프** 등 최신 기술을 탑재하여 압도적인 비용 효율과 번역 일관성을 제공합니다.
 
