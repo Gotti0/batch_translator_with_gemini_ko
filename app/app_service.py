@@ -8,6 +8,7 @@ import csv
 import logging
 import asyncio  # asyncio 임포트 추가
 import time
+import shutil
 from tqdm import tqdm # tqdm 임포트 확인
 import sys # sys 임포트 확인 (tqdm_file_stream=sys.stdout 에 사용될 수 있음)
 
@@ -718,6 +719,25 @@ class AppService:
                 self.translation_service._load_glossary_data()
         except Exception as e:
             logger.error(f"용어집 동적 로딩 중 오류: {e}", exc_info=True)
+
+    def discard_saved_progress(self, input_file_path: Union[str, Path], output_file_path: Union[str, Path]) -> None:
+        """새로 번역하기 전에 이어하기 근거를 모두 지운다.
+
+        표준 모드는 메타데이터로 이어하기를 판단하지만, 무결성 모드는 임시 폴더의 chunk_<i>.json,
+        EPUB은 epub_temp의 epub_metadata.json으로 판단한다. 메타데이터와 출력만 지우면 두 모드는
+        이전 결과를 그대로 재사용했다. 번역 기억(<파일명>_memory)은 일관성용이라 남긴다.
+        """
+        input_path = Path(input_file_path)
+        output_path = Path(output_file_path)
+        delete_file(get_metadata_file_path(input_path))
+        delete_file(output_path)
+        for temp_dir in (
+            TranslationService.integrity_temp_dir_for(output_path),
+            TranslationService.epub_temp_dir_for(input_path),
+        ):
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+                logger.info(f"이전 진행 상태 폴더 삭제: {temp_dir}")
 
     async def start_translation_async(
         self,
