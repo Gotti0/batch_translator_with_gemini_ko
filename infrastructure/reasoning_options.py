@@ -8,6 +8,7 @@ UI(설정 탭)와 실제 호출(클라이언트)이 같은 표를 보도록 한 
 - Claude CLI `--effort`: `claude --help` → low, medium, high, xhigh, max
 - Codex CLI `model_reasoning_effort`: gpt-5.5 서버 오류 메시지 → none, minimal, low, medium, high, xhigh, max
 - Antigravity CLI `--effort`: `agy --help` → low, medium, high, max
+- Cursor Agent CLI: 별도 옵션 없음. 강도는 모델 ID 접미사(`-low`…`-max`)로 고르므로 NO_REASONING (2026-10)
 - Ollama `think`: `ollama run --help` → true/false, 일부 모델은 high/medium/low
 - OpenAI 호환 `reasoning_effort`: 서버마다 다르다. 확인하지 않았으므로 기본값은 넘기지 않음
 """

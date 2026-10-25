@@ -16,6 +16,7 @@ from infrastructure.gemini_client import GeminiClient, GeminiInvalidRequestExcep
 from infrastructure.claude_cli_client import ClaudeCliClient
 from infrastructure.codex_cli_client import CodexCliClient
 from infrastructure.antigravity_cli_client import AntigravityCliClient
+from infrastructure.cursor_cli_client import CursorCliClient
 from infrastructure.OpenAICompatibleClient import OpenAICompatibleClient
 from infrastructure.ollama_client import OllamaClient, DEFAULT_OLLAMA_BASE_URL
 from infrastructure.logger_config import setup_logger
@@ -33,6 +34,7 @@ class LLMClientFactory:
         "claude_cli",
         "codex_cli",
         "antigravity_cli",
+        "cursor_cli",
         "openai_compatible",
         "ollama",
     ]
@@ -120,6 +122,14 @@ class LLMClientFactory:
                 model_name=model_name,
                 effort=effort,
                 timeout_seconds=timeout,
+            )
+
+        elif provider == "cursor_cli":
+            logger.info("LLMClientFactory: CursorCliClient 생성")
+            return CursorCliClient(
+                cli_path=config.get("cursor_cli_path", "cursor-agent"),
+                model_name=config.get("cursor_cli_model") or config.get("model_name"),
+                timeout_seconds=int(config.get("api_timeout", 180)),
             )
 
         elif provider == "openai_compatible":

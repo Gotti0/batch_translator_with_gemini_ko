@@ -134,6 +134,16 @@ class TestLLMClientFactory(unittest.TestCase):
         self.assertEqual(client.provider_name, "antigravity_cli")
         self.assertFalse(client.supports_pagefold)
 
+    def test_create_cursor_cli_client(self):
+        from infrastructure.cursor_cli_client import CursorCliClient
+        cfg = {"llm_provider": "cursor_cli", "cursor_cli_model": "gpt-5.6-sol-medium", "api_timeout": 300}
+        client = LLMClientFactory.create_client(cfg)
+        self.assertIsInstance(client, CursorCliClient)
+        self.assertEqual(client.provider_name, "cursor_cli")
+        self.assertEqual(client.model_name, "gpt-5.6-sol-medium")
+        self.assertEqual(client.timeout_seconds, 300)
+        self.assertFalse(client.supports_pagefold)
+
     def test_create_ollama_client(self):
         from infrastructure.ollama_client import OllamaClient
         cfg = {
