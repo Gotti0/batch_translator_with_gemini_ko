@@ -23,7 +23,13 @@ try:
     )
     from infrastructure.file_handler import read_json_file
     from infrastructure.logger_config import setup_logger
-    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException, BtgPromptTemplateException
+    from core.exceptions import (
+        BtgTranslationException,
+        BtgApiClientException,
+        BtgApiContentSafetyException,
+        BtgApiRepetitionException,
+        BtgPromptTemplateException,
+    )
     from utils.chunk_service import ChunkService
     from utils.lang_utils import normalize_language_code # Added
     from google.genai import types as genai_types
@@ -54,7 +60,13 @@ except ImportError:
     )
     from infrastructure.file_handler import read_json_file  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
-    from core.exceptions import BtgTranslationException, BtgApiClientException, BtgApiContentSafetyException, BtgPromptTemplateException  # type: ignore
+    from core.exceptions import (  # type: ignore
+        BtgTranslationException,
+        BtgApiClientException,
+        BtgApiContentSafetyException,
+        BtgApiRepetitionException,
+        BtgPromptTemplateException,
+    )
     from utils.chunk_service import ChunkService  # type: ignore
     from utils.lang_utils import normalize_language_code # type: ignore
     from core.dtos import GlossaryEntryDTO # type: ignore
@@ -66,6 +78,9 @@ except ImportError:
     )
 
 logger = setup_logger(__name__)
+
+# 동일 문자 5회 이상 또는 2문자 패턴 4회 이상 반복 (예: ァァァァァァァァ, ドドドドドドドド 등)
+_REPEATED_RUN_RE = re.compile(r"([^\s])\1{4,}|([^\s]{2})\2{3,}")
 
 T = TypeVar("T")
 
@@ -1604,6 +1619,9 @@ class TranslationService:
             # 503 과부하는 청크 크기와 무관한 서버측 문제다. 나눠도 해결되지 않고 요청 수만 배로
             # 늘려 쿼터를 낭비하므로 이 청크만 실패로 끝내고 이어하기에 맡긴다.
             raise
+        except BtgApiRepetitionException as e_rep:
+            logger.warning(f"무결성 청크 반복 생성 중단 감지 (항목 {len(chunk)}개): {e_rep}")
+            return await self._isolate_repetition_units(chunk, e_rep)
         except (GeminiContentSafetyException, BtgApiContentSafetyException) as e_safety:
             # 검열만이 분할로 풀리는 오류다. 문제 구간이 분리되면 나머지는 통과할 수 있다.
             logger.warning(f"무결성 청크 검열 감지 (split_depth {split_depth}): {e_safety}")
@@ -1652,6 +1670,50 @@ class TranslationService:
         results = {}
         results.update(await self._translate_integrity_chunk_with_retry(left_chunk, split_depth + 1))
         results.update(await self._translate_integrity_chunk_with_retry(right_chunk, split_depth + 1))
+        return results
+
+    async def _isolate_repetition_units(
+        self, chunk: List[TranslationUnit], error: BtgApiRepetitionException
+    ) -> Dict[str, str]:
+        """반복 의성어 등으로 모델의 토큰 퇴화 루프(token repeat limit reached)가 발생한 경우,
+        문제 줄을 격리해 정상 줄은 번역하고 문제 줄만 원문으로 보존한다.
+        """
+        if not chunk:
+            return {}
+
+        # 1. 단일 항목이면 더 이상 쪼갤 수 없으므로 해당 항목만 원문 보존
+        if len(chunk) == 1:
+            logger.warning(
+                f"  ⚠️ 반복 생성 중단으로 단일 항목 번역 불가 (ID {chunk[0].id}): {chunk[0].text[:30]!r} (원문 유지)"
+            )
+            return {chunk[0].id: chunk[0].text}
+
+        suspicious = [u for u in chunk if _REPEATED_RUN_RE.search(u.text)]
+        normal = [u for u in chunk if not _REPEATED_RUN_RE.search(u.text)]
+
+        results: Dict[str, str] = {}
+
+        # 2. 의심 줄이 식별되었고 일반 줄도 함께 있는 경우:
+        # 일반 줄은 일괄 요청으로 먼저 번역하고, 의심 줄은 개별 1줄씩 시도한다.
+        if suspicious and normal:
+            logger.info(
+                f"  🔍 반복 생성 중단 격리: 일반 줄 {len(normal)}개 일괄 재시도, 의심 줄 {len(suspicious)}개 개별 시도"
+            )
+            results.update(await self._translate_integrity_chunk_with_retry(normal))
+            for unit in suspicious:
+                results.update(await self._translate_integrity_chunk_with_retry([unit]))
+            return results
+
+        # 3. 모든 줄이 의심 줄이거나, 정규식에 걸리지 않은 경우:
+        # 이진 분할(Binary Split)로 청크를 반으로 나누어 범위를 좁힌다.
+        mid = len(chunk) // 2
+        left_chunk = chunk[:mid]
+        right_chunk = chunk[mid:]
+        logger.info(
+            f"  🔄 반복 생성 중단 이진 분할: {len(chunk)} -> {len(left_chunk)}, {len(right_chunk)}"
+        )
+        results.update(await self._translate_integrity_chunk_with_retry(left_chunk))
+        results.update(await self._translate_integrity_chunk_with_retry(right_chunk))
         return results
 
     async def translate_epub(self, epub_path: Union[str, Path], output_path: Union[str, Path]) -> None:
@@ -1757,7 +1819,10 @@ class TranslationService:
                                     zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
                                     
                             except Exception as e_chapter:
-                                logger.error(f"챕터 {item.filename} 처리 중 오류 (원본 보존): {e_chapter}")
+                                logger.error(
+                                    f"챕터 {item.filename} 처리 중 오류 (원본 보존): {type(e_chapter).__name__} - {e_chapter}",
+                                    exc_info=True,
+                                )
                                 zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
                         else:
                             # 이미지, CSS, 기타 리소스는 그대로 복사

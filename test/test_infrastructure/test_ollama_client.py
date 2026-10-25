@@ -15,6 +15,7 @@ from core.exceptions import (
     BtgApiClientException,
     BtgApiInvalidRequestException,
     BtgApiRateLimitException,
+    BtgApiRepetitionException,
 )
 from infrastructure.ollama_client import OllamaClient, _inline_json_schema_refs
 
@@ -229,6 +230,38 @@ class TestOllamaClient(unittest.IsolatedAsyncioTestCase):
         ok, msg = await self.client.check_health_async()
         self.assertFalse(ok)
         self.assertIn("연결할 수 없습니다", msg)
+
+    @patch("infrastructure.ollama_client.requests.request")
+    async def test_token_repeat_limit_raises_repetition_exception(self, mock_request):
+        mock_request.return_value = _response(500, {"error": "prediction aborted, token repeat limit reached"})
+        with self.assertRaises(BtgApiRepetitionException) as ctx:
+            await self.client.generate_text_async("『グガガァァァァァァァァッッッッ!!』")
+        self.assertIn("반복 생성을 감지해 중단", str(ctx.exception))
+        # BtgApiClientException의 하위 타입인지도 확인
+        self.assertIsInstance(ctx.exception, BtgApiClientException)
+
+    @patch("infrastructure.ollama_client.requests.request")
+    async def test_normalize_repeated_chars_enabled(self, mock_request):
+        client = OllamaClient(model_name="gemma3:12b", normalize_repeated_chars=True)
+        mock_request.return_value = _response(payload=_chat_payload("번역완료"))
+        await client.generate_text_async("『グガガァァァァァァァァッッッッ!!』 ドドドドドドドドドドドドドドドド")
+        payload = mock_request.call_args[1]["json"]
+        user_content = payload["messages"][-1]["content"]
+        # ァ가 8개에서 4개로 정규화되었는지 확인
+        self.assertIn("ァァァァ", user_content)
+        self.assertNotIn("ァァァァァ", user_content)
+        # ドドドド... 16자가 ドドドドドド(6자)로 정규화되었는지 확인
+        self.assertNotIn("ドドドドドドドド", user_content)
+
+    @patch("infrastructure.ollama_client.requests.request")
+    async def test_normalize_repeated_chars_disabled(self, mock_request):
+        client = OllamaClient(model_name="gemma3:12b", normalize_repeated_chars=False)
+        mock_request.return_value = _response(payload=_chat_payload("번역완료"))
+        raw_text = "『グガガァァァァァァァァッッッッ!!』"
+        await client.generate_text_async(raw_text)
+        payload = mock_request.call_args[1]["json"]
+        user_content = payload["messages"][-1]["content"]
+        self.assertEqual(user_content, raw_text)
 
     def test_inline_json_schema_refs(self):
         schema = {
