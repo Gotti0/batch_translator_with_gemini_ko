@@ -134,13 +134,14 @@ class TestLLMClientFactory(unittest.TestCase):
         self.assertEqual(client.provider_name, "antigravity_cli")
         self.assertFalse(client.supports_pagefold)
 
-    def test_create_cursor_cli_client(self):
-        from infrastructure.cursor_cli_client import CursorCliClient
-        cfg = {"llm_provider": "cursor_cli", "cursor_cli_model": "gpt-5.6-sol-medium", "api_timeout": 300}
+    def test_create_grok_cli_client(self):
+        from infrastructure.grok_cli_client import GrokCliClient
+        cfg = {"llm_provider": "grok_cli", "grok_cli_model": "grok-4.6", "grok_cli_effort": "low", "api_timeout": 300}
         client = LLMClientFactory.create_client(cfg)
-        self.assertIsInstance(client, CursorCliClient)
-        self.assertEqual(client.provider_name, "cursor_cli")
-        self.assertEqual(client.model_name, "gpt-5.6-sol-medium")
+        self.assertIsInstance(client, GrokCliClient)
+        self.assertEqual(client.provider_name, "grok_cli")
+        self.assertEqual(client.model_name, "grok-4.6")
+        self.assertEqual(client.effort, "low")
         self.assertEqual(client.timeout_seconds, 300)
         self.assertFalse(client.supports_pagefold)
 

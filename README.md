@@ -10,7 +10,7 @@
 </p>
 
 BTG는 대용량 텍스트 및 웹소설/문학 번역에 특화된 고성능 배치 번역 플랫폼입니다.  
-Google Gemini API를 비롯해 로컬 CLI 구독 세션(Claude Code, OpenAI Codex, Google Antigravity, Cursor Agent), 로컬 LLM(Ollama), OpenAI 호환 엔드포인트를 폭넓게 지원하며, **Gemini Batch API(비용 50% 절감)**, **PageFold PDF 토큰 압축(최대 90% 절감)**, **Voyage AI & WygLore Leaf 기반 번역 장기기억 및 연상 기억 그래프** 등 최신 기술을 탑재하여 압도적인 비용 효율과 번역 일관성을 제공합니다.
+Google Gemini API를 비롯해 로컬 CLI 구독 세션(Claude Code, OpenAI Codex, Google Antigravity, xAI Grok Build), 로컬 LLM(Ollama), OpenAI 호환 엔드포인트를 폭넓게 지원하며, **Gemini Batch API(비용 50% 절감)**, **PageFold PDF 토큰 압축(최대 90% 절감)**, **Voyage AI & WygLore Leaf 기반 번역 장기기억 및 연상 기억 그래프** 등 최신 기술을 탑재하여 압도적인 비용 효율과 번역 일관성을 제공합니다.
 
 ---
 
@@ -24,7 +24,7 @@ Google Gemini API를 비롯해 로컬 CLI 구독 세션(Claude Code, OpenAI Code
   - 비동기 백그라운드 인물 메모 자동 추출(말투, 호칭, 1인칭, 관계)
   - 무결성 번역 모드(Integrity Mode)와 완벽 연동(줄 번호 기반 매핑)
 - **🔌 로컬 무과금 CLI 런타임 & 멀티 프로바이더**:
-  - 로컬 구독 세션(Claude Code, Codex CLI, Antigravity CLI, Cursor Agent CLI)을 서브프로세스로 활용해 API 과금 없이 $0 번역
+  - 로컬 구독 세션(Claude Code, Codex CLI, Antigravity CLI, Grok Build CLI)을 서브프로세스로 활용해 API 과금 없이 $0 번역
   - Ollama 네이티브 API 지원 (`num_ctx` 자동 제어, `<think>` 블록 제거, Pydantic 스키마 검증)
   - 다중 Gemini API 키 자동 순환 및 서킷 브레이커
 - **🖥️ 모던 PySide6 GUI**: 반응형 다크 테마, 동적 프로바이더 설정 폼, 배치 작업 관리 패널, "기억뜰 보기" 시각화 다이얼로그
@@ -93,8 +93,8 @@ Google Gemini API를 비롯해 로컬 CLI 구독 세션(Claude Code, OpenAI Code
   - UI에서 원클릭으로 각 프로바이더의 연결 상태와 세션을 확인하는 **[인증 / 연결 테스트]** 기능
 - **지원 공급자**:
   - **Google Gemini API**: 최신 Gemini 모델 지원 (gemini-2.5-flash, gemini-3-pro-preview 등), Thinking Budget / Dynamic Thinking, 다중 키 등록 순서 기반 최적화 및 쿨다운 관리
-  - **로컬 CLI 런타임 (Claude Code, OpenAI Codex, Google Antigravity `agy`, Cursor Agent `cursor-agent`)**:
-    - 별도 API 키 없이 사용자가 이미 구독 중인 세션(Claude Pro/Max, ChatGPT Plus, Google Auth, Cursor)을 서브프로세스로 활용해 **추가 API 비용 $0** 번역
+  - **로컬 CLI 런타임 (Claude Code, OpenAI Codex, Google Antigravity `agy`, xAI Grok Build `grok`)**:
+    - 별도 API 키 없이 사용자가 이미 구독 중인 세션(Claude Pro/Max, ChatGPT Plus, Google Auth, grok.com)을 서브프로세스로 활용해 **추가 API 비용 $0** 번역
     - Windows 명령줄 길이 상한(8,191자)을 회피하기 위해 `stdin` 파이프 스트리밍 방식 적용
     - 로컬 캐시 파싱을 통한 실시간 가용 모델 동적 목록화
   - **Ollama 네이티브 API (`/api/chat`)**:
@@ -166,7 +166,7 @@ graph TD
         P3[infrastructure/claude_cli_client.py]
         P4[infrastructure/codex_cli_client.py]
         P5[infrastructure/antigravity_cli_client.py]
-        P10[infrastructure/cursor_cli_client.py]
+        P10[infrastructure/grok_cli_client.py]
         P6[infrastructure/ollama_client.py]
         P7[infrastructure/OpenAICompatibleClient.py]
         P8[infrastructure/embedding_client.py]
@@ -227,7 +227,7 @@ graph TD
 - **Infrastructure Layer**: 외부 LLM API, 로컬 CLI 및 시스템 입출력
   - `infrastructure/llm_client_factory.py`: 설정에 따른 멀티 프로바이더 클라이언트 동적 팩토리
   - `infrastructure/gemini_client.py` & `gemini_batch_client.py`: Gemini API 및 Gemini Batch API 클라이언트
-  - `infrastructure/claude_cli_client.py`, `codex_cli_client.py`, `antigravity_cli_client.py`, `cursor_cli_client.py`: 로컬 무과금 CLI 어댑터
+  - `infrastructure/claude_cli_client.py`, `codex_cli_client.py`, `antigravity_cli_client.py`, `grok_cli_client.py`: 로컬 무과금 CLI 어댑터
   - `infrastructure/ollama_client.py`: 로컬 Ollama REST API 클라이언트
   - `infrastructure/embedding_client.py`: Voyage AI 임베딩 REST 클라이언트
   - `infrastructure/key_pool.py`, `circuit_breaker.py`, `request_scheduler.py`: 키 회전 및 장애 내구도 제어
@@ -266,7 +266,7 @@ BTG/
 │   ├── claude_cli_client.py         # 인프라 계층: Claude Code CLI 어댑터
 │   ├── codex_cli_client.py          # 인프라 계층: OpenAI Codex CLI 어댑터
 │   ├── antigravity_cli_client.py    # 인프라 계층: Google Antigravity CLI 어댑터
-│   ├── cursor_cli_client.py         # 인프라 계층: Cursor Agent CLI 어댑터
+│   ├── grok_cli_client.py           # 인프라 계층: xAI Grok Build CLI 어댑터
 │   ├── ollama_client.py             # 인프라 계층: Ollama 네이티브 API 클라이언트
 │   ├── OpenAICompatibleClient.py    # 인프라 계층: OpenAI 호환 API 클라이언트
 │   ├── embedding_client.py          # 인프라 계층: Voyage AI 임베딩 클라이언트
@@ -307,7 +307,7 @@ BTG/
 - Python 3.10+
 - 지원 프로바이더 중 하나 이상의 API 키 또는 로컬 세션:
   - Google Gemini API 키 (유료 또는 무료)
-  - Claude Code CLI, Codex CLI, Antigravity CLI 또는 Cursor Agent CLI 로컬 세션
+  - Claude Code CLI, Codex CLI, Antigravity CLI 또는 Grok Build CLI 로컬 세션
   - 로컬 Ollama 인스턴스
   - Voyage AI API 키 (번역 장기기억 사용 시 선택 사항)
 
@@ -371,15 +371,15 @@ python main_cli.py input.txt -o output.txt --translation-memory --voyage-api-key
   - 검열이나 일시적 오류로 배치에서 완료되지 못한 청크가 있다면, [실시간으로 마무리] 버튼을 눌러 제출 때와 같은 방식(표준/무결성)의 이어하기와 검열 자동 분할 재시도로 즉시 번역을 완성할 수 있습니다.
 - **그대로 저장**: 일반 방식은 미완료 청크를 실패 표시와 원문으로, 무결성 방식은 줄 위치를 지키도록 원문 줄로 채웁니다.
 
-### 2. 로컬 CLI 무과금 런타임 (Claude, Codex, Antigravity, Cursor)
+### 2. 로컬 CLI 무과금 런타임 (Claude, Codex, Antigravity, Grok)
 - **비용 $0 번역**: 종량제 API 키를 발급받지 않고도 로컬 PC에 로그인된 세션을 그대로 활용합니다.
   - **Claude Code CLI**: `claude` (Claude Pro/Max 세션)
   - **OpenAI Codex CLI**: `codex` (ChatGPT Plus 세션)
   - **Google Antigravity CLI**: `agy` (Google 계정 세션)
-  - **Cursor Agent CLI**: `cursor-agent` (Cursor 계정 세션, 터미널에서 `cursor-agent login`으로 먼저 로그인)
-    - 읽기 전용 `ask` 모드와 빈 임시 작업 폴더로 실행해 파일 수정·셸 실행을 막고, 사용자 `~/.cursor`의 기본 모델과 대화 기록을 건드리지 않습니다.
-    - 추론 강도는 모델 ID로 고릅니다(예: `claude-opus-5-5-high`, `gpt-5.6-sol-medium`). **[모델 목록 조회]**로 계정에서 쓸 수 있는 전체 목록을 불러옵니다.
-    - print 모드가 stdin을 받지 않아 프롬프트를 명령줄 인자로 넘기므로, Windows에서는 프롬프트가 약 32,000자를 넘으면 청크 크기를 줄여야 합니다.
+  - **xAI Grok Build CLI**: `grok` (grok.com 계정 세션, 터미널에서 `grok login`으로 먼저 로그인). PATH에 없으면 기본 설치 위치(`~/.grok/bin/grok.exe`)를 찾습니다.
+    - 사용자 환경과 격리해 실행합니다. Grok Build가 기본으로 읽는 Claude·Cursor 규칙(CLAUDE.md, `~/.claude/rules`)·스킬·훅·MCP를 끄고, 세션 기록은 사용자 `~/.grok` 대신 임시 폴더의 전용 홈(`btg_grok_home`)에 남깁니다. 로그인은 `~/.grok/auth.json`을 그대로 씁니다.
+    - 도구는 읽기 하나(`read_file`)만 남겨 셸 실행·파일 수정·웹 검색을 막고, 빈 임시 작업 폴더에서 실행합니다.
+    - 프롬프트는 파일(`--prompt-file`)로 넘겨 길이 제한이 없고, 구조화 출력은 `--json-schema`로 강제합니다. 추론 강도는 `low`/`medium`/`high`/`xhigh`입니다.
 - **긴 프롬프트 안전 처리**: Windows 환경의 8,191자 명령줄 길이 제한을 극복하기 위해 모든 프롬프트를 서브프로세스의 `stdin` 스트림으로 안전하게 전송합니다.
 - **연결 확인**: 설정 탭에서 프로바이더 선택 후 **[인증 / 연결 테스트]** 버튼을 누르면 CLI 세션 유효성을 즉시 검증합니다.
 
@@ -468,5 +468,5 @@ SOFTWARE.
 ## ⚠️ 주의사항
 
 - **API 요금**: Gemini API 및 Voyage AI 사용 시 플랜에 따른 비용이 발생할 수 있습니다. (Gemini Batch API 사용 시 50% 절감 가능)
-- **로컬 CLI 사전 로그인**: Claude Code, Codex, Antigravity, Cursor Agent CLI를 프로바이더로 사용할 때는 사전에 터미널에서 해당 CLI에 로그인되어 있어야 합니다.
+- **로컬 CLI 사전 로그인**: Claude Code, Codex, Antigravity, Grok Build CLI를 프로바이더로 사용할 때는 사전에 터미널에서 해당 CLI에 로그인되어 있어야 합니다.
 - **디스크 공간**: 대용량 장편 소설 번역 시 청크 백업, 임시 파일 및 번역 장기기억 벡터 캐시(`<파일명>_memory/`)를 위한 충분한 여유 공간을 확보하세요.
