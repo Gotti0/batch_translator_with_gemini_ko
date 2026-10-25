@@ -1,6 +1,8 @@
 # utils/epub_processor.py
 import copy
-from typing import List, Dict, Optional, Set, Tuple
+import html
+import re
+from typing import List, Dict, Optional, Set, Tuple, Any, Union
 from bs4 import BeautifulSoup, Tag, NavigableString
 from core.dtos import EpubNode, EpubChapter, NodeType
 from infrastructure.logger_config import setup_logger
@@ -25,12 +27,28 @@ class EpubProcessor:
         self.node_index = 0
         self.current_file_name = ""
 
-    def process_chapter(self, html_content: bytes, file_name: str) -> EpubChapter:
+    def process_chapter(self, html_content: Union[bytes, str], file_name: str) -> EpubChapter:
         """
-        HTML 콘텐츠를 파싱하여 EpubNode 리스트로 변환합니다.
+        HTML 콘텐츠를 파싱하여 EpubNode 리스트 및 메타데이터(선언부, 태그 속성 등)로 변환합니다.
         """
         self.node_index = 0
         self.current_file_name = file_name
+
+        # 선언부 추출 (XML Declaration & DOCTYPE)
+        if isinstance(html_content, bytes):
+            prefix_str = html_content[:2048].decode('utf-8', errors='ignore').lstrip('\ufeff \t\r\n')
+        else:
+            prefix_str = str(html_content)[:2048].lstrip('\ufeff \t\r\n')
+
+        xml_declaration = ""
+        xml_m = re.match(r'<\?xml[^>]*\?>', prefix_str, re.IGNORECASE)
+        if xml_m:
+            xml_declaration = xml_m.group(0).strip()
+
+        doctype = ""
+        doc_m = re.search(r'<!DOCTYPE[^>]*>', prefix_str, re.IGNORECASE | re.DOTALL)
+        if doc_m:
+            doctype = doc_m.group(0).strip()
         
         soup = BeautifulSoup(html_content, 'lxml')
         nodes: List[EpubNode] = []
@@ -56,7 +74,24 @@ class EpubProcessor:
         if soup.body:
             self._traverse(soup.body, nodes)
 
-        return EpubChapter(file_name=file_name, nodes=nodes, head_html=head_html)
+        # 3. HTML / Body 속성 보존 (스타일시트 셀렉터 및 뷰어 네임스페이스 무결성)
+        html_attrs = {}
+        if soup.html and soup.html.attrs:
+            html_attrs = {k: " ".join(v) if isinstance(v, list) else str(v) for k, v in soup.html.attrs.items()}
+
+        body_attrs = {}
+        if soup.body and soup.body.attrs:
+            body_attrs = {k: " ".join(v) if isinstance(v, list) else str(v) for k, v in soup.body.attrs.items()}
+
+        return EpubChapter(
+            file_name=file_name,
+            nodes=nodes,
+            head_html=head_html,
+            xml_declaration=xml_declaration,
+            doctype=doctype,
+            html_attributes=html_attrs,
+            body_attributes=body_attrs
+        )
 
     def _traverse(self, element: Tag, nodes: List[EpubNode]):
         """
@@ -163,34 +198,64 @@ class EpubProcessor:
             rt.decompose()
         return clone.get_text().strip()
 
+    def _dict_to_attr_str(self, attributes: Dict[str, Any]) -> str:
+        """
+        딕셔너리 속성을 HTML/XML 속성 문자열로 변환합니다.
+        """
+        if not attributes:
+            return ""
+        attrs = []
+        for k, v in attributes.items():
+            val = v if isinstance(v, str) else " ".join(str(item) for item in v)
+            safe_val = str(val).replace('"', '&quot;')
+            attrs.append(f'{k}="{safe_val}"')
+        return " " + " ".join(attrs) if attrs else ""
+
     def _reconstruct_opening_tag(self, element: Tag) -> str:
         """
         BS4 Tag 객체에서 자식을 제외한 오프닝 태그 문자열만 생성합니다.
         """
-        attrs = []
-        for k, v in element.attrs.items():
-            val = v if isinstance(v, str) else " ".join(v)
-            attrs.append(f'{k}="{val}"')
-        attr_str = " " + " ".join(attrs) if attrs else ""
+        attr_str = self._dict_to_attr_str(element.attrs)
         return f"<{element.name}{attr_str}>"
 
     def reconstruct_chapter(self, chapter: EpubChapter, translated_map: Dict[str, str]) -> str:
         """
-        번역된 텍스트 맵을 사용하여 EpubChapter를 다시 HTML 문자열로 조립합니다.
+        번역된 텍스트 맵을 사용하여 EpubChapter를 유효한 XHTML 문자열로 다시 조립합니다.
         """
         html_parts = []
         
-        # Head 복구 (Title 포함)
-        html_parts.append("<html><head>")
-        
-        # Title 노드 처리
+        # 1. XML 선언 및 DOCTYPE 복구
+        if chapter.xml_declaration:
+            html_parts.append(f"{chapter.xml_declaration}\n")
+        else:
+            html_parts.append('<?xml version="1.0" encoding="utf-8"?>\n')
+
+        if chapter.doctype:
+            html_parts.append(f"{chapter.doctype}\n")
+        else:
+            html_parts.append('<!DOCTYPE html>\n')
+
+        # 2. HTML 루트 태그 (네임스페이스 및 루트 클래스/속성 복원)
+        html_attrs = dict(chapter.html_attributes)
+        if "xmlns" not in html_attrs:
+            html_attrs["xmlns"] = "http://www.w3.org/1999/xhtml"
+        html_attr_str = self._dict_to_attr_str(html_attrs)
+        html_parts.append(f"<html{html_attr_str}>\n<head>\n")
+
+        # Title 노드 및 Head 내용 복원
         title_node_id = f"{chapter.file_name}_title"
-        title_text = translated_map.get(title_node_id)
-        if title_text:
-            html_parts.append(f"<title>{title_text}</title>")
-            
+        title_node = next((n for n in chapter.nodes if n.id == title_node_id), None)
+        if title_node:
+            title_text = translated_map.get(title_node_id, title_node.content or "")
+            attr_str = self._dict_to_attr_str(title_node.attributes)
+            html_parts.append(f"<title{attr_str}>{html.escape(title_text)}</title>\n")
+
         html_parts.append(chapter.head_html)
-        html_parts.append("</head><body>")
+        html_parts.append("\n</head>\n")
+
+        # 3. Body 태그 (기존 클래스/ID 복원 -> 이미지 및 세로쓰기 스타일 보존)
+        body_attr_str = self._dict_to_attr_str(chapter.body_attributes)
+        html_parts.append(f"<body{body_attr_str}>\n")
 
         # Body 노드 처리
         for node in chapter.nodes:
@@ -198,21 +263,16 @@ class EpubProcessor:
                 continue
 
             if node.type == NodeType.TEXT:
-                translated_text = translated_map.get(node.id, node.content)
-                
+                translated_text = translated_map.get(node.id, node.content or "")
+                escaped_text = html.escape(translated_text, quote=False)
                 if not node.tag:
-                    html_parts.append(f"{translated_text}\n")
+                    html_parts.append(f"{escaped_text}\n")
                 else:
-                    # 속성 재구성
-                    attrs = []
-                    for k, v in node.attributes.items():
-                        val = v if isinstance(v, str) else " ".join(v)
-                        attrs.append(f'{k}="{val}"')
-                    attr_str = " " + " ".join(attrs) if attrs else ""
-                    html_parts.append(f"<{node.tag}{attr_str}>{translated_text}</{node.tag}>\n")
+                    attr_str = self._dict_to_attr_str(node.attributes)
+                    html_parts.append(f"<{node.tag}{attr_str}>{escaped_text}</{node.tag}>\n")
             else:
                 # IMAGE 또는 IGNORED는 원본 HTML 그대로 사용
                 html_parts.append((node.html or "") + "\n")
 
-        html_parts.append("</body>\n</html>")
+        html_parts.append("</body>\n</html>\n")
         return "".join(html_parts)

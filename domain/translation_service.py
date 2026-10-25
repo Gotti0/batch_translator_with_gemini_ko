@@ -835,7 +835,7 @@ class TranslationService:
             min_chunk_size: 최소 청크 크기
             
         Returns:
-            번역된 텍스트 (실패한 부분은 오류 메시지로 대체)
+            번역된 텍스트 (실패한 부분은 원문 유지)
         """
         try:
             return await self.translate_text_async(text_chunk)
@@ -873,12 +873,12 @@ class TranslationService:
         split_level: int = 1
     ) -> str:
         if current_attempt > max_split_attempts:
-            logger.error(f"최대 분할 시도 횟수({max_split_attempts})에 도달. 번역 실패.")
-            return f"[번역 오류로 인한 실패: 최대 분할 시도 초과]"
+            logger.warning(f"최대 분할 시도 횟수({max_split_attempts})에 도달. 원문 유지: {text_chunk[:30]!r}")
+            return text_chunk
 
         if len(text_chunk.strip()) <= min_chunk_size:
-            logger.warning(f"최소 청크 크기에 도달했지만 여전히 오류 발생: {text_chunk[:50]}...")
-            return f"[번역 오류로 인한 실패: {text_chunk[:30]}...]"
+            logger.warning(f"최소 청크 크기에 도달했지만 여전히 오류 발생. 원문 유지: {text_chunk[:30]!r}")
+            return text_chunk
 
         logger.info(f"📊 청크 분할 시도 #{current_attempt} (깊이: {current_attempt-1})")
         logger.info(f"   📏 원본 크기: {len(text_chunk)} 글자")
@@ -905,8 +905,8 @@ class TranslationService:
             )
         
         if len(sub_chunks) <= 1:
-            logger.error("청크 분할 실패. 번역 포기.")
-            return f"[분할 불가능한 오류 발생 콘텐츠: {text_chunk[:30]}...]"
+            logger.warning(f"청크 분할 불가로 번역 생략 및 원문 유지: {text_chunk[:30]!r}")
+            return text_chunk
         
         # 서브 청크는 순서대로 처리한다. 동시 작업 수는 가장 바깥 진입점(앱 번역 루프, 검수 탭)이 제한하고,
         # API 요청은 GeminiClient의 스케줄러가 한 번에 하나씩 보내므로 여기서 병렬로 띄워도 빨라지지 않는다.
@@ -938,19 +938,19 @@ class TranslationService:
                         sub_chunk, max_split_attempts, min_chunk_size, current_attempt + 1
                     ))
                 else:
-                    logger.error(f"   ❌ 서브 청크 {idx+1} 번역 실패: {str(e_sub)[:100]}")
-                    translated_parts.append(f"[서브 청크 {idx+1} 번역 실패: {str(e_sub)[:50]}]")
+                    logger.warning(f"   🛡️ 서브 청크 {idx+1} 번역 최종 실패로 원문 유지: {sub_chunk[:30]!r} (사유: {str(e_sub)[:100]})")
+                    translated_parts.append(sub_chunk)
             except BtgApiClientException as e_api:
                 # 키·재시도 소진은 작업을 멈추라는 신호이고, 과부하는 청크 단위로 기다렸다 다시 하는
                 # 대상이다. 자리표시 문구로 삼키면 이 청크가 완료로 기록돼 이어하기도 다시 집지 않는
                 # 구멍이 남는다.
                 if isinstance(e_api.original_exception, GeminiAllApiKeysExhaustedException) or _is_overload_failure(e_api):
                     raise
-                logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_api}")
-                translated_parts.append(f"[서브 청크 {idx+1} 번역 오류]")
+                logger.warning(f"   🛡️ 서브 청크 {idx+1} 클라이언트 오류로 원문 유지: {sub_chunk[:30]!r} ({e_api})")
+                translated_parts.append(sub_chunk)
             except Exception as e_general:
-                logger.error(f"   ❌ 서브 청크 {idx+1} 예상치 못한 오류: {e_general}")
-                translated_parts.append(f"[서브 청크 {idx+1} 번역 오류]")
+                logger.warning(f"   🛡️ 서브 청크 {idx+1} 예상치 못한 오류로 원문 유지: {sub_chunk[:30]!r} ({e_general})")
+                translated_parts.append(sub_chunk)
 
         logger.info(f"   📊 서브 청크 처리 완료: {len(translated_parts)}/{len(sub_chunks)}개")
 
