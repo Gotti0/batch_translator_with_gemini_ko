@@ -79,7 +79,7 @@ try:
     from infrastructure.logger_config import setup_logger
     from infrastructure.file_handler import (
         read_text_file, get_metadata_file_path, load_metadata,
-        _hash_config_for_metadata, delete_file
+        _hash_config_for_metadata
     )
 except ImportError as e:
     print(f"오류: 필요한 모듈을 임포트할 수 없습니다. PYTHONPATH를 확인하거나 "
@@ -453,9 +453,8 @@ def main():
                         should_start_new = True
 
                 if should_start_new:
-                    cli_logger.info("새로 번역을 위해 기존 메타데이터 및 출력 파일을 삭제합니다.")
-                    if metadata_file_path.exists(): delete_file(metadata_file_path)
-                    if output_file.exists(): delete_file(output_file)
+                    cli_logger.info("새로 번역을 위해 기존 메타데이터, 출력 파일, 진행 상태 폴더를 삭제합니다.")
+                    app_service.discard_saved_progress(input_file, output_file)
 
                 # 비동기 번역을 동기 방식으로 래핑 (CLI 호환성)
                 asyncio.run(

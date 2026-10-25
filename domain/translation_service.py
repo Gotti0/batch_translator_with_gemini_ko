@@ -962,6 +962,12 @@ class TranslationService:
         out_p = Path(output_path)
         return out_p.parent / f"{out_p.stem}_integrity_temp"
 
+    @staticmethod
+    def epub_temp_dir_for(epub_path: Union[str, Path]) -> Path:
+        """EPUB 번역이 챕터별 결과와 진행 상태(epub_metadata.json)를 저장하는 폴더. 입력 파일 기준이다."""
+        epub_p = Path(epub_path)
+        return epub_p.parent / f"{epub_p.stem}_epub_temp"
+
     def split_integrity_chunks(self, text: str) -> List[List[TranslationUnit]]:
         """무결성 모드의 청크 분할 (줄마다 id를 붙인 단위 목록). 번역 기억 인덱싱도 같은 경계를 쓴다."""
         units = [TranslationUnit(id=str(i), text=line) for i, line in enumerate(text.splitlines())]
@@ -1731,7 +1737,7 @@ class TranslationService:
 
         logger.info(f"🚀 EPUB 번역 시작: {epub_path.name}")
         
-        temp_dir = epub_path.parent / f"{epub_path.stem}_epub_temp"
+        temp_dir = self.epub_temp_dir_for(epub_path)
         metadata_path = temp_dir / "epub_metadata.json"
         
         metadata = {"translated_files": []}
