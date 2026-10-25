@@ -200,34 +200,37 @@ class TestSettingsTabProvider(unittest.TestCase):
         self.assertIn("default", items)
         self.assertIn("gemini-3.8-flash-high", items)
 
-    def test_switch_to_cursor_cli(self):
-        """Cursor CLI는 CLI 경로만 받고 키·추론 강도 행을 숨긴다"""
-        idx = self.tab.provider_combo.findData("cursor_cli")
+    def test_switch_to_grok_cli(self):
+        """Grok CLI는 CLI 경로·추론 강도를 받고 키 행을 숨긴다"""
+        idx = self.tab.provider_combo.findData("grok_cli")
         self.assertNotEqual(idx, -1)
         self.tab.provider_combo.setCurrentIndex(idx)
 
         form = self.tab.api_form
         self.assertTrue(form.isRowVisible(self.tab.cli_path_edit))
-        self.assertEqual(self.tab.cli_path_edit.text(), "cursor-agent")
+        self.assertEqual(self.tab.cli_path_edit.text(), "grok")
         self.assertFalse(form.isRowVisible(self.tab.api_keys_edit))
         self.assertFalse(form.isRowVisible(self.tab.base_url_edit))
-        self.assertFalse(form.isRowVisible(self.tab.reasoning_effort_combo))
         self.assertFalse(self.tab.enable_pagefold_check.isEnabled())
-        self.assertEqual(self.tab.model_name_combo.currentText(), "auto")
+        self.assertEqual(self.tab.model_name_combo.currentText(), "default")
+        self.assertEqual(self._effort_values(), [None, "low", "medium", "high", "xhigh"])
 
-        self.tab.model_name_combo.setCurrentText("claude-opus-5-5-high")
+        combo = self.tab.reasoning_effort_combo
+        combo.setCurrentIndex(combo.findData("low"))
+        self.tab.model_name_combo.setCurrentText("grok-4.6")
         self.tab._save_config_to_service()
         saved = self.mock_app_service.save_app_config.call_args[0][0]
-        self.assertEqual(saved["llm_provider"], "cursor_cli")
-        self.assertEqual(saved["cursor_cli_model"], "claude-opus-5-5-high")
-        self.assertEqual(saved["cursor_cli_path"], "cursor-agent")
-        self.assertEqual(self.tab._build_provider_config_from_ui()["cursor_cli_model"], "claude-opus-5-5-high")
+        self.assertEqual(saved["llm_provider"], "grok_cli")
+        self.assertEqual(saved["grok_cli_model"], "grok-4.6")
+        self.assertEqual(saved["grok_cli_path"], "grok")
+        self.assertEqual(saved["grok_cli_effort"], "low")
+        self.assertEqual(self.tab._build_provider_config_from_ui()["grok_cli_model"], "grok-4.6")
 
-    def test_load_restores_cursor_model(self):
-        self.mock_app_service.config = {"llm_provider": "cursor_cli", "cursor_cli_model": "gpt-5.6-sol-xhigh"}
+    def test_load_restores_grok_model(self):
+        self.mock_app_service.config = {"llm_provider": "grok_cli", "grok_cli_model": "grok-4.7-build-fast"}
         self.tab._load_config()
-        self.assertEqual(self.tab.provider_combo.currentData(), "cursor_cli")
-        self.assertEqual(self.tab.model_name_combo.currentText(), "gpt-5.6-sol-xhigh")
+        self.assertEqual(self.tab.provider_combo.currentData(), "grok_cli")
+        self.assertEqual(self.tab.model_name_combo.currentText(), "grok-4.7-build-fast")
 
     def test_switch_to_openai_compatible(self):
         """OpenAI Compatible 프로바이더 전환 시 UI 가시성 검증"""

@@ -22,14 +22,13 @@ from infrastructure.logger_config import setup_logger
 from gui_qt.components_qt.tooltip_qt import TooltipQt
 from gui_qt.config_coordinator import ConfigCoordinator
 from infrastructure.reasoning_options import DEFAULT_CHOICE_LABEL, reasoning_spec_for
-from infrastructure.cursor_cli_client import CursorCliClient
 
 logger = setup_logger(__name__)
 from gui_qt.components_qt.mode_card import ModeSelectorGroup
 from gui_qt.dialogs_qt.prefill_history_editor_qt import PrefillHistoryEditorDialogQt
 
 
-# 프로바이더별 API 키 설정 필드. Antigravity·Cursor CLI는 키를 쓰지 않아 저장하지 않는다.
+# 프로바이더별 API 키 설정 필드. Antigravity·Grok CLI는 키를 쓰지 않아 저장하지 않는다.
 PROVIDER_KEY_FIELDS = {
     "gemini": "api_keys",
     "claude_cli": "claude_cli_api_key",
@@ -43,11 +42,11 @@ CLI_PATH_FIELDS = {
     "claude_cli": ("claude_cli_path", "claude"),
     "codex_cli": ("codex_cli_path", "codex"),
     "antigravity_cli": ("antigravity_cli_path", "agy"),
-    "cursor_cli": ("cursor_cli_path", "cursor-agent"),
+    "grok_cli": ("grok_cli_path", "grok"),
 }
 
 # "추론 강도" 행을 쓰는 프로바이더. Gemini는 기존 Thinking Level/Budget 행을 쓴다.
-EFFORT_PROVIDERS = ("claude_cli", "codex_cli", "antigravity_cli", "ollama", "openai_compatible")
+EFFORT_PROVIDERS = ("claude_cli", "codex_cli", "antigravity_cli", "grok_cli", "ollama", "openai_compatible")
 
 
 class NoWheelSpinBox(QtWidgets.QSpinBox):
@@ -260,7 +259,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.provider_combo.addItem("Google Antigravity CLI (로컬 CLI - agy.exe)", "antigravity_cli")
         self.provider_combo.addItem("Anthropic Claude (로컬 CLI - claude.exe)", "claude_cli")
         self.provider_combo.addItem("OpenAI Codex / GPT (로컬 CLI - codex.exe)", "codex_cli")
-        self.provider_combo.addItem("Cursor Agent CLI (로컬 CLI - cursor-agent)", "cursor_cli")
+        self.provider_combo.addItem("xAI Grok Build (로컬 CLI - grok.exe)", "grok_cli")
         self.provider_combo.addItem("Ollama (로컬 LLM 서버)", "ollama")
         self.provider_combo.addItem("OpenAI 호환 API (DeepSeek, vLLM 등)", "openai_compatible")
         TooltipQt(
@@ -843,7 +842,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         is_claude = (provider == "claude_cli")
         is_codex = (provider == "codex_cli")
         is_agy = (provider == "antigravity_cli")
-        is_cursor = (provider == "cursor_cli")
+        is_grok = (provider == "grok_cli")
         is_openai_compat = (provider == "openai_compatible")
         is_ollama = (provider == "ollama")
 
@@ -851,7 +850,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.api_form.setRowVisible(self.base_url_edit, is_openai_compat or is_ollama)
         self.api_form.setRowVisible(self.ollama_num_ctx_spin, is_ollama)
         self.api_form.setRowVisible(self.ollama_normalize_check, is_ollama)
-        # Antigravity·Cursor CLI는 로그인 세션만 쓰고 키를 받지 않는다
+        # Antigravity·Grok CLI는 로그인 세션만 쓰고 키를 받지 않는다
         self.api_form.setRowVisible(self.api_keys_edit, provider in PROVIDER_KEY_FIELDS)
         self.api_form.setRowVisible(self.use_vertex_check, is_gemini)
 
@@ -904,10 +903,9 @@ class SettingsTabQt(QtWidgets.QWidget):
         elif is_agy:
             models = ["default", "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.1-pro-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]
             target_model = cfg.get("antigravity_cli_model", "default")
-        elif is_cursor:
-            # 전체 목록(수백 개)은 모델 목록 조회 버튼으로 불러온다
-            models = list(CursorCliClient.FALLBACK_MODELS)
-            target_model = cfg.get("cursor_cli_model", "auto")
+        elif is_grok:
+            models = ["default", "grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"]
+            target_model = cfg.get("grok_cli_model", "default")
         elif is_ollama:
             models = ["gemma3:12b", "gemma3:27b", "qwen3:14b", "qwen3:32b", "exaone3.5:7.8b", "exaone3.5:32b", "llama3.1:8b"]
             target_model = cfg.get("ollama_model") or ""
@@ -1131,8 +1129,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             model_val = str(cfg.get("codex_cli_model") or defaults.get("codex_cli_model", "gpt-5.5"))
         elif provider == "antigravity_cli":
             model_val = str(cfg.get("antigravity_cli_model") or defaults.get("antigravity_cli_model", "default"))
-        elif provider == "cursor_cli":
-            model_val = str(cfg.get("cursor_cli_model") or defaults.get("cursor_cli_model", "auto"))
+        elif provider == "grok_cli":
+            model_val = str(cfg.get("grok_cli_model") or defaults.get("grok_cli_model", "default"))
         elif provider == "openai_compatible":
             model_val = str(cfg.get("openai_compatible_model") or defaults.get("openai_compatible_model", "default"))
         elif provider == "ollama":
@@ -1278,8 +1276,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             cfg["codex_cli_model"] = selected_model or "gpt-5.5"
         elif provider == "antigravity_cli":
             cfg["antigravity_cli_model"] = selected_model or "default"
-        elif provider == "cursor_cli":
-            cfg["cursor_cli_model"] = selected_model or "auto"
+        elif provider == "grok_cli":
+            cfg["grok_cli_model"] = selected_model or "default"
         elif provider == "openai_compatible":
             cfg["openai_compatible_base_url"] = self.base_url_edit.text().strip()
             cfg["openai_compatible_model"] = selected_model or "default"
@@ -1589,8 +1587,8 @@ class SettingsTabQt(QtWidgets.QWidget):
             "codex_cli_api_key": (first_key or None) if provider == "codex_cli" else None,
             "antigravity_cli_path": self._cli_path_for("antigravity_cli"),
             "antigravity_cli_model": self.model_name_combo.currentText().strip() or "default",
-            "cursor_cli_path": self._cli_path_for("cursor_cli"),
-            "cursor_cli_model": self.model_name_combo.currentText().strip() or "auto",
+            "grok_cli_path": self._cli_path_for("grok_cli"),
+            "grok_cli_model": self.model_name_combo.currentText().strip() or "default",
             "openai_compatible_base_url": self.base_url_edit.text().strip(),
             "openai_compatible_api_key": first_key if provider == "openai_compatible" else "",
             "openai_compatible_model": self.model_name_combo.currentText().strip() or "default",

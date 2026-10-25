@@ -162,7 +162,7 @@ class ConfigManager:
             "batch_max_request_bytes": 18_000_000,  # 인라인 요청 한도 20MB에 여유를 둔 작업당 크기
 
             # 멀티 프로바이더 설정
-            "llm_provider": "gemini",  # gemini, claude_cli, codex_cli, antigravity_cli, cursor_cli, openai_compatible, ollama
+            "llm_provider": "gemini",  # gemini, claude_cli, codex_cli, antigravity_cli, grok_cli, openai_compatible, ollama
             "claude_cli_path": "claude",
             "claude_cli_model": "default",
             "claude_cli_api_key": "",  # 비우면 로그인된 구독 세션 사용
@@ -174,8 +174,9 @@ class ConfigManager:
             "antigravity_cli_path": "agy",
             "antigravity_cli_model": "default",
             "antigravity_cli_effort": None,
-            "cursor_cli_path": "cursor-agent",
-            "cursor_cli_model": "auto",  # 추론 강도는 모델 ID 접미사에 들어 있다
+            "grok_cli_path": "grok",
+            "grok_cli_model": "default",
+            "grok_cli_effort": None,  # --effort (None이면 grok 기본값)
             "openai_compatible_base_url": "https://api.openai.com/v1/chat/completions",
             "openai_compatible_api_key": "",
             "openai_compatible_reasoning_effort": None,  # 서버가 지원할 때만 지정
@@ -285,6 +286,10 @@ class ConfigManager:
                 tb_value = final_config.get("thinking_budget")
                 if tb_value is not None and not isinstance(tb_value, int):
                     final_config["thinking_budget"] = default_config["thinking_budget"] # 잘못된 타입이면 기본값으로
+
+                # cursor_cli는 grok_cli로 대체됐다. 그대로 두면 팩토리 기본 분기로 빠져 Gemini 키로 번역한다.
+                if final_config.get("llm_provider") == "cursor_cli":
+                    final_config["llm_provider"] = "grok_cli"
 
                 # 언어 코드 정규화
                 if "target_translation_language" in final_config:
