@@ -23,7 +23,13 @@ from core.exceptions import (
     BtgApiInvalidRequestException,
     BtgApiContentSafetyException,
 )
-from infrastructure.base_client import BaseLLMClient, kill_if_running, is_content_safety_error
+from infrastructure.base_client import (
+    BaseLLMClient,
+    kill_if_running,
+    is_content_safety_error,
+    resolve_call_options,
+    schema_to_dict,
+)
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -42,6 +48,17 @@ def _is_rate_limited(err_msg: str) -> bool:
         k in lowered
         for k in ("rate limit", "too many requests", "usage limit", "resource_exhausted", "quota exceeded")
     )
+
+
+def _is_provider_block(err_msg: str) -> bool:
+    """모델 제공사 사용 지침에 따른 차단인지 판별한다.
+
+    Cursor는 콘텐츠 차단도 요금제 문제와 같은 ActionRequiredError로 보낸다
+    ("Request blocked ... under the model provider's usage guidelines", 2026-10-25 실측).
+    검열로 분류해야 분할 재시도 경로를 탄다.
+    """
+    lowered = err_msg.lower()
+    return "request blocked" in lowered or "usage guidelines" in lowered
 
 
 def _is_auth_error(err_msg: str) -> bool:
@@ -199,68 +216,66 @@ class CursorCliClient(BaseLLMClient):
         """
         `cursor-agent -p --mode ask` 비동기 서브프로세스를 호출하여 텍스트를 생성합니다.
         """
+        system_instruction, response_schema = resolve_call_options(system_instruction, response_schema, kwargs)
         prompt_str = self._prepare_prompt_string(prompt, system_instruction)
 
-        if response_schema is not None:
-            if hasattr(response_schema, "model_json_schema"):
-                schema_json = json.dumps(response_schema.model_json_schema(), ensure_ascii=False)
-            elif isinstance(response_schema, dict):
-                schema_json = json.dumps(response_schema, ensure_ascii=False)
-            else:
-                schema_json = str(response_schema)
+        # cursor-agent에는 스키마 옵션이 없어 프롬프트로만 요구한다
+        schema_dict = schema_to_dict(response_schema)
+        if schema_dict:
             prompt_str += (
                 f"\n\n[OUTPUT REQUIREMENT]: Respond with ONLY valid JSON strictly matching the following schema. "
-                f"Do not include markdown code block formatting (e.g. ```json) or preamble:\n{schema_json}"
+                f"Do not include markdown code block formatting (e.g. ```json) or preamble:\n"
+                f"{json.dumps(schema_dict, ensure_ascii=False)}"
             )
 
         proc = None
+        tmp_root = None
         try:
-            # 취소 시 프로세스가 아직 폴더를 잡고 있을 수 있다. 정리 실패가 CancelledError를 가리면 안 된다.
-            with tempfile.TemporaryDirectory(prefix="btg_cursor_", ignore_cleanup_errors=True) as tmp_root:
-                # ask 모드는 읽기 전용이라 셸·파일 쓰기를 막는다. 빈 임시 작업 폴더로 사용자 파일 접근도 막는다.
-                workspace = os.path.join(tmp_root, "workspace")
-                config_dir = os.path.join(tmp_root, "config")
-                os.mkdir(workspace)
-                os.mkdir(config_dir)
-                cmd = resolve_cursor_command(self.cli_path) + [
-                    "-p",
-                    "--output-format",
-                    "json",
-                    "--mode",
-                    "ask",
-                    "--trust",
-                    "--workspace",
-                    workspace,
-                ]
-                if self.model_name:
-                    cmd.extend(["--model", self.model_name])
-                cmd.append(prompt_str)
+            # ask 모드는 읽기 전용이라 셸·파일 쓰기를 막는다. 빈 임시 작업 폴더로 사용자 파일 접근도 막는다.
+            tmp_root = tempfile.mkdtemp(prefix="btg_cursor_")
+            workspace = os.path.join(tmp_root, "workspace")
+            config_dir = os.path.join(tmp_root, "config")
+            os.mkdir(workspace)
+            os.mkdir(config_dir)
+            cmd = resolve_cursor_command(self.cli_path) + [
+                "-p",
+                "--output-format",
+                "json",
+                "--mode",
+                "ask",
+                "--trust",
+                "--workspace",
+                workspace,
+            ]
+            if self.model_name:
+                cmd.extend(["--model", self.model_name])
+            cmd.append(prompt_str)
 
-                if os.name == "nt" and len(subprocess.list2cmdline(cmd)) > WINDOWS_MAX_COMMAND_LINE:
-                    raise BtgApiInvalidRequestException(
-                        f"Cursor Agent CLI 프롬프트가 Windows 명령줄 길이 상한({WINDOWS_MAX_COMMAND_LINE}자)을 넘습니다 "
-                        f"(프롬프트 {len(prompt_str)}자). 청크 크기를 줄여 주세요."
-                    )
-
-                logger.debug(f"Cursor Agent CLI 실행 시작 (모델: {self.model_name or 'auto'}, 프롬프트 {len(prompt_str)}자)")
-
-                # print 모드에서도 --model은 설정 폴더의 cli-config.json 기본 모델을 덮어쓰고, 대화 기록도
-                # 그 폴더의 chats/에 쌓인다. 사용자의 ~/.cursor를 건드리지 않도록 호출마다 빈 폴더를 준다.
-                # 로그인 정보는 이 폴더 밖에 있어 인증은 유지된다 (2026-10-25 실측).
-                env = os.environ.copy()
-                env["CURSOR_CONFIG_DIR"] = config_dir
-
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
+            if os.name == "nt" and len(subprocess.list2cmdline(cmd)) > WINDOWS_MAX_COMMAND_LINE:
+                raise BtgApiInvalidRequestException(
+                    f"Cursor Agent CLI 프롬프트가 Windows 명령줄 길이 상한({WINDOWS_MAX_COMMAND_LINE}자)을 넘습니다 "
+                    f"(프롬프트 {len(prompt_str)}자). 청크 크기를 줄여 주세요."
                 )
-                stdout_data, stderr_data = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=self.timeout_seconds,
-                )
+
+            logger.debug(f"Cursor Agent CLI 실행 시작 (모델: {self.model_name or 'auto'}, 프롬프트 {len(prompt_str)}자)")
+
+            # print 모드에서도 --model은 설정 폴더의 cli-config.json 기본 모델을 덮어쓰고, 대화 기록도
+            # 그 폴더의 chats/에 쌓인다. 사용자의 ~/.cursor를 건드리지 않도록 호출마다 빈 폴더를 준다.
+            # 로그인 정보는 이 폴더 밖에 있어 인증은 유지된다 (2026-10-25 실측).
+            env = os.environ.copy()
+            env["CURSOR_CONFIG_DIR"] = config_dir
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout_data, stderr_data = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=self.timeout_seconds,
+            )
 
             stdout_text = stdout_data.decode("utf-8", errors="replace").strip()
             stderr_text = stderr_data.decode("utf-8", errors="replace").strip()
@@ -270,7 +285,7 @@ class CursorCliClient(BaseLLMClient):
                     f"Cursor Agent CLI 비정상 종료 (code: {proc.returncode}): {stderr_text or stdout_text}"
                 )
                 err_msg = stderr_text or stdout_text
-                if is_content_safety_error(err_msg):
+                if is_content_safety_error(err_msg) or _is_provider_block(err_msg):
                     raise BtgApiContentSafetyException(f"Cursor Agent CLI 콘텐츠 안전 차단: {err_msg}")
                 if "actionrequirederror" in err_msg.lower():
                     # 요금제에 포함되지 않은 모델 등 사용자 조치가 필요한 상태라 기다려도 풀리지 않는다.
@@ -297,21 +312,15 @@ class CursorCliClient(BaseLLMClient):
                 return stdout_text
             if data.get("is_error"):
                 detail = str(data.get("result") or stdout_text)
-                if is_content_safety_error(detail):
+                if is_content_safety_error(detail) or _is_provider_block(detail):
                     raise BtgApiContentSafetyException(f"Cursor Agent CLI 콘텐츠 안전 차단: {detail}")
                 if _is_rate_limited(detail):
                     raise BtgApiRateLimitException(f"Cursor Agent CLI 사용량 제한: {detail}")
                 raise BtgApiClientException(f"Cursor Agent CLI 응답 오류: {detail}")
             return str(data.get("result") or "").strip()
 
-        except asyncio.CancelledError:
-            # 바깥 wait_for(헬스체크 제한 시간)나 번역 중지로 취소되면 안쪽 TimeoutError 경로를 타지 않는다.
-            # 그대로 두면 CLI 프로세스가 살아남아 호출을 계속하므로 여기서 정리한다.
-            kill_if_running(proc)
-            raise
         except asyncio.TimeoutError as e:
             logger.error(f"Cursor Agent CLI 실행 시간 초과 ({self.timeout_seconds}초)")
-            kill_if_running(proc)
             raise BtgApiClientException(
                 f"Cursor Agent CLI 실행 시간 초과 ({self.timeout_seconds}초)", original_exception=e
             ) from e
@@ -319,6 +328,13 @@ class CursorCliClient(BaseLLMClient):
             raise BtgApiClientException(
                 f"Cursor Agent CLI 실행 파일을 찾을 수 없습니다: {self.cli_path}", original_exception=e
             ) from e
+        finally:
+            # 취소(바깥 wait_for, 번역 중지)·시간 초과 모두 여기서 프로세스를 끝낸다. 폴더를 잡고 있으므로 지우기 전에 끝내야 한다.
+            # TemporaryDirectory는 Python 3.10에서 잠긴 폴더를 만나면 ignore_cleanup_errors와 무관하게
+            # 무한 재귀(RecursionError)로 CancelledError를 가렸다 (2026-10-25 실측).
+            kill_if_running(proc)
+            if tmp_root:
+                shutil.rmtree(tmp_root, ignore_errors=True)
 
     async def list_models_async(self) -> List[str]:
         """`cursor-agent --list-models`로 계정에서 쓸 수 있는 모델 목록을 반환한다."""

@@ -20,7 +20,15 @@ from core.exceptions import (
     BtgApiInvalidRequestException,
     BtgApiContentSafetyException,
 )
-from infrastructure.base_client import BaseLLMClient, kill_if_running, is_content_safety_error
+from infrastructure.base_client import (
+    BaseLLMClient,
+    kill_if_running,
+    is_content_safety_error,
+    resolve_call_options,
+    schema_to_dict,
+    unwrap_array_result,
+    wrap_array_schema,
+)
 from infrastructure.reasoning_options import CLAUDE_CLI
 from infrastructure.logger_config import setup_logger
 
@@ -121,23 +129,14 @@ class ClaudeCliClient(BaseLLMClient):
         """
         `claude -p` 비동기 서브프로세스를 호출하여 텍스트를 생성합니다.
         """
+        system_instruction, response_schema = resolve_call_options(system_instruction, response_schema, kwargs)
         prompt_str = self._prepare_prompt_string(prompt)
 
-        # JSON 스키마 요구사항이 있는 경우 프롬프트에 명시적 지침 추가
-        if response_schema is not None:
-            schema_json = ""
-            if hasattr(response_schema, "model_json_schema"):
-                schema_json = json.dumps(response_schema.model_json_schema(), ensure_ascii=False)
-            elif isinstance(response_schema, dict):
-                schema_json = json.dumps(response_schema, ensure_ascii=False)
-            else:
-                schema_json = str(response_schema)
-            
-            schema_instruction = (
-                f"\n\n[OUTPUT REQUIREMENT]: Respond with ONLY a valid JSON object strictly matching the following schema. "
-                f"Do not include markdown code block formatting (e.g. ```json) or preamble:\n{schema_json}"
-            )
-            prompt_str = prompt_str + schema_instruction
+        # --json-schema는 최상위 object만 받으므로 배열 스키마는 감싸서 보내고 structured_output에서 벗긴다
+        schema_dict = schema_to_dict(response_schema)
+        schema_wrapped = False
+        if schema_dict:
+            schema_dict, schema_wrapped = wrap_array_schema(schema_dict)
 
         # 커맨드라인 구성: 도구 실행 차단(--tools "") 및 권한 확인 생략
         cmd = [
@@ -158,6 +157,9 @@ class ClaudeCliClient(BaseLLMClient):
 
         if system_instruction:
             cmd.extend(["--system-prompt", str(system_instruction).strip()])
+
+        if schema_dict:
+            cmd.extend(["--json-schema", json.dumps(schema_dict, ensure_ascii=False)])
 
         # 서브프로세스 환경 변수 (UTF-8 인코딩 강제 및 API 키 오버라이드)
         env = os.environ.copy()
@@ -214,6 +216,11 @@ class ClaudeCliClient(BaseLLMClient):
                         raise BtgApiClientException(
                             f"Claude CLI 응답 오류: {err_res}"
                         )
+                    structured = data.get("structured_output")
+                    if schema_dict and structured is not None:
+                        if schema_wrapped:
+                            structured = unwrap_array_result(structured)
+                        return json.dumps(structured, ensure_ascii=False)
                     result_text = data.get("result", "")
                     if result_text:
                         return str(result_text).strip()
