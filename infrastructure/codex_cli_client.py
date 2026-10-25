@@ -21,11 +21,39 @@ from core.exceptions import (
     BtgApiInvalidRequestException,
     BtgApiContentSafetyException,
 )
-from infrastructure.base_client import BaseLLMClient, kill_if_running, is_content_safety_error
+from infrastructure.base_client import (
+    BaseLLMClient,
+    kill_if_running,
+    is_content_safety_error,
+    resolve_call_options,
+    schema_to_dict,
+    unwrap_array_result,
+    wrap_array_schema,
+)
 from infrastructure.reasoning_options import CODEX_CLI
 from infrastructure.logger_config import setup_logger
 
 logger = setup_logger(__name__)
+
+
+def to_strict_schema(schema: Any) -> Any:
+    """OpenAI strict 구조화 출력 규칙에 맞게 스키마를 고친다.
+
+    `--output-schema`는 strict 모드로 보내지므로 모든 객체에 `additionalProperties: false`가 있어야 하고
+    모든 속성이 required여야 한다 (아니면 400 invalid_json_schema, 2026-10-25 실측).
+    기본값이 있는 선택 필드도 required가 되므로 모델이 값을 채워 보낸다.
+    """
+    if isinstance(schema, list):
+        return [to_strict_schema(s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {k: to_strict_schema(v) for k, v in schema.items() if k != "default"}
+    if out.get("type") == "object" or "properties" in out:
+        props = out.get("properties") or {}
+        out["properties"] = props
+        out["required"] = list(props)
+        out["additionalProperties"] = False
+    return out
 
 
 class CodexCliClient(BaseLLMClient):
@@ -131,6 +159,7 @@ class CodexCliClient(BaseLLMClient):
         """
         `codex exec - --ephemeral --json` 비동기 서브프로세스를 호출하여 텍스트를 생성합니다.
         """
+        system_instruction, response_schema = resolve_call_options(system_instruction, response_schema, kwargs)
         prompt_str = self._prepare_prompt_string(prompt, system_instruction)
 
         cmd = [
@@ -150,14 +179,12 @@ class CodexCliClient(BaseLLMClient):
             cmd.extend(["-c", f'model_reasoning_effort="{self.effort}"'])
 
         schema_temp_path = None
+        schema_wrapped = False
         if response_schema is not None:
-            schema_dict = None
-            if hasattr(response_schema, "model_json_schema"):
-                schema_dict = response_schema.model_json_schema()
-            elif isinstance(response_schema, dict):
-                schema_dict = response_schema
-
+            schema_dict = schema_to_dict(response_schema)
             if schema_dict:
+                schema_dict, schema_wrapped = wrap_array_schema(schema_dict)
+                schema_dict = to_strict_schema(schema_dict)
                 try:
                     with tempfile.NamedTemporaryFile(
                         "w", suffix=".json", delete=False, encoding="utf-8"
@@ -231,6 +258,12 @@ class CodexCliClient(BaseLLMClient):
                 extracted_text = "\n".join(messages).strip()
                 if response_schema is not None and is_content_safety_error(extracted_text):
                     raise BtgApiContentSafetyException(f"Codex CLI 콘텐츠 안전 차단: {extracted_text}")
+                if schema_wrapped:
+                    # 호출부는 배열을 기대하므로 스키마를 위해 감쌌던 객체를 벗긴다
+                    try:
+                        return json.dumps(unwrap_array_result(json.loads(extracted_text)), ensure_ascii=False)
+                    except json.JSONDecodeError:
+                        pass
                 return extracted_text
 
             if response_schema is not None and is_content_safety_error(stdout_text):

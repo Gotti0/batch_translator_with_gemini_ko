@@ -22,7 +22,7 @@ from core.exceptions import (
     BtgApiInvalidRequestException,
     BtgApiContentSafetyException,
 )
-from infrastructure.base_client import BaseLLMClient, kill_if_running, is_content_safety_error
+from infrastructure.base_client import BaseLLMClient, kill_if_running, is_content_safety_error, resolve_call_options
 from infrastructure.reasoning_options import ANTIGRAVITY_CLI
 from infrastructure.logger_config import setup_logger
 
@@ -194,6 +194,7 @@ class AntigravityCliClient(BaseLLMClient):
         """
         `agy -p @<temp_prompt> --output-format json` 비동기 서브프로세스를 호출하여 텍스트를 생성합니다.
         """
+        system_instruction, response_schema = resolve_call_options(system_instruction, response_schema, kwargs)
         prompt_str = self._prepare_prompt_string(prompt, system_instruction)
 
         prompt_temp_path = None
