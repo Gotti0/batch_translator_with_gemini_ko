@@ -186,3 +186,7 @@ class EpubChapter(BaseModel):
     file_name: str      # ZIP 내부 전체 경로 (예: OEBPS/Text/ch1.xhtml)
     nodes: List[EpubNode]
     head_html: str      # <head> 내부 콘텐츠 보존용
+    xml_declaration: str = ""    # <?xml version="1.0" encoding="utf-8"?> 등
+    doctype: str = ""            # <!DOCTYPE html> 등
+    html_attributes: Dict[str, Any] = Field(default_factory=dict)  # xmlns, xmlns:epub, xml:lang, class, dir 등
+    body_attributes: Dict[str, Any] = Field(default_factory=dict)  # class, id, style 등
