@@ -184,6 +184,7 @@ class ConfigManager:
             "ollama_think": None,  # "true"/"false"/"low"/"medium"/"high" (None이면 모델 기본값)
             "ollama_num_ctx": 16384,  # 미지정 시 Ollama 기본값(2K~4K)에서 프롬프트가 잘린다
             "ollama_keep_alive": None,  # 예: "10m", "-1" (None이면 서버 기본값)
+            "ollama_normalize_repeated_chars": True,  # 반복 의성어에 의한 토큰 반복 중단(token repeat limit) 방지용 입력 정규화
 
             # 경량화된 용어집 관련 기본 설정
             "glossary_json_path": None, # 용어집 파일 경로

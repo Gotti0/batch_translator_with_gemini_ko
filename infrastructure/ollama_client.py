@@ -25,6 +25,7 @@ from core.exceptions import (
     BtgApiClientException,
     BtgApiInvalidRequestException,
     BtgApiRateLimitException,
+    BtgApiRepetitionException,
 )
 from infrastructure.base_client import BaseLLMClient
 from infrastructure.reasoning_options import OLLAMA as OLLAMA_REASONING, ollama_think_payload
@@ -35,6 +36,19 @@ logger = setup_logger(__name__)
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_REPEATED_1CHAR_RE = re.compile(r"([^\s])\1{4,}")
+_REPEATED_2CHAR_RE = re.compile(r"([^\s]{2})\1{3,}")
+
+
+def _normalize_text_repeated_chars(text: str) -> str:
+    """반복 의성어로 인한 토큰 퇴화 루프(token repeat limit reached)를 방지하기 위해 과도한 반복을 축약한다."""
+    if not text:
+        return text
+    # 2문자 패턴(예: ドドドドドドドド) 축약
+    text = _REPEATED_2CHAR_RE.sub(r"\1\1\1", text)
+    # 1문자 패턴(예: ァァァァァァァァ) 축약
+    text = _REPEATED_1CHAR_RE.sub(r"\1\1\1\1", text)
+    return text
 
 
 def _inline_json_schema_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -84,6 +98,7 @@ class OllamaClient(BaseLLMClient):
         keep_alive: Optional[str] = None,
         timeout_seconds: float = 600.0,
         think: Optional[str] = None,
+        normalize_repeated_chars: bool = True,
     ) -> None:
         """
         OllamaClient를 초기화합니다.
@@ -105,10 +120,12 @@ class OllamaClient(BaseLLMClient):
         self.keep_alive = keep_alive or None
         self.timeout_seconds = float(timeout_seconds)
         self.think = OLLAMA_REASONING.normalize(think)
+        self.normalize_repeated_chars = bool(normalize_repeated_chars)
 
         logger.info(
             f"OllamaClient 초기화 완료 (서버: {self.base_url}, 모델: {self.model_name or '미지정'}, "
-            f"num_ctx: {self.num_ctx or '서버 기본값'}, think: {self.think or '모델 기본값'})"
+            f"num_ctx: {self.num_ctx or '서버 기본값'}, think: {self.think or '모델 기본값'}, "
+            f"normalize_repeated_chars: {self.normalize_repeated_chars})"
         )
 
     @property
@@ -162,18 +179,28 @@ class OllamaClient(BaseLLMClient):
         return "".join(texts)
 
     @classmethod
-    def _build_messages(cls, prompt: Union[str, Any], system_instruction: Optional[str]) -> List[Dict[str, str]]:
+    def _build_messages(
+        cls,
+        prompt: Union[str, Any],
+        system_instruction: Optional[str],
+        normalize_repeated: bool = False,
+    ) -> List[Dict[str, str]]:
         """문자열, dict 리스트, google-genai `Content` 리스트를 Ollama messages로 변환한다."""
         messages: List[Dict[str, str]] = []
         if system_instruction and system_instruction.strip():
             messages.append({"role": "system", "content": system_instruction.strip()})
 
+        def _clean_user_text(raw: str) -> str:
+            if normalize_repeated:
+                return _normalize_text_repeated_chars(raw)
+            return raw
+
         if isinstance(prompt, str):
-            messages.append({"role": "user", "content": prompt})
+            messages.append({"role": "user", "content": _clean_user_text(prompt)})
         elif isinstance(prompt, list):
             for item in prompt:
                 if isinstance(item, str):
-                    messages.append({"role": "user", "content": item})
+                    messages.append({"role": "user", "content": _clean_user_text(item)})
                     continue
                 role = item.get("role") if isinstance(item, dict) else getattr(item, "role", None)
                 role = str(role or "user").lower()
@@ -181,10 +208,13 @@ class OllamaClient(BaseLLMClient):
                     role = "assistant"
                 elif role not in ("system", "user", "assistant"):
                     role = "user"
-                messages.append({"role": role, "content": cls._content_to_text(item)})
+                content_text = cls._content_to_text(item)
+                if role == "user":
+                    content_text = _clean_user_text(content_text)
+                messages.append({"role": role, "content": content_text})
         elif prompt is not None:
             text = cls._content_to_text(prompt) if hasattr(prompt, "parts") else str(prompt)
-            messages.append({"role": "user", "content": text})
+            messages.append({"role": "user", "content": _clean_user_text(text)})
 
         if not any(m["role"] == "user" for m in messages):
             raise BtgApiInvalidRequestException("Ollama 요청에 사용자 메시지가 없습니다.")
@@ -294,6 +324,10 @@ class OllamaClient(BaseLLMClient):
             raise BtgApiRateLimitException(f"Ollama 서버가 요청을 처리할 수 없습니다 ({status}): {message}")
         if status in (401, 403):
             raise BtgApiClientException(f"Ollama 인증 실패 ({status}): API 키를 확인하세요. {message}")
+        if "token repeat limit" in str(message).lower():
+            raise BtgApiRepetitionException(
+                f"Ollama가 반복 생성을 감지해 중단했습니다 ({status}): {message}"
+            )
         if status == 400:
             raise BtgApiInvalidRequestException(f"Ollama 잘못된 요청 (400): {message}")
         raise BtgApiClientException(f"Ollama 요청 실패 ({status}): {message}")
@@ -382,7 +416,9 @@ class OllamaClient(BaseLLMClient):
 
         payload: Dict[str, Any] = {
             "model": self.model_name,
-            "messages": self._build_messages(prompt, system_text),
+            "messages": self._build_messages(
+                prompt, system_text, normalize_repeated=self.normalize_repeated_chars
+            ),
             "stream": False,
         }
         if options:

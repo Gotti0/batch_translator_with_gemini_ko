@@ -148,6 +148,7 @@ class LLMClientFactory:
                 keep_alive=config.get("ollama_keep_alive"),
                 timeout_seconds=float(config.get("api_timeout", 600.0)),
                 think=config.get("ollama_think"),
+                normalize_repeated_chars=config.get("ollama_normalize_repeated_chars", True),
             )
 
         else:

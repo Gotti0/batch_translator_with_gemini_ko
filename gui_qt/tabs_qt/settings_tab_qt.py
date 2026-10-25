@@ -297,6 +297,14 @@ class SettingsTabQt(QtWidgets.QWidget):
             "청크 크기 6,000자 기준 16384 이상을 권장하며, 클수록 VRAM을 더 사용합니다.",
         )
 
+        self.ollama_normalize_check = QtWidgets.QCheckBox("반복 문자 정규화 (의성어 무한루프 방지)")
+        self.ollama_normalize_check.setChecked(True)
+        TooltipQt(
+            self.ollama_normalize_check,
+            "동일 문자가 5회 이상 또는 2문자 패턴이 4회 이상 반복되는 일본어 의성어(예: ァァァァァァァァ, ドドドドドドドド)를\n"
+            "일정 길이로 정규화하여 Ollama 모델의 토큰 반복 생성 중단(token repeat limit) 에러를 방지합니다.",
+        )
+
         self.api_keys_edit = QtWidgets.QPlainTextEdit()
         self.api_keys_edit.setPlaceholderText("API 키를 줄바꿈으로 구분하여 입력")
         TooltipQt(self.api_keys_edit, "API 키를 줄바꿈으로 구분하여 입력합니다.\n여러 키를 사용하면 로테이션됩니다.")
@@ -345,6 +353,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.api_form.addRow("CLI 실행 경로", self.cli_path_edit)
         self.api_form.addRow("API Base URL", self.base_url_edit)
         self.api_form.addRow("컨텍스트 길이", self.ollama_num_ctx_spin)
+        self.api_form.addRow("의성어 루프 방지", self.ollama_normalize_check)
         self.api_form.addRow("API 키 목록", self.api_keys_edit)
         self.api_form.addRow("Vertex AI", self.use_vertex_check)
         self.api_form.addRow("서비스 계정 JSON", self.sa_row_widget)
@@ -837,6 +846,7 @@ class SettingsTabQt(QtWidgets.QWidget):
         self.api_form.setRowVisible(self.cli_path_edit, is_claude or is_codex or is_agy)
         self.api_form.setRowVisible(self.base_url_edit, is_openai_compat or is_ollama)
         self.api_form.setRowVisible(self.ollama_num_ctx_spin, is_ollama)
+        self.api_form.setRowVisible(self.ollama_normalize_check, is_ollama)
         # Antigravity CLI는 로그인된 Google 계정 세션만 쓰고 키를 받지 않는다
         self.api_form.setRowVisible(self.api_keys_edit, provider in PROVIDER_KEY_FIELDS)
         self.api_form.setRowVisible(self.use_vertex_check, is_gemini)
@@ -1088,6 +1098,7 @@ class SettingsTabQt(QtWidgets.QWidget):
             self.ollama_num_ctx_spin.setValue(int(cfg.get("ollama_num_ctx", defaults.get("ollama_num_ctx", 16384)) or 0))
         except (TypeError, ValueError):
             self.ollama_num_ctx_spin.setValue(16384)
+        self.ollama_normalize_check.setChecked(bool(cfg.get("ollama_normalize_repeated_chars", defaults.get("ollama_normalize_repeated_chars", True))))
 
         # 입력/출력 파일 경로 로드
         input_files = cfg.get("input_files", []) or []
@@ -1264,6 +1275,7 @@ class SettingsTabQt(QtWidgets.QWidget):
             cfg["ollama_base_url"] = self.base_url_edit.text().strip() or "http://localhost:11434"
             cfg["ollama_model"] = selected_model
             cfg["ollama_num_ctx"] = int(self.ollama_num_ctx_spin.value())
+            cfg["ollama_normalize_repeated_chars"] = self.ollama_normalize_check.isChecked()
         else:
             cfg["model_name"] = selected_model or None
         cfg["temperature"] = self.temperature_slider.value() / 100.0

@@ -43,6 +43,13 @@ class BtgApiInvalidRequestException(BtgApiClientException):
     """잘못된 API 요청 관련 예외입니다."""
     pass
 
+class BtgApiRepetitionException(BtgApiClientException):
+    """모델이 같은 토큰을 끝없이 반복해 서버가 생성을 중단한 경우입니다.
+
+    반복 의성어 등 특정 입력 줄이 원인일 때 발생하며, 해당 줄을 격리해 복구하기 위해 일반 API 오류와 구분합니다.
+    """
+    pass
+
 # --- 비즈니스 로직 계층 예외 ---
 
 class BtgBusinessLogicException(BtgException):
