@@ -220,7 +220,7 @@ class AppService:
             provider = str(self.config.get("llm_provider", "gemini")).lower().strip()
             should_initialize_client = False
 
-            if provider in ("claude_cli", "codex_cli", "antigravity_cli"):
+            if provider in ("claude_cli", "codex_cli", "antigravity_cli", "cursor_cli"):
                 should_initialize_client = True
                 logger.info(f"로컬 CLI 런타임 프로바이더 활성화: {provider}")
             elif provider == "ollama":

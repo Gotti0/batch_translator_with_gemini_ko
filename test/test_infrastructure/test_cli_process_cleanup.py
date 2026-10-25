@@ -14,6 +14,7 @@ from core.exceptions import BtgApiClientException, BtgApiRateLimitException
 from infrastructure.antigravity_cli_client import AntigravityCliClient
 from infrastructure.claude_cli_client import ClaudeCliClient
 from infrastructure.codex_cli_client import CodexCliClient
+from infrastructure.cursor_cli_client import CursorCliClient
 
 AGY_QUOTA_ERROR = (
     "error: RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"
@@ -47,7 +48,9 @@ def _finished_proc(returncode, stdout=b"", stderr=b""):
     ClaudeCliClient(cli_path="claude"),
     CodexCliClient(cli_path="codex"),
     AntigravityCliClient(cli_path="agy"),
-], ids=["claude", "codex", "antigravity"])
+    # 설치된 런처를 해석하지 않도록 PATH에 없는 이름을 쓴다
+    CursorCliClient(cli_path="cursor-agent-not-installed"),
+], ids=["claude", "codex", "antigravity", "cursor"])
 def test_outer_timeout_kills_cli_process(client):
     proc = _hanging_proc()
 
