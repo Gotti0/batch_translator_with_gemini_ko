@@ -25,6 +25,7 @@ def test_process_and_reconstruct_preserves_xml_and_doctype():
 
     assert chapter.xml_declaration == '<?xml version="1.0" encoding="utf-8"?>'
     assert chapter.doctype == '<!DOCTYPE html>'
+    # 파싱 단계는 원본 세로쓰기 표식을 유지한다
     assert chapter.html_attributes.get("class") == "vrtl"
     assert chapter.html_attributes.get("xml:lang") == "ja"
     assert chapter.html_attributes.get("xmlns") == "http://www.w3.org/1999/xhtml"
@@ -37,18 +38,61 @@ def test_process_and_reconstruct_preserves_xml_and_doctype():
     }
     reconstructed = processor.reconstruct_chapter(chapter, translated_map)
 
-    # 1. 선언부 및 태그 확인
+    # 1. 선언부 및 태그 확인 — 재조립 시 가로쓰기(hltr)로 정규화
     assert reconstructed.startswith('<?xml version="1.0" encoding="utf-8"?>')
     assert '<!DOCTYPE html>' in reconstructed
     assert '<html xmlns="http://www.w3.org/1999/xhtml"' in reconstructed
-    assert 'class="vrtl"' in reconstructed
+    assert 'class="hltr"' in reconstructed
+    assert 'class="vrtl"' not in reconstructed
     assert '<body class="p-text">' in reconstructed
+    assert "writing-mode:horizontal-tb!important" in reconstructed
     assert '<title>제1장</title>' in reconstructed
     assert '<p class="calibre1">안녕하세요</p>' in reconstructed
 
     # 2. 엄격한 XML 파서 파싱 검증 (XHTML 유효성 검증)
     root = ET.fromstring(reconstructed)
     assert root.tag.endswith("html")
+
+
+def test_normalize_css_for_horizontal_layout_rewrites_vertical_rules():
+    css = """
+    .vrtl { writing-mode: vertical-rl; -epub-writing-mode: vertical-rl; }
+    .vrtl img { max-width: 100%; }
+    body { -webkit-writing-mode: vertical-lr; }
+    .cover-vrtl-badge { color: red; }
+    """
+    normalized = EpubProcessor.normalize_css_for_horizontal_layout(css)
+
+    assert ".hltr {" in normalized
+    assert ".hltr img" in normalized
+    assert "writing-mode: horizontal-tb" in normalized
+    assert "-epub-writing-mode: horizontal-tb" in normalized
+    assert "-webkit-writing-mode: horizontal-tb" in normalized
+    assert "vertical-rl" not in normalized
+    assert "vertical-lr" not in normalized
+    # 클래스명 일부가 우연히 겹치는 토큰은 건드리지 않는다
+    assert ".cover-vrtl-badge" in normalized
+
+
+def test_reconstruct_converts_body_vrtl_and_rtl_dir():
+    raw_html = b"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" dir="rtl">
+<head><title>t</title></head>
+<body class="vrtl p-text" style="writing-mode: vertical-rl; color: #111;">
+<p>a</p>
+</body>
+</html>"""
+    processor = EpubProcessor()
+    chapter = processor.process_chapter(raw_html, "c.xhtml")
+    reconstructed = processor.reconstruct_chapter(chapter, {"c.xhtml_0": "가"})
+
+    assert 'dir="ltr"' in reconstructed
+    assert 'class="hltr p-text"' in reconstructed
+    soup = BeautifulSoup(reconstructed, "lxml")
+    assert "vertical-rl" not in (soup.body.get("style") or "")
+    assert "horizontal-tb" in (soup.body.get("style") or "")
+    assert "color: #111" in (soup.body.get("style") or "")
 
 
 def test_process_and_reconstruct_preserves_epub2_doctype():

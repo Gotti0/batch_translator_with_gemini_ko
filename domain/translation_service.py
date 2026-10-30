@@ -1831,7 +1831,7 @@ class TranslationService:
                                 )
                                 zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
                         else:
-                            # 이미지, CSS, 기타 리소스는 그대로 복사
+                            # 이미지 등은 그대로, OPF/CSS만 가로쓰기·좌철로 정규화
                             if item.filename.lower().endswith('.opf'):
                                 try:
                                     opf_text = content.decode('utf-8')
@@ -1839,6 +1839,14 @@ class TranslationService:
                                     zout.writestr(item, opf_text.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
                                 except Exception as e_opf:
                                     logger.error(f"OPF 방향 수정 중 오류: {e_opf}")
+                                    zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
+                            elif item.filename.lower().endswith('.css'):
+                                try:
+                                    css_text = content.decode('utf-8')
+                                    css_text = EpubProcessor.normalize_css_for_horizontal_layout(css_text)
+                                    zout.writestr(item, css_text.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
+                                except Exception as e_css:
+                                    logger.error(f"CSS 가로쓰기 정규화 중 오류: {e_css}")
                                     zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
                             else:
                                 zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
