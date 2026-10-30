@@ -22,6 +22,23 @@ COMPLEX_TAGS = STRUCTURAL_TAGS | {
     'header', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'
 }
 
+# Calibre/Kobo 관례: 세로쓰기 클래스 → 가로쓰기. 셀렉터(.vrtl img)도 같이 바꿔 이미지 CSS를 유지한다.
+_VERTICAL_LAYOUT_CLASSES = {"vrtl": "hltr", "vltr": "hltr"}
+_WRITING_MODE_VALUE_RE = re.compile(
+    r"((?:-webkit-|-epub-|-moz-)?writing-mode)\s*:\s*(vertical-rl|vertical-lr)\b",
+    re.IGNORECASE,
+)
+_VERTICAL_CLASS_TOKEN_RE = re.compile(r"(?<![\w-])(vrtl|vltr)(?![\w-])", re.IGNORECASE)
+_HORIZONTAL_LAYOUT_STYLE = (
+    '<style type="text/css">'
+    "/* Neo_Batch_Translator: 번역본은 가로쓰기 */"
+    "html,body{writing-mode:horizontal-tb!important;"
+    "-webkit-writing-mode:horizontal-tb!important;"
+    "-epub-writing-mode:horizontal-tb!important;"
+    "direction:ltr!important;}"
+    "</style>"
+)
+
 class EpubProcessor:
     def __init__(self):
         self.node_index = 0
@@ -211,6 +228,52 @@ class EpubProcessor:
             attrs.append(f'{k}="{safe_val}"')
         return " " + " ".join(attrs) if attrs else ""
 
+    @staticmethod
+    def _normalize_layout_class_value(class_value: str) -> str:
+        tokens = class_value.split()
+        normalized = []
+        for token in tokens:
+            replacement = _VERTICAL_LAYOUT_CLASSES.get(token.lower())
+            if replacement is None:
+                normalized.append(token)
+            elif replacement not in normalized:
+                normalized.append(replacement)
+        return " ".join(normalized)
+
+    @classmethod
+    def _normalize_horizontal_layout_attrs(cls, attributes: Dict[str, Any]) -> Dict[str, Any]:
+        """번역 결과물은 가로쓰기(ltr)로 맞춘다. 원본 파싱 속성은 그대로 두고 재조립 시에만 적용."""
+        if not attributes:
+            return {}
+        attrs = dict(attributes)
+        if "class" in attrs and attrs["class"]:
+            attrs["class"] = cls._normalize_layout_class_value(str(attrs["class"]))
+        if str(attrs.get("dir", "")).lower() == "rtl":
+            attrs["dir"] = "ltr"
+        style = attrs.get("style")
+        if style:
+            attrs["style"] = _WRITING_MODE_VALUE_RE.sub(
+                lambda m: f"{m.group(1)}: horizontal-tb",
+                str(style),
+            )
+        return attrs
+
+    @staticmethod
+    def normalize_css_for_horizontal_layout(css_text: str) -> str:
+        """
+        번들 CSS의 세로쓰기 writing-mode와 Calibre 세로 클래스를 가로쓰기로 바꾼다.
+        .vrtl → .hltr 치환으로 이미지 크기 셀렉터 매칭을 유지한다.
+        """
+        css_text = _WRITING_MODE_VALUE_RE.sub(
+            lambda m: f"{m.group(1)}: horizontal-tb",
+            css_text,
+        )
+
+        def _replace_class_token(match: re.Match) -> str:
+            return _VERTICAL_LAYOUT_CLASSES.get(match.group(1).lower(), match.group(1))
+
+        return _VERTICAL_CLASS_TOKEN_RE.sub(_replace_class_token, css_text)
+
     def _reconstruct_opening_tag(self, element: Tag) -> str:
         """
         BS4 Tag 객체에서 자식을 제외한 오프닝 태그 문자열만 생성합니다.
@@ -235,8 +298,8 @@ class EpubProcessor:
         else:
             html_parts.append('<!DOCTYPE html>\n')
 
-        # 2. HTML 루트 태그 (네임스페이스 및 루트 클래스/속성 복원)
-        html_attrs = dict(chapter.html_attributes)
+        # 2. HTML 루트 태그 (네임스페이스 복원 + 세로쓰기 클래스를 가로쓰기로 정규화)
+        html_attrs = self._normalize_horizontal_layout_attrs(chapter.html_attributes)
         if "xmlns" not in html_attrs:
             html_attrs["xmlns"] = "http://www.w3.org/1999/xhtml"
         html_attr_str = self._dict_to_attr_str(html_attrs)
@@ -251,10 +314,14 @@ class EpubProcessor:
             html_parts.append(f"<title{attr_str}>{html.escape(title_text)}</title>\n")
 
         html_parts.append(chapter.head_html)
+        # 인라인/외부 CSS가 세로쓰기를 강제해도 번역본은 가로쓰기로 고정
+        html_parts.append("\n")
+        html_parts.append(_HORIZONTAL_LAYOUT_STYLE)
         html_parts.append("\n</head>\n")
 
-        # 3. Body 태그 (기존 클래스/ID 복원 -> 이미지 및 세로쓰기 스타일 보존)
-        body_attr_str = self._dict_to_attr_str(chapter.body_attributes)
+        # 3. Body 태그 (p-text 등 스타일 클래스는 유지, vrtl만 hltr로)
+        body_attrs = self._normalize_horizontal_layout_attrs(chapter.body_attributes)
+        body_attr_str = self._dict_to_attr_str(body_attrs)
         html_parts.append(f"<body{body_attr_str}>\n")
 
         # Body 노드 처리

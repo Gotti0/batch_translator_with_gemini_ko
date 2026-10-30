@@ -204,6 +204,14 @@ class EpubReviewProvider(BaseReviewProvider):
                             except Exception as e_opf:
                                 logger.error(f"OPF 방향 수정 중 오류: {e_opf}")
                                 zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
+                        elif item.filename.lower().endswith('.css'):
+                            try:
+                                css_text = content.decode('utf-8')
+                                css_text = EpubProcessor.normalize_css_for_horizontal_layout(css_text)
+                                zout.writestr(item, css_text.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
+                            except Exception as e_css:
+                                logger.error(f"CSS 가로쓰기 정규화 중 오류: {e_css}")
+                                zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
                         else:
                             zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
                         
