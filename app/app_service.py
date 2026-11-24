@@ -215,9 +215,6 @@ class AppService:
                         auth_credentials_for_gemini_client = auth_credentials_conf_val
                         logger.info("auth_credentials SA dict 사용")
 
-                if auth_credentials_for_gemini_client is None:
-                    logger.warning("API 키가 설정되지 않음")
-
             provider = str(self.config.get("llm_provider", "gemini")).lower().strip()
             should_initialize_client = False
 
@@ -246,6 +243,8 @@ class AppService:
                     # 프로젝트는 설정·환경 변수·ADC에서 찾고, 인증 정보가 없으면 클라이언트 생성이 오류로 알린다
                     should_initialize_client = True
                     logger.info("Vertex AI ADC 모드로 클라이언트 초기화 예정")
+                else:
+                    logger.warning("API 키가 설정되지 않음")
 
             if should_initialize_client:
                 try:
@@ -915,7 +914,21 @@ class AppService:
                 status_callback("EPUB 번역 중...")
             # EPUB은 번역 기억을 쓰지 않는다. 앞 작업의 기억이 남아 섞이지 않게 떼어 둔다
             self.translation_service.translation_memory = None
-            await self.translation_service.translate_epub(input_file_path, output_file_path)
+            last_epub_progress: Optional[TranslationJobProgressDTO] = None
+
+            def epub_progress_handler(dto: TranslationJobProgressDTO) -> None:
+                nonlocal last_epub_progress
+                last_epub_progress = dto
+                if progress_callback:
+                    progress_callback(dto)
+
+            await self.translation_service.translate_epub(
+                input_file_path,
+                output_file_path,
+                progress_callback=epub_progress_handler,
+                status_callback=status_callback,
+                tqdm_file_stream=tqdm_file_stream,
+            )
             
             # 메타데이터 영속화 (애플리케이션 레이어 처리)
             epub_meta = {
@@ -928,10 +941,19 @@ class AppService:
             if status_callback:
                 status_callback("EPUB 번역 완료!")
             if progress_callback:
-                progress_callback(TranslationJobProgressDTO(
-                    total_chunks=1, processed_chunks=1, successful_chunks=1, failed_chunks=0,
-                    current_status_message="EPUB 번역 완료"
-                ))
+                if last_epub_progress and last_epub_progress.total_chunks > 0:
+                    progress_callback(TranslationJobProgressDTO(
+                        total_chunks=last_epub_progress.total_chunks,
+                        processed_chunks=last_epub_progress.processed_chunks,
+                        successful_chunks=last_epub_progress.successful_chunks,
+                        failed_chunks=last_epub_progress.failed_chunks,
+                        current_status_message="EPUB 번역 완료",
+                    ))
+                else:
+                    progress_callback(TranslationJobProgressDTO(
+                        total_chunks=1, processed_chunks=1, successful_chunks=1, failed_chunks=0,
+                        current_status_message="EPUB 번역 완료"
+                    ))
             return
 
         # 🚀 무결성 모드 특수 처리 (전체 텍스트를 한 번에 넘기되 내부적으로 청킹)
