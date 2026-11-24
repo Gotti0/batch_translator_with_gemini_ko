@@ -31,6 +31,10 @@ class BtgApiClientException(BtgDataAccessException):
     """외부 API(예: Gemini) 통신 중 발생하는 일반적인 오류에 대한 예외입니다."""
     pass
 
+class BtgApiAuthenticationException(BtgApiClientException):
+    """외부 API 인증 또는 권한 오류입니다."""
+
+
 class BtgApiRateLimitException(BtgApiClientException):
     """API 사용량 제한 관련 예외입니다."""
     pass

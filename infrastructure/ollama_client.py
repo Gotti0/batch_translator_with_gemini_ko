@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import requests
 
 from core.exceptions import (
+    BtgApiAuthenticationException,
     BtgApiClientException,
     BtgApiInvalidRequestException,
     BtgApiRateLimitException,
@@ -323,7 +324,7 @@ class OllamaClient(BaseLLMClient):
         if status in (429, 503):
             raise BtgApiRateLimitException(f"Ollama 서버가 요청을 처리할 수 없습니다 ({status}): {message}")
         if status in (401, 403):
-            raise BtgApiClientException(f"Ollama 인증 실패 ({status}): API 키를 확인하세요. {message}")
+            raise BtgApiAuthenticationException(f"Ollama 인증 실패 ({status}): API 키를 확인하세요. {message}")
         if "token repeat limit" in str(message).lower():
             raise BtgApiRepetitionException(
                 f"Ollama가 반복 생성을 감지해 중단했습니다 ({status}): {message}"

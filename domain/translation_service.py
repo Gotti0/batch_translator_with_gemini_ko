@@ -5,11 +5,22 @@ import re
 import csv
 import json
 import asyncio
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Set, Union, Callable, Awaitable, TypeVar
+from functools import partial
+from collections import Counter
+from hashlib import sha256
+from typing import Dict, Any, Optional, List, Set, Union, Callable, Awaitable, Iterator, TypeVar
 import os
 import copy # Moved here
 from dataclasses import dataclass, field
+
+from infrastructure.OpenAICompatibleClient import (
+    OpenAICompatibleAuthException,
+    OpenAICompatibleNotFoundException,
+)
 
 try:
     from infrastructure.gemini_client import (
@@ -21,11 +32,13 @@ try:
         GeminiAllApiKeysExhaustedException,
         GeminiServiceUnavailableException
     )
-    from infrastructure.file_handler import read_json_file
+    from infrastructure.file_handler import read_json_file, write_json_file
     from infrastructure.logger_config import setup_logger
     from core.exceptions import (
         BtgTranslationException,
+        BtgApiAuthenticationException,
         BtgApiClientException,
+        BtgApiInvalidRequestException,
         BtgApiContentSafetyException,
         BtgApiRepetitionException,
         BtgPromptTemplateException,
@@ -58,11 +71,13 @@ except ImportError:
         GeminiAllApiKeysExhaustedException,
         GeminiServiceUnavailableException
     )
-    from infrastructure.file_handler import read_json_file  # type: ignore
+    from infrastructure.file_handler import read_json_file, write_json_file  # type: ignore
     from infrastructure.logger_config import setup_logger  # type: ignore
     from core.exceptions import (  # type: ignore
         BtgTranslationException,
+        BtgApiAuthenticationException,
         BtgApiClientException,
+        BtgApiInvalidRequestException,
         BtgApiContentSafetyException,
         BtgApiRepetitionException,
         BtgPromptTemplateException,
@@ -95,6 +110,22 @@ def _is_overload_failure(error: Optional[BaseException]) -> bool:
         error = getattr(error, "original_exception", None) or error.__cause__
     return False
 
+
+def is_job_stopping_failure(
+    error: BaseException, additional_types: tuple[type[Exception], ...] = (),
+) -> bool:
+    """예외 사슬에 작업을 멈추라는 신호가 있는지.
+
+    키·재시도 소진과 프롬프트 템플릿 설정 오류는 남은 청크도 모두 같은 이유로 실패한다. 청크 실패로
+    적으면 남은 청크가 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝난다.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, (GeminiAllApiKeysExhaustedException, BtgPromptTemplateException, *additional_types)):
+            return True
+        error = getattr(error, "original_exception", None) or error.__cause__
+    return False
 
 def _format_glossary_for_prompt( # 함수명 변경
     glossary_entries: List[GlossaryEntryDTO], # DTO는 GlossaryEntryDTO (경량화된 버전)
@@ -1035,6 +1066,39 @@ class TranslationService:
         """줄 ID 순서로 번역을 잇는다. 번역이 없는 줄은 원문을 둔다."""
         return "\n".join(translated_map.get(str(i), line) for i, line in enumerate(lines))
 
+    async def _run_chunk_workers(
+        self, jobs: Iterator[Callable[[], Awaitable[None]]],
+    ) -> None:
+        max_workers = max(1, int(self.config.get("max_workers") or 1))
+        if max_workers == 1:
+            for job in jobs:
+                await job()
+            return
+
+        stopping = False
+
+        async def worker() -> None:
+            nonlocal stopping
+            try:
+                while not stopping:
+                    job = next(jobs, None)
+                    if job is None:
+                        return
+                    await job()
+            except (Exception, asyncio.CancelledError):
+                # 실패가 호출자에게 전달되기 전에 다른 워커가 다음 청크를 가져가지 않게 한다.
+                stopping = True
+                raise
+
+        workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
+        try:
+            await asyncio.gather(*workers)
+        except (Exception, asyncio.CancelledError):
+            for task in workers:
+                task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            raise
+
     async def translate_text_integrity(
         self, 
         text: str, 
@@ -1058,9 +1122,6 @@ class TranslationService:
         Returns:
             번역된 텍스트
         """
-        import json
-        import shutil
-
         if not text.strip():
             logger.debug("translate_text_integrity: 입력 텍스트가 비어 있음.")
             return ""
@@ -1118,100 +1179,102 @@ class TranslationService:
             except Exception as pbar_e:
                 logger.debug(f"tqdm 초기화 실패: {pbar_e}")
 
-        try:
-            for i, chunk in enumerate(chunks):
-                # 📍 중단 체크
-                if self.stop_check_callback and self.stop_check_callback():
-                    raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 시작 전)")
+        for result in saved_results.values():
+            translated_map.update(result)
 
-                status_msg = f"무결성 번역 청크 {i+1}/{total_chunks} 처리 중..."
+        processed_count = len(saved_results)
+
+        async def process_chunk(i: int, chunk: List[TranslationUnit]) -> None:
+            nonlocal processed_count
+            # 📍 중단 체크
+            if self.stop_check_callback and self.stop_check_callback():
+                raise asyncio.CancelledError(f"무결성 번역 중단 요청됨 (청크 {i+1} 시작 전)")
+
+            status_msg = f"무결성 번역 청크 {i+1}/{total_chunks} 처리 중..."
+            if status_callback:
+                status_callback(status_msg)
+
+            logger.info(f"📦 무결성 번역 청크 {i+1}/{total_chunks} 처리 중 (항목: {len(chunk)}개)")
+
+            # 3. API 요청 및 검증 (재시도 포함). 과부하는 이 청크가 성공할 때까지 기다린다.
+            def _notify_overload_retry(attempt: int) -> None:
+                message = f"무결성 번역 청크 {i+1}/{total_chunks} 과부하 재시도 {attempt}회째"
                 if status_callback:
-                    status_callback(status_msg)
-
-                logger.info(f"📦 무결성 번역 청크 {i+1}/{total_chunks} 처리 중 (항목: {len(chunk)}개)")
-                
-                if i in saved_results:
-                    translated_map.update(saved_results[i])
-                    logger.info(f"  ⏭️ 이미 번역된 청크 건너뜀")
-                    if progress_callback:
-                        progress_callback(TranslationJobProgressDTO(
-                            total_chunks=total_chunks,
-                            processed_chunks=i + 1,
-                            successful_chunks=len(translated_chunk_indices),
-                            failed_chunks=0,
-                            current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 건너뜀",
-                            current_chunk_processing=i + 1,
-                            completed_chunk_indices=_completed(),
-                        ))
-                    continue
-
-                # 3. API 요청 및 검증 (재시도 포함). 과부하는 이 청크가 성공할 때까지 기다린다.
-                def _notify_overload_retry(attempt: int, _i: int = i) -> None:
-                    message = f"무결성 번역 청크 {_i+1}/{total_chunks} 과부하 재시도 {attempt}회째"
-                    if status_callback:
-                        status_callback(message)
-                    if progress_callback:
-                        progress_callback(TranslationJobProgressDTO(
-                            total_chunks=total_chunks,
-                            processed_chunks=_i,
-                            successful_chunks=len(translated_chunk_indices),
-                            failed_chunks=0,
-                            current_status_message=message,
-                            current_chunk_processing=_i + 1,
-                            completed_chunk_indices=_completed(),
-                        ))
-
-                partial = self.load_integrity_partial_result(temp_dir, i, chunk) if temp_dir else {}
-                if partial:
-                    # 배치가 일부 줄만 돌려준 청크다. 배치 응답을 첫 시도로 보고, 빠진 줄만 누락 재요청
-                    # 단계(retry_depth 1)부터 묻는다. 실시간 첫 요청 뒤의 누락 재요청과 같은 예산이다.
-                    chunk_results = dict(partial)
-                    missing_units = [u for u in chunk if u.text.strip() and not str(partial.get(u.id) or "").strip()]
-                    logger.info(f"  ↪️ 배치 부분 결과 이어받음: 누락 {len(missing_units)}줄만 요청")
-                    if missing_units:
-                        chunk_results.update(await self._translate_chunk_waiting_out_overload(
-                            missing_units,
-                            label=f"무결성 번역 청크 {i+1}/{total_chunks}",
-                            on_retry=_notify_overload_retry,
-                            retry_depth=1,
-                        ))
-                else:
-                    chunk_results = await self._translate_chunk_waiting_out_overload(
-                        chunk,
-                        label=f"무결성 번역 청크 {i+1}/{total_chunks}",
-                        on_retry=_notify_overload_retry,
-                    )
-                translated_map.update(chunk_results)
-
-                if temp_dir:
-                    try:
-                        chunk_file = self.integrity_chunk_file(temp_dir, i)
-                        with open(chunk_file, 'w', encoding='utf-8') as f:
-                            json.dump(chunk_results, f, ensure_ascii=False)
-                        translated_chunk_indices.add(i)
-                        self.integrity_partial_file(temp_dir, i).unlink(missing_ok=True)
-                    except Exception as e:
-                        logger.error(f"  ❌ 무결성 임시 청크 저장 실패: {e}")
-
-                if on_chunk_translated:
-                    try:
-                        on_chunk_translated(i, chunk, chunk_results)
-                    except Exception as e:  # 기억 기록 실패는 번역을 막지 않는다
-                        logger.warning(f"  ⚠️ 청크 {i+1} 번역 후 처리 실패: {e}")
-
-                if pbar:
-                    pbar.update(1)
-
+                    status_callback(message)
                 if progress_callback:
                     progress_callback(TranslationJobProgressDTO(
                         total_chunks=total_chunks,
-                        processed_chunks=i + 1,
+                        processed_chunks=processed_count,
                         successful_chunks=len(translated_chunk_indices),
                         failed_chunks=0,
-                        current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 완료",
+                        current_status_message=message,
                         current_chunk_processing=i + 1,
                         completed_chunk_indices=_completed(),
                     ))
+
+            partial = self.load_integrity_partial_result(temp_dir, i, chunk) if temp_dir else {}
+            if partial:
+                # 배치가 일부 줄만 돌려준 청크다. 배치 응답을 첫 시도로 보고, 빠진 줄만 누락 재요청
+                # 단계(retry_depth 1)부터 묻는다. 실시간 첫 요청 뒤의 누락 재요청과 같은 예산이다.
+                chunk_results = dict(partial)
+                missing_units = [u for u in chunk if u.text.strip() and not str(partial.get(u.id) or "").strip()]
+                logger.info(f"  ↪️ 배치 부분 결과 이어받음: 누락 {len(missing_units)}줄만 요청")
+                if missing_units:
+                    chunk_results.update(await self._translate_chunk_waiting_out_overload(
+                        missing_units,
+                        label=f"무결성 번역 청크 {i+1}/{total_chunks}",
+                        on_retry=_notify_overload_retry,
+                        retry_depth=1,
+                    ))
+            else:
+                chunk_results = await self._translate_chunk_waiting_out_overload(
+                    chunk,
+                    label=f"무결성 번역 청크 {i+1}/{total_chunks}",
+                    on_retry=_notify_overload_retry,
+                )
+            translated_map.update(chunk_results)
+
+            if temp_dir:
+                try:
+                    chunk_file = self.integrity_chunk_file(temp_dir, i)
+                    write_json_file(chunk_file, chunk_results)
+                    translated_chunk_indices.add(i)
+                    self.integrity_partial_file(temp_dir, i).unlink(missing_ok=True)
+                except Exception as e:
+                    logger.error(f"  ❌ 무결성 임시 청크 저장 실패: {e}")
+
+            else:
+                translated_chunk_indices.add(i)
+            processed_count += 1
+
+            if on_chunk_translated:
+                try:
+                    on_chunk_translated(i, chunk, chunk_results)
+                except Exception as e:  # 기억 기록 실패는 번역을 막지 않는다
+                    logger.warning(f"  ⚠️ 청크 {i+1} 번역 후 처리 실패: {e}")
+
+            if pbar:
+                pbar.update(1)
+
+            if progress_callback:
+                progress_callback(TranslationJobProgressDTO(
+                    total_chunks=total_chunks,
+                    processed_chunks=processed_count,
+                    successful_chunks=len(translated_chunk_indices),
+                    failed_chunks=0,
+                    current_status_message=f"무결성 번역 청크 {i+1}/{total_chunks} 완료",
+                    current_chunk_processing=i + 1,
+                    completed_chunk_indices=_completed(),
+                ))
+
+        try:
+            if self.stop_check_callback and self.stop_check_callback():
+                raise asyncio.CancelledError("무결성 번역 중단 요청됨")
+            await self._run_chunk_workers(
+                partial(process_chunk, i, chunk)
+                for i, chunk in enumerate(chunks)
+                if i not in saved_results
+            )
         finally:
             if pbar:
                 pbar.close()
@@ -1723,139 +1786,156 @@ class TranslationService:
         return results
 
     async def translate_epub(self, epub_path: Union[str, Path], output_path: Union[str, Path]) -> None:
-        """
-        EPUB 번역 파이프라인: 구조를 유지하며 내용을 번역합니다.
-        임시 디렉토리를 사용한 파일 기반 진행도 저장 및 재개(Resume)를 지원합니다.
-        """
-        import zipfile
-        import json
-        import shutil
-        
+        """파일 전체에 청크 워커 한도를 적용하고 완료된 챕터를 재개용으로 저장한다."""
         processor = EpubProcessor()
         epub_path = Path(epub_path)
         output_path = Path(output_path)
-
-        logger.info(f"🚀 EPUB 번역 시작: {epub_path.name}")
-        
         temp_dir = self.epub_temp_dir_for(epub_path)
         metadata_path = temp_dir / "epub_metadata.json"
-        
-        metadata = {"translated_files": []}
-        if temp_dir.exists() and metadata_path.exists():
+        translated_files = set()
+        if metadata_path.exists():
             try:
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
-                logger.info(f"기존 EPUB 진행 상태 로드됨: {len(metadata.get('translated_files', []))}개 챕터 번역 완료")
-            except Exception as e:
-                logger.warning(f"EPUB 메타데이터 읽기 실패: {e}. 임시 폴더를 초기화합니다.")
+                with metadata_path.open(encoding="utf-8") as f:
+                    translated_files = set(json.load(f).get("translated_files", []))
+                logger.info(f"기존 EPUB 진행 상태 로드됨: {len(translated_files)}개 챕터 번역 완료")
+            except Exception as error:
+                logger.warning(f"EPUB 메타데이터 읽기 실패: {error}. 임시 폴더를 초기화합니다.")
                 shutil.rmtree(temp_dir, ignore_errors=True)
-                temp_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            
-        translated_files = set(metadata.get("translated_files", []))
+        temp_dir.mkdir(parents=True, exist_ok=True)
 
+        max_chunk_size = self.config.get("chunk_size", 6000)
+        max_items = self.config.get("integrity_max_items", 200)
+
+        def check_stop() -> None:
+            if self.stop_check_callback and self.stop_check_callback():
+                raise asyncio.CancelledError("EPUB 번역 중단 요청됨")
+
+        def log_chapter_error(name: str, error: Exception) -> None:
+            logger.error(f"챕터 {name} 처리 중 오류 (원본 보존): {error}", exc_info=True)
+
+        def chapter_jobs(name: str, content: bytes, cache_path: Path) -> Iterator[Callable[[], Awaitable[None]]]:
+            logger.info(f"  📄 챕터 처리 중: {name}")
+            try:
+                chapter = processor.process_chapter(content, name)
+                units = [
+                    TranslationUnit(id=node.id, text=node.content or "")
+                    for node in chapter.nodes
+                    if node.type == NodeType.TEXT
+                ]
+                chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
+            except Exception as error:
+                log_chapter_error(name, error)
+                return
+
+            remaining = len(chunks)
+            translated_map: Dict[str, str] = {}
+            failed = False
+
+            async def translate_chunk(index: int, chunk: List[TranslationUnit]) -> None:
+                nonlocal remaining, failed
+                if failed:
+                    return
+                try:
+                    result = await self._translate_chunk_waiting_out_overload(
+                        chunk, label=f"EPUB 챕터 {name} 청크 {index + 1}/{len(chunks)}",
+                    )
+                    if failed:
+                        return
+                    translated_map.update(result)
+                    remaining -= 1
+                    if remaining:
+                        return
+                    translated = processor.reconstruct_chapter(chapter, translated_map).encode("utf-8")
+                except Exception as error:
+                    if is_job_stopping_failure(error, (
+                        GeminiInvalidRequestException,
+                        BtgApiInvalidRequestException,
+                        BtgApiAuthenticationException,
+                        OpenAICompatibleAuthException,
+                        OpenAICompatibleNotFoundException,
+                    )):
+                        raise
+                    failed = True
+                    log_chapter_error(name, error)
+                    return
+
+                # 챕터 저장과 메타데이터 갱신 사이에 await가 없으므로 워커끼리 덮어쓰지 않는다.
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_bytes(translated)
+                write_json_file(metadata_path, {"translated_files": sorted(translated_files | {name})})
+                translated_files.add(name)
+
+            for index, chunk in enumerate(chunks):
+                if failed:
+                    break
+                yield partial(translate_chunk, index, chunk)
+
+        temp_output = None
         try:
-            with zipfile.ZipFile(epub_path, 'r') as zin:
-                with zipfile.ZipFile(output_path, 'w') as zout:
-                    # 1. mimetype 보존 (EPUB 표준: 압축 없이 첫 번째 파일)
-                    if 'mimetype' in zin.namelist():
-                        zout.writestr('mimetype', zin.read('mimetype'), compress_type=zipfile.ZIP_STORED)
+            with zipfile.ZipFile(epub_path, "r") as zin:
+                items = zin.infolist()
+                chapter_items = [
+                    item for item in items if item.filename.lower().endswith((".xhtml", ".html", ".htm"))
+                ]
+                legacy_names = Counter(item.filename.replace("/", "_").casefold() for item in chapter_items)
 
-                    # 2. 모든 파일 순회
-                    for item in zin.infolist():
-                        if item.filename == 'mimetype':
-                            continue
-                        
-                        # 중단 체크
-                        if self.stop_check_callback and self.stop_check_callback():
-                            raise asyncio.CancelledError("EPUB 번역 중단 요청됨")
-                            
-                        # 진행도 저장 체크
-                        temp_file_path = temp_dir / item.filename.replace("/", "_")
-                        if item.filename in translated_files and temp_file_path.exists():
-                            logger.info(f"  ⏭️ 이미 번역된 챕터 건너뜀: {item.filename}")
-                            with open(temp_file_path, "rb") as f:
-                                zout.writestr(item.filename, f.read(), compress_type=zipfile.ZIP_DEFLATED)
-                            continue
+                def chapter_cache_path(name: str) -> Path:
+                    legacy_name = name.replace("/", "_")
+                    if legacy_names[legacy_name.casefold()] > 1 or "\\" in legacy_name or ":" in legacy_name:
+                        # 평탄화한 이름이 같으면 서로의 챕터를 덮어쓸 수 있어 전용 경로를 쓴다.
+                        return temp_dir / "chapters" / sha256(name.encode("utf-8")).hexdigest()
+                    return temp_dir / legacy_name
 
-                        content = zin.read(item.filename)
-                        
-                        # HTML/XHTML 파일만 번역
-                        if item.filename.lower().endswith(('.xhtml', '.html', '.htm')):
-                            logger.info(f"  📄 챕터 처리 중: {item.filename}")
+                def jobs() -> Iterator[Callable[[], Awaitable[None]]]:
+                    for item in chapter_items:
+                        check_stop()
+                        name = item.filename
+                        cache_path = chapter_cache_path(name)
+                        if name in translated_files and cache_path.is_file():
+                            logger.info(f"  ⏭️ 이미 번역된 챕터 건너뜀: {name}")
+                            continue
+                        yield from chapter_jobs(name, zin.read(item), cache_path)
+
+                await self._run_chunk_workers(jobs())
+                check_stop()
+
+                # 취소되거나 ZIP 생성에 실패해도 기존 출력과 이어하기 캐시를 보존한다.
+                with tempfile.NamedTemporaryFile(dir=output_path.parent, suffix=".epub", delete=False) as stream:
+                    temp_output = Path(stream.name)
+                    with zipfile.ZipFile(stream, "w") as zout:
+                        if "mimetype" in zin.namelist():
+                            zout.writestr("mimetype", zin.read("mimetype"), compress_type=zipfile.ZIP_STORED)
+                        for item in items:
+                            name = item.filename
+                            if name == "mimetype":
+                                continue
+                            cache_path = chapter_cache_path(name)
+                            if name in translated_files and cache_path.is_file():
+                                zout.writestr(name, cache_path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+                                continue
+
+                            content = zin.read(item)
                             try:
-                                chapter = processor.process_chapter(content, item.filename)
-                                translatable_nodes = [n for n in chapter.nodes if n.type == NodeType.TEXT]
-                                
-                                if translatable_nodes:
-                                    # 무결성 모드와 동일한 로직으로 노드 리스트 번역
-                                    # 번역 단위로 변환 (id와 text만 필요)
-                                    units = [TranslationUnit(id=n.id, text=n.content or "") for n in translatable_nodes]
-                                    
-                                    # 청크 분할 및 번역 요청
-                                    max_chunk_size = self.config.get("chunk_size", 6000)
-                                    max_items = self.config.get("integrity_max_items", 200)
-                                    chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
-                                    
-                                    translated_map: Dict[str, str] = {}
-                                    for i, chunk in enumerate(chunks):
-                                        logger.info(f"    📦 EPUB 노드 청크 {i+1}/{len(chunks)} 번역 중")
-                                        chunk_results = await self._translate_chunk_waiting_out_overload(
-                                            chunk,
-                                            label=f"EPUB 챕터 {item.filename} 청크 {i+1}/{len(chunks)}",
-                                        )
-                                        translated_map.update(chunk_results)
-                                    
-                                    # 번역된 내용으로 HTML 재조립
-                                    translated_html = processor.reconstruct_chapter(chapter, translated_map)
-                                    translated_bytes = translated_html.encode('utf-8')
-                                    
-                                    # 임시 디렉토리에 저장 및 메타데이터 업데이트
-                                    with open(temp_file_path, "wb") as f:
-                                        f.write(translated_bytes)
-                                        
-                                    translated_files.add(item.filename)
-                                    metadata["translated_files"] = list(translated_files)
-                                    with open(metadata_path, "w", encoding="utf-8") as f:
-                                        json.dump(metadata, f, ensure_ascii=False)
-                                        
-                                    zout.writestr(item.filename, translated_bytes, compress_type=zipfile.ZIP_DEFLATED)
-                                else:
-                                    zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
-                                    
-                            except Exception as e_chapter:
-                                logger.error(
-                                    f"챕터 {item.filename} 처리 중 오류 (원본 보존): {type(e_chapter).__name__} - {e_chapter}",
-                                    exc_info=True,
-                                )
-                                zout.writestr(item.filename, content, compress_type=zipfile.ZIP_DEFLATED)
-                        else:
-                            # 이미지 등은 그대로, OPF/CSS만 가로쓰기·좌철로 정규화
-                            if item.filename.lower().endswith('.opf'):
-                                try:
-                                    opf_text = content.decode('utf-8')
-                                    opf_text = re.sub(r'page-progression-direction\s*=\s*["\']rtl["\']', 'page-progression-direction="ltr"', opf_text, flags=re.IGNORECASE)
-                                    zout.writestr(item, opf_text.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
-                                except Exception as e_opf:
-                                    logger.error(f"OPF 방향 수정 중 오류: {e_opf}")
-                                    zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
-                            elif item.filename.lower().endswith('.css'):
-                                try:
-                                    css_text = content.decode('utf-8')
-                                    css_text = EpubProcessor.normalize_css_for_horizontal_layout(css_text)
-                                    zout.writestr(item, css_text.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
-                                except Exception as e_css:
-                                    logger.error(f"CSS 가로쓰기 정규화 중 오류: {e_css}")
-                                    zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
-                            else:
-                                zout.writestr(item, content, compress_type=zipfile.ZIP_DEFLATED)
+                                if name.lower().endswith(".opf"):
+                                    content = re.sub(
+                                        r"""page-progression-direction\s*=\s*["']rtl["']""",
+                                        'page-progression-direction="ltr"',
+                                        content.decode("utf-8"),
+                                        flags=re.IGNORECASE,
+                                    ).encode("utf-8")
+                                elif name.lower().endswith(".css"):
+                                    css = processor.normalize_css_for_horizontal_layout(content.decode("utf-8"))
+                                    content = css.encode("utf-8")
+                            except Exception as error:
+                                logger.error(f"EPUB 스타일 정규화 실패 ({name}): {error}")
+                            zout.writestr(item, content)
 
-            # 성공적으로 완료되면 임시 디렉토리 삭제
+            os.replace(temp_output, output_path)
             shutil.rmtree(temp_dir, ignore_errors=True)
             logger.info(f"✅ EPUB 번역 완료: {output_path.name}")
-
-        except Exception as e:
-            logger.error(f"EPUB 번역 작업 중 치명적 오류: {e}")
-            raise BtgTranslationException(f"EPUB 번역 실패: {e}")
-
+        except Exception as error:
+            logger.error(f"EPUB 번역 작업 중 치명적 오류: {error}")
+            raise BtgTranslationException(f"EPUB 번역 실패: {error}") from error
+        finally:
+            if temp_output is not None:
+                temp_output.unlink(missing_ok=True)

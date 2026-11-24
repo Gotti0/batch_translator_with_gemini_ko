@@ -29,11 +29,11 @@ try:
         save_merged_chunks_to_file
     )
     from ..core.config.config_manager import ConfigManager, DEFAULT_REQUESTS_PER_MINUTE
-    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException, GeminiServiceUnavailableException
-    from domain.translation_service import TranslationService
+    from infrastructure.gemini_client import GeminiClient, GeminiInvalidRequestException, GeminiServiceUnavailableException
+    from domain.translation_service import TranslationService, is_job_stopping_failure
     from domain.glossary_service import SimpleGlossaryService
     from ..utils.chunk_service import ChunkService
-    from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException, BtgPromptTemplateException
+    from ..core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
     from ..core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from ..utils.post_processing_service import PostProcessingService
     from ..utils.quality_check_service import QualityCheckService
@@ -54,11 +54,11 @@ except ImportError:
         save_merged_chunks_to_file
     )
     from core.config.config_manager import ConfigManager, DEFAULT_REQUESTS_PER_MINUTE
-    from infrastructure.gemini_client import GeminiClient, GeminiAllApiKeysExhaustedException, GeminiInvalidRequestException, GeminiServiceUnavailableException
-    from domain.translation_service import TranslationService
+    from infrastructure.gemini_client import GeminiClient, GeminiInvalidRequestException, GeminiServiceUnavailableException
+    from domain.translation_service import TranslationService, is_job_stopping_failure
     from domain.glossary_service import SimpleGlossaryService
     from utils.chunk_service import ChunkService
-    from core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException, BtgPromptTemplateException
+    from core.exceptions import BtgServiceException, BtgConfigException, BtgFileHandlerException, BtgApiClientException, BtgTranslationException, BtgBusinessLogicException
     from core.dtos import TranslationJobProgressDTO, GlossaryExtractionProgressDTO
     from utils.post_processing_service import PostProcessingService
     from utils.quality_check_service import QualityCheckService
@@ -660,21 +660,6 @@ class AppService:
         while error is not None and id(error) not in seen:
             seen.add(id(error))
             if isinstance(error, GeminiServiceUnavailableException):
-                return True
-            error = getattr(error, "original_exception", None) or error.__cause__
-        return False
-
-    @staticmethod
-    def _is_job_stopping_failure(error: BaseException) -> bool:
-        """예외 사슬에 작업을 멈추라는 신호가 있는지.
-
-        키·재시도 소진과 프롬프트 템플릿 설정 오류는 남은 청크도 모두 같은 이유로 실패한다. 청크 실패로
-        적으면 남은 청크가 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝난다.
-        """
-        seen = set()
-        while error is not None and id(error) not in seen:
-            seen.add(id(error))
-            if isinstance(error, (GeminiAllApiKeysExhaustedException, BtgPromptTemplateException)):
                 return True
             error = getattr(error, "original_exception", None) or error.__cause__
         return False
@@ -1834,7 +1819,7 @@ class AppService:
                         progress_callback
                     )
                 except Exception as e:
-                    if self._is_job_stopping_failure(e):
+                    if is_job_stopping_failure(e):
                         job_stopping.set()
                     raise
         
@@ -1858,7 +1843,7 @@ class AppService:
                     if pbar:
                         pbar.update(1)
                 except Exception as e:
-                    if self._is_job_stopping_failure(e):
+                    if is_job_stopping_failure(e):
                         logger.critical(f"번역을 멈춥니다. 남은 청크는 이어하기에서 번역됩니다: {e}")
                         raise
                     results.append(e)
@@ -1998,7 +1983,7 @@ class AppService:
             # 키·재시도 소진과 프롬프트 설정 오류는 남은 청크도 모두 같은 이유로 실패한다는 뜻이다. 실패로
             # 적으면 남은 청크가 전부 "실패 + 원문"으로 채워진 채 병합돼 완료로 끝나므로, 작업을 멈추고
             # 이어하기에 맡긴다. 무결성 모드와 같은 방침이다.
-            if self._is_job_stopping_failure(e_trans):
+            if is_job_stopping_failure(e_trans):
                 stopped = True
                 raise
             processing_time = time.time() - start_time
@@ -2010,7 +1995,7 @@ class AppService:
             success = False
             
         except BtgApiClientException as e_api:
-            if self._is_job_stopping_failure(e_api):
+            if is_job_stopping_failure(e_api):
                 stopped = True
                 raise
             processing_time = time.time() - start_time
