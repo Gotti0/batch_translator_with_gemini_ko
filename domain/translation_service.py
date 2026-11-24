@@ -1785,11 +1785,19 @@ class TranslationService:
         results.update(await self._translate_integrity_chunk_with_retry(right_chunk))
         return results
 
-    async def translate_epub(self, epub_path: Union[str, Path], output_path: Union[str, Path]) -> None:
+    async def translate_epub(
+        self,
+        epub_path: Union[str, Path],
+        output_path: Union[str, Path],
+        progress_callback: Optional[Callable[[TranslationJobProgressDTO], None]] = None,
+        status_callback: Optional[Callable[[str], None]] = None,
+        tqdm_file_stream: Optional[Any] = None,
+    ) -> None:
         """파일 전체에 청크 워커 한도를 적용하고 완료된 챕터를 재개용으로 저장한다."""
         processor = EpubProcessor()
         epub_path = Path(epub_path)
         output_path = Path(output_path)
+        logger.info(f"🚀 EPUB 번역 시작: {epub_path.name}")
         temp_dir = self.epub_temp_dir_for(epub_path)
         metadata_path = temp_dir / "epub_metadata.json"
         translated_files = set()
@@ -1813,64 +1821,8 @@ class TranslationService:
         def log_chapter_error(name: str, error: Exception) -> None:
             logger.error(f"챕터 {name} 처리 중 오류 (원본 보존): {error}", exc_info=True)
 
-        def chapter_jobs(name: str, content: bytes, cache_path: Path) -> Iterator[Callable[[], Awaitable[None]]]:
-            logger.info(f"  📄 챕터 처리 중: {name}")
-            try:
-                chapter = processor.process_chapter(content, name)
-                units = [
-                    TranslationUnit(id=node.id, text=node.content or "")
-                    for node in chapter.nodes
-                    if node.type == NodeType.TEXT
-                ]
-                chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
-            except Exception as error:
-                log_chapter_error(name, error)
-                return
-
-            remaining = len(chunks)
-            translated_map: Dict[str, str] = {}
-            failed = False
-
-            async def translate_chunk(index: int, chunk: List[TranslationUnit]) -> None:
-                nonlocal remaining, failed
-                if failed:
-                    return
-                try:
-                    result = await self._translate_chunk_waiting_out_overload(
-                        chunk, label=f"EPUB 챕터 {name} 청크 {index + 1}/{len(chunks)}",
-                    )
-                    if failed:
-                        return
-                    translated_map.update(result)
-                    remaining -= 1
-                    if remaining:
-                        return
-                    translated = processor.reconstruct_chapter(chapter, translated_map).encode("utf-8")
-                except Exception as error:
-                    if is_job_stopping_failure(error, (
-                        GeminiInvalidRequestException,
-                        BtgApiInvalidRequestException,
-                        BtgApiAuthenticationException,
-                        OpenAICompatibleAuthException,
-                        OpenAICompatibleNotFoundException,
-                    )):
-                        raise
-                    failed = True
-                    log_chapter_error(name, error)
-                    return
-
-                # 챕터 저장과 메타데이터 갱신 사이에 await가 없으므로 워커끼리 덮어쓰지 않는다.
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_bytes(translated)
-                write_json_file(metadata_path, {"translated_files": sorted(translated_files | {name})})
-                translated_files.add(name)
-
-            for index, chunk in enumerate(chunks):
-                if failed:
-                    break
-                yield partial(translate_chunk, index, chunk)
-
         temp_output = None
+        pbar = None
         try:
             with zipfile.ZipFile(epub_path, "r") as zin:
                 items = zin.infolist()
@@ -1885,6 +1837,135 @@ class TranslationService:
                         # 평탄화한 이름이 같으면 서로의 챕터를 덮어쓸 수 있어 전용 경로를 쓴다.
                         return temp_dir / "chapters" / sha256(name.encode("utf-8")).hexdigest()
                     return temp_dir / legacy_name
+
+                total_chapters = len(chapter_items)
+                initial_completed = sum(
+                    1
+                    for item in chapter_items
+                    if item.filename in translated_files and chapter_cache_path(item.filename).is_file()
+                )
+                processed_chapters = initial_completed
+                successful_chapters = initial_completed
+                failed_chapters = 0
+
+                def emit_progress(message: str) -> None:
+                    if progress_callback:
+                        progress_callback(TranslationJobProgressDTO(
+                            total_chunks=total_chapters,
+                            processed_chunks=processed_chapters,
+                            successful_chunks=successful_chapters,
+                            failed_chunks=failed_chapters,
+                            current_status_message=message,
+                        ))
+
+                def finish_chapter(name: str, *, failed: bool = False) -> None:
+                    nonlocal processed_chapters, successful_chapters, failed_chapters
+                    processed_chapters += 1
+                    if failed:
+                        failed_chapters += 1
+                    else:
+                        successful_chapters += 1
+                    if pbar:
+                        pbar.update(1)
+                    status_msg = f"EPUB 챕터 오류 (원본 보존): {name}" if failed else f"EPUB 챕터 완료: {name}"
+                    if status_callback:
+                        status_callback(status_msg)
+                    emit_progress(f"{status_msg} ({processed_chapters}/{total_chapters})")
+
+                emit_progress(f"EPUB 번역 시작 ({initial_completed}/{total_chapters} 챕터 완료됨)")
+
+                if tqdm_file_stream and total_chapters > 0:
+                    try:
+                        from tqdm import tqdm
+                        pbar = tqdm(
+                            total=total_chapters,
+                            initial=initial_completed,
+                            desc="EPUB 번역",
+                            unit="챕터",
+                            file=tqdm_file_stream,
+                            ncols=100,
+                            bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                        )
+                    except Exception as pbar_e:
+                        logger.debug(f"EPUB tqdm 초기화 실패: {pbar_e}")
+
+                def chapter_jobs(name: str, content: bytes, cache_path: Path) -> Iterator[Callable[[], Awaitable[None]]]:
+                    logger.info(f"  📄 챕터 처리 중: {name}")
+                    try:
+                        chapter = processor.process_chapter(content, name)
+                        units = [
+                            TranslationUnit(id=node.id, text=node.content or "")
+                            for node in chapter.nodes
+                            if node.type == NodeType.TEXT
+                        ]
+                        chunks = self.chunk_service.split_nodes_into_chunks(units, max_chunk_size, max_items)
+                    except Exception as error:
+                        log_chapter_error(name, error)
+                        finish_chapter(name, failed=True)
+                        return
+
+                    if not chunks:
+                        finish_chapter(name, failed=False)
+                        return
+
+                    remaining = len(chunks)
+                    translated_map: Dict[str, str] = {}
+                    failed = False
+
+                    async def translate_chunk(index: int, chunk: List[TranslationUnit]) -> None:
+                        nonlocal remaining, failed
+                        if failed:
+                            return
+                        chunk_label = f"EPUB 챕터 {name} 청크 {index + 1}/{len(chunks)}"
+                        if status_callback:
+                            status_callback(f"{chunk_label} 번역 중...")
+                        logger.info(f"    📦 {chunk_label} 번역 중")
+
+                        def _notify_overload_retry(attempt: int) -> None:
+                            message = f"{chunk_label} 과부하 재시도 {attempt}회째"
+                            if status_callback:
+                                status_callback(message)
+                            emit_progress(message)
+
+                        try:
+                            result = await self._translate_chunk_waiting_out_overload(
+                                chunk,
+                                label=chunk_label,
+                                on_retry=_notify_overload_retry,
+                            )
+                            if failed:
+                                return
+                            translated_map.update(result)
+                            remaining -= 1
+                            if remaining:
+                                return
+                            translated = processor.reconstruct_chapter(chapter, translated_map).encode("utf-8")
+                        except Exception as error:
+                            if is_job_stopping_failure(error, (
+                                GeminiInvalidRequestException,
+                                BtgApiInvalidRequestException,
+                                BtgApiAuthenticationException,
+                                OpenAICompatibleAuthException,
+                                OpenAICompatibleNotFoundException,
+                            )):
+                                raise
+                            failed = True
+                            log_chapter_error(name, error)
+                            finish_chapter(name, failed=True)
+                            return
+
+                        # 챕터 저장과 메타데이터 갱신 사이에 await가 없으므로 워커끼리 덮어쓰지 않는다.
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        cache_path.write_bytes(translated)
+                        write_json_file(metadata_path, {"translated_files": sorted(translated_files | {name})})
+                        translated_files.add(name)
+                        logger.info(f"  ✅ EPUB 챕터 완료: {name}")
+                        finish_chapter(name, failed=False)
+
+                    for index, chunk in enumerate(chunks):
+                        if failed:
+                            break
+                        yield partial(translate_chunk, index, chunk)
 
                 def jobs() -> Iterator[Callable[[], Awaitable[None]]]:
                     for item in chapter_items:
@@ -1937,5 +2018,7 @@ class TranslationService:
             logger.error(f"EPUB 번역 작업 중 치명적 오류: {error}")
             raise BtgTranslationException(f"EPUB 번역 실패: {error}") from error
         finally:
+            if pbar:
+                pbar.close()
             if temp_output is not None:
                 temp_output.unlink(missing_ok=True)
